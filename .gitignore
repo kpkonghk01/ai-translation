@@ -1,0 +1,11 @@
+# 含敏感內容的測試資料與輸出，不可進 repo
+data/
+data-prohibited.csv
+
+# API key
+.env
+.env.*
+
+# 雜項
+.DS_Store
+__pycache__/

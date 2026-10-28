@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<!-- 不允許任何外部連線；只允許本頁的內嵌 script / style -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">
+<title>Session 預覽</title>
+<style>
+:root {
+  --bg: #f6f5f2; --panel: #ffffff; --text: #1d1b19; --muted: #6b665f; --line: #e3e0da;
+  --accent: #1d4ed8; --accent-bg: #e8eefc;
+  --err: #b42318; --err-bg: #fde8e6; --ok: #136c3a; --ok-bg: #e0f3e7; --warn: #8a5a00; --warn-bg: #fdf1d6;
+  --hl-bg: #fff7d6; --hl-line: #d6a600;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161514; --panel: #1f1d1b; --text: #ece8e2; --muted: #a29b92; --line: #34312e;
+    --accent: #8fb0ff; --accent-bg: #23304f;
+    --err: #ff9b90; --err-bg: #3d1f1c; --ok: #86d6a5; --ok-bg: #173324; --warn: #f1c46c; --warn-bg: #3a2e12;
+    --hl-bg: #332d12; --hl-line: #b08c00;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text); display: flex; flex-direction: column;
+  font: 15px/1.7 -apple-system, BlinkMacSystemFont, "PingFang HK", "Noto Sans CJK TC", "Microsoft JhengHei", system-ui, sans-serif;
+}
+button, select, input { font: inherit; color: inherit; }
+button {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px; cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+header.top {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 16px;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+}
+header.top h1 { font-size: 16px; margin: 0; }
+.privacy { color: var(--muted); font-size: 12px; flex: 1 1 260px; }
+#status { color: var(--muted); font-size: 13px; }
+
+main { flex: 1; min-height: 0; display: flex; }
+#empty {
+  margin: 40px auto; padding: 48px 32px; max-width: 560px; text-align: center; color: var(--muted);
+  border: 2px dashed var(--line); border-radius: 12px; align-self: flex-start;
+}
+#empty strong { color: var(--text); display: block; font-size: 17px; margin-bottom: 6px; }
+body.dragging #empty, body.dragging #layout { outline: 3px dashed var(--accent); outline-offset: -6px; }
+
+#layout { flex: 1; display: grid; grid-template-columns: minmax(280px, 380px) 1fr; min-height: 0; }
+#list-pane { background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+.filters { padding: 10px; display: grid; gap: 6px; border-bottom: 1px solid var(--line); }
+.filters input, .filters select {
+  width: 100%; padding: 5px 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+}
+.filters .row { display: flex; gap: 6px; }
+.filters .count { font-size: 12px; color: var(--muted); }
+#list { list-style: none; margin: 0; padding: 0; overflow: auto; flex: 1; }
+.item { padding: 10px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.item:hover { background: var(--bg); }
+.item[aria-selected="true"] { background: var(--accent-bg); }
+.ititle { font-weight: 600; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.imeta { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 4px; font-size: 12px; color: var(--muted); align-items: center; }
+
+.badge { display: inline-block; font: 600 11px/1.6 var(--mono); padding: 0 7px; border-radius: 4px; }
+.badge.err { background: var(--err-bg); color: var(--err); }
+.badge.ok { background: var(--ok-bg); color: var(--ok); }
+.badge.warn { background: var(--warn-bg); color: var(--warn); }
+.badge.neutral { background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
+.chip { display: inline-block; font-size: 12px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); background: var(--bg); }
+
+#detail { overflow: auto; padding: 20px clamp(16px, 4vw, 40px) 64px; min-height: 0; }
+.placeholder { color: var(--muted); text-align: center; margin-top: 80px; }
+.doc { max-width: 760px; margin: 0 auto; }
+.doc h1 { font-size: 24px; line-height: 1.4; margin: 6px 0 10px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.stats { font-size: 13px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.sid { font: 12px var(--mono); color: var(--muted); word-break: break-all; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 14px 0; padding: 8px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: 13px; }
+.toolbar label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+.note { padding: 8px 12px; border-radius: 6px; background: var(--warn-bg); color: var(--warn); font-size: 13px; margin: 8px 0; }
+.outcome { padding: 10px 12px; border-radius: 6px; margin: 10px 0; font-size: 13px; }
+.outcome.err { background: var(--err-bg); color: var(--err); }
+.outcome.ok { background: var(--ok-bg); color: var(--ok); }
+.outcome.neutral { background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
+.outcome dl { margin: 6px 0 0; display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; font: 12px var(--mono); }
+.outcome dt { opacity: .8; } .outcome dd { margin: 0; word-break: break-all; }
+
+.comp { margin: 0 0 14px; }
+.cmeta { display: none; font: 11px var(--mono); color: var(--muted); margin-bottom: 2px; word-break: break-all; }
+.show-meta .cmeta { display: block; }
+.body-only .peripheral { display: none; }
+.t { white-space: pre-line; overflow-wrap: anywhere; }
+.comp-highlight .t { background: var(--hl-bg); border-left: 3px solid var(--hl-line); padding: 10px 14px; border-radius: 0 6px 6px 0; }
+.comp h2, .comp h3, .comp h4 { margin: 22px 0 6px; line-height: 1.4; }
+.comp h2 { font-size: 20px; } .comp h3 { font-size: 17px; } .comp h4 { font-size: 15px; }
+.comp blockquote { margin: 0; padding: 4px 14px; border-left: 3px solid var(--line); color: var(--muted); }
+.comp cite { display: block; font-size: 12px; margin-top: 2px; }
+.imgbox { border: 1px dashed var(--line); border-radius: 6px; padding: 14px; text-align: center; font-size: 12px; color: var(--muted); }
+.comp figure { margin: 0; }
+.comp figcaption { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.fold { border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font-size: 13px; color: var(--muted); }
+.fold summary { cursor: pointer; }
+.fold ol { margin: 6px 0 2px; padding-left: 22px; }
+.fold pre, .unknown, .rawjson { font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 2px; }
+.related { border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; font-size: 13px; color: var(--muted); }
+.related .label { font-weight: 600; margin-bottom: 2px; }
+.related ul { margin: 0; padding-left: 18px; }
+details.raw { margin-top: 28px; }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Session 預覽</h1>
+  <button id="pick" class="primary" type="button">選擇 CSV</button>
+  <button id="demo" type="button">載入示範資料</button>
+  <input id="file" type="file" accept=".csv,text/csv,text/plain" hidden>
+  <span id="status" aria-live="polite"></span>
+  <span class="privacy">資料只在這個瀏覽器分頁內處理，不會上傳；本頁沒有任何外部連線，也不內嵌任何資料。</span>
+</header>
+<main>
+  <section id="empty">
+    <strong>把 CSV 拖到這裡，或按「選擇 CSV」</strong>
+    格式：無標題列，兩欄（session id、history JSON）。只想看版面可按「載入示範資料」（虛構內容）。
+  </section>
+  <div id="layout" hidden>
+    <aside id="list-pane" aria-label="項目列表">
+      <div class="filters">
+        <input id="q" type="search" placeholder="搜尋標題、tags、內文" aria-label="搜尋">
+        <div class="row">
+          <select id="fOutcome" aria-label="依結果篩選"></select>
+          <select id="fChannel" aria-label="依頻道篩選"></select>
+        </div>
+        <div class="count" id="count" aria-live="polite"></div>
+      </div>
+      <ul id="list" role="listbox" aria-label="Session 列表"></ul>
+    </aside>
+    <section id="detail" aria-live="polite"></section>
+  </div>
+</main>
+<noscript>這個頁面需要 JavaScript。</noscript>
+
+<script>
+// ───────────────────────── Adapter（純函式，無 DOM）─────────────────────────
+// CSV（無 header）：第 1 欄 session id；第 2 欄 history JSON。
+// history 內 user turn 的 text 是「文章 JSON 字串」；model turn 帶 metadata.error。
+// 日後若要載入翻譯結果，只需新增另一個 adapter，UI 不用改。
+const Preview = (() => {
+  const MAIN_TYPES = new Set(['highlight', 'paragraph', 'heading', 'quote']);
+  const BUCKETS = [[1000, '短'], [3000, '中'], [5000, '長'], [Infinity, '超長']];
+
+  function parseCsv(text) {
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    const rows = [];
+    let row = [], field = '', inQuotes = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (inQuotes) {
+        if (c === '"') {
+          if (text[i + 1] === '"') { field += '"'; i++; } else inQuotes = false;
+        } else field += c;
+      } else if (c === '"' && field === '') inQuotes = true;
+      else if (c === ',') { row.push(field); field = ''; }
+      else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+      else if (c !== '\r') field += c;
+    }
+    if (field !== '' || row.length) { row.push(field); rows.push(row); }
+    return rows.filter(r => !(r.length === 1 && r[0] === ''));
+  }
+
+  function tryJson(s) {
+    try { return { ok: true, value: JSON.parse(s) }; }
+    catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+  }
+  const strLen = s => Array.from(s || '').length;
+
+  function componentTexts(c) {
+    const out = [];
+    for (const k of ['text', 'caption', 'source']) if (typeof c[k] === 'string') out.push(c[k]);
+    for (const k of ['captions', 'titles']) if (Array.isArray(c[k])) out.push(...c[k].map(String));
+    return out;
+  }
+
+  function normalizeArticle(o) {
+    return {
+      title: typeof o.title === 'string' ? o.title : '',
+      mainChannel: typeof o.mainChannel === 'string' ? o.mainChannel : '',
+      tags: Array.isArray(o.tags) ? o.tags.map(String) : [],
+      components: o.components.filter(c => c && typeof c === 'object'),
+    };
+  }
+
+  function articleStats(a) {
+    let chars = strLen(a.title);
+    const types = {};
+    for (const c of a.components) {
+      types[c.type] = (types[c.type] || 0) + 1;
+      if (MAIN_TYPES.has(c.type)) chars += strLen(c.text);
+    }
+    const bucket = BUCKETS.find(([max]) => chars < max)[1];
+    return { chars, bucket, nComponents: a.components.length, types };
+  }
+
+  const joinParts = parts => (Array.isArray(parts) ? parts : []).map(p => (p && typeof p.text === 'string' ? p.text : '')).join('');
+
+  function errorEntry(rowNo, sessionId, message, raw) {
+    return { key: `${rowNo}.0`, rowNo, sessionId, article: null, stats: null, outcome: {}, parseError: message, raw: String(raw).slice(0, 2000), haystack: String(raw).toLowerCase() };
+  }
+
+  function adaptRow(cols, rowNo) {
+    const sessionId = cols[0] || '';
+    const histRaw = cols[1] == null ? '' : cols[1];
+    const hist = tryJson(histRaw);
+    if (!hist.ok) return [errorEntry(rowNo, sessionId, `history 不是合法 JSON：${hist.error}`, histRaw)];
+    if (!Array.isArray(hist.value)) return [errorEntry(rowNo, sessionId, 'history 不是陣列', histRaw)];
+
+    const turns = hist.value, entries = [];
+    for (let i = 0; i < turns.length; i++) {
+      const t = turns[i];
+      if (!t || t.role !== 'user') continue;
+      const text = joinParts(t.parts);
+      const a = tryJson(text);
+      let article, note = null;
+      if (a.ok && a.value && typeof a.value === 'object' && Array.isArray(a.value.components)) {
+        article = normalizeArticle(a.value);
+      } else {
+        article = { title: text.slice(0, 40) || '(空)', mainChannel: '', tags: [], components: [{ type: 'paragraph', id: '(raw)', text }] };
+        note = 'user 內容不是預期的文章 JSON，以原文顯示。';
+      }
+      const outcome = {};
+      for (let j = i + 1; j < turns.length && !(turns[j] && turns[j].role === 'user'); j++) {
+        const m = turns[j] || {}, md = m.metadata || {};
+        if (md.error && !outcome.error) outcome.error = md.error;
+        if (md.schemaName) outcome.schemaName = md.schemaName;
+        if (md.schemaVersion) outcome.schemaVersion = md.schemaVersion;
+        const out = joinParts(m.parts);
+        if (out) outcome.outputText = (outcome.outputText || '') + out;
+      }
+      const haystack = [article.title, article.mainChannel, ...article.tags, ...article.components.flatMap(componentTexts)].join('\n').toLowerCase();
+      entries.push({ key: `${rowNo}.${i}`, rowNo, sessionId, article, stats: articleStats(article), outcome, parseNote: note, haystack });
+    }
+    if (!entries.length) entries.push(errorEntry(rowNo, sessionId, 'history 內沒有 user turn', histRaw));
+    return entries;
+  }
+
+  function load(text) {
+    let rows = parseCsv(text);
+    const notes = [];
+    let first = 1;
+    if (rows.length > 1 && !tryJson(rows[0][1] == null ? '' : rows[0][1]).ok) {
+      rows = rows.slice(1); first = 2; notes.push('第 1 列不是 JSON，已當作標題列略過。');
+    }
+    const entries = rows.flatMap((cols, i) => adaptRow(cols, i + first));
+    return { entries, notes, rowCount: rows.length };
+  }
+
+  const outcomeLabel = e => e.parseError ? '解析失敗'
+    : e.outcome.error ? `${e.outcome.error.code || 'ERROR'} / ${e.outcome.error.reason || '?'}`
+    : e.outcome.outputText ? '有輸出' : '無輸出';
+  const outcomeClass = e => e.parseError ? 'warn' : e.outcome.error ? 'err' : e.outcome.outputText ? 'ok' : 'neutral';
+
+  // 示範資料（全部虛構），走與真實檔相同的 CSV → adapter 流程
+  function buildDemoCsv() {
+    const q = s => '"' + String(s).replace(/"/g, '""') + '"';
+    const turn = (article, md, out) => JSON.stringify([
+      { role: 'user', parts: [{ text: JSON.stringify(article) }] },
+      Object.assign({ role: 'model', parts: [{ text: out || '' }] }, md ? { metadata: md } : {}),
+    ]);
+    const blocked = { error: { code: 'CONTENT_BLOCKED', reason: 'PROHIBITED_CONTENT' }, schemaName: 'scan-result', schemaVersion: '1' };
+    const a1 = {
+      title: '示範｜社區花園裝設雨水回收系統　居民：澆水費用減半', mainChannel: '社區', tags: ['示範資料', '社區', '環保'],
+      components: [
+        { id: 'demo-0001', type: 'highlight', text: '這是一篇虛構的示範文章，用來測試版面。\n第二行用來測試換行。' },
+        { id: 'demo-0002', type: 'image', caption: '示範圖片說明（虛構）' },
+        { id: 'demo-0003', type: 'heading', level: 'h3', text: '居民反應正面' },
+        { id: 'demo-0004', type: 'paragraph', text: '第一段含有「中文引號」、"英文引號"、逗號, 以及<標籤樣式>的文字，全部應該原樣顯示。' },
+        { id: 'demo-0005', type: 'quote', text: '「以前每個月都要付很多水費。」', source: '受訪居民（虛構）' },
+        { id: 'demo-0006', type: 'paragraph', text: '第二段。管理員表示系統下個月會擴建，歡迎更多住戶加入。' },
+        { id: 'demo-0007', type: 'gallery', captions: ['圖輯說明 A', '圖輯說明 A', '圖輯說明 B'] },
+        { id: 'demo-0008', type: 'related-article', titles: ['虛構相關文章一', '虛構相關文章二'] },
+        { id: 'demo-0009', type: 'code', code: '<div class="embed"><scr' + 'ipt>alert(1)</scr' + 'ipt></div>' },
+        { id: 'demo-0010', type: 'video' },
+        { id: 'demo-0011', type: 'mystery', foo: 1 },
+      ],
+    };
+    const a2 = { title: '示範｜被標記為 block 的虛構文章', mainChannel: '突發', tags: ['示範資料'], components: [{ id: 'demo-0101', type: 'paragraph', text: '虛構內容。' }] };
+    const a3 = { title: '示範｜有模型輸出的虛構文章', mainChannel: '國際', tags: [], components: [{ id: 'demo-0201', type: 'paragraph', text: '虛構內容。' }] };
+    const plain = JSON.stringify([{ role: 'user', parts: [{ text: '這不是 JSON 文章，只是純文字。' }] }]);
+    const rows = [
+      ['000000000000000000000001', turn(a1, null, '')],
+      ['000000000000000000000002', turn(a2, blocked, '')],
+      ['000000000000000000000003', turn(a3, null, 'Fictional translated output.')],
+      ['000000000000000000000004', 'this is not json'],
+      ['000000000000000000000005', plain],
+    ];
+    return rows.map(r => r.map(q).join(',')).join('\n') + '\n';
+  }
+
+  return { parseCsv, adaptRow, load, outcomeLabel, outcomeClass, buildDemoCsv, MAIN_TYPES };
+})();
+
+if (typeof module !== 'undefined') module.exports = Preview;
+
+// ───────────────────────── UI（僅瀏覽器；一律用 textContent，不用 innerHTML）─────────────────────────
+function initUI(P) {
+  const $ = id => document.getElementById(id);
+  const state = { entries: [], filtered: [], selected: null };
+
+  function h(tag, attrs, ...kids) {
+    const el = document.createElement(tag);
+    if (attrs) for (const [k, v] of Object.entries(attrs)) {
+      if (v == null || v === false) continue;
+      if (k === 'class') el.className = v;
+      else if (k === 'text') el.textContent = v;
+      else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+      else el.setAttribute(k, v === true ? '' : v);
+    }
+    for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid);
+    return el;
+  }
+
+  function renderComponent(c) {
+    const type = String(c.type || 'unknown');
+    const peripheral = !P.MAIN_TYPES.has(type);
+    const wrap = h('div', { class: `comp comp-${type.replace(/[^a-z0-9-]/gi, '-')}${peripheral ? ' peripheral' : ''}` },
+      h('div', { class: 'cmeta', text: `${type} · ${c.id == null ? '' : c.id}` }));
+    const text = c.text == null ? '' : String(c.text);
+    switch (type) {
+      case 'heading': wrap.append(h(c.level === 'h2' ? 'h2' : c.level === 'h3' ? 'h3' : 'h4', { class: 't', text })); break;
+      case 'paragraph': case 'highlight': wrap.append(h('div', { class: 't', text })); break;
+      case 'quote': wrap.append(h('blockquote', null, h('div', { class: 't', text }), c.source ? h('cite', { text: String(c.source) }) : null)); break;
+      case 'image': wrap.append(h('figure', null, h('div', { class: 'imgbox', text: '圖片' }), h('figcaption', { text: String(c.caption || '') }))); break;
+      case 'gallery': {
+        const caps = Array.isArray(c.captions) ? c.captions.map(String) : [];
+        wrap.append(h('details', { class: 'fold' }, h('summary', { text: `圖輯：${caps.length} 張（${new Set(caps).size} 種不同說明）` }), h('ol', null, caps.map(x => h('li', { text: x })))));
+        break;
+      }
+      case 'related-article': {
+        const ts = Array.isArray(c.titles) ? c.titles.map(String) : [];
+        wrap.append(h('div', { class: 'related' }, h('div', { class: 'label', text: '相關文章' }), h('ul', null, ts.map(x => h('li', { text: x })))));
+        break;
+      }
+      case 'code': wrap.append(h('details', { class: 'fold' }, h('summary', { text: '內嵌 code（只顯示文字，不執行）' }), h('pre', { text: c.code == null ? '' : String(c.code) }))); break;
+      case 'video': wrap.append(h('div', { class: 'imgbox', text: '影片' })); break;
+      default: wrap.append(h('pre', { class: 'unknown', text: JSON.stringify(c, null, 2) }));
+    }
+    return wrap;
+  }
+
+  function renderDetail() {
+    const root = $('detail');
+    root.replaceChildren();
+    const e = state.entries.find(x => x.key === state.selected);
+    if (!e) { root.append(h('div', { class: 'placeholder', text: state.filtered.length ? '選擇左邊的項目' : '沒有符合條件的項目' })); return; }
+
+    const doc = h('div', { class: 'doc' });
+    if (e.parseError) {
+      doc.append(h('h1', { text: `第 ${e.rowNo} 列：解析失敗` }), h('div', { class: 'note', text: e.parseError }), h('pre', { class: 'rawjson', text: e.raw }));
+      root.append(doc); return;
+    }
+    const a = e.article, s = e.stats;
+    doc.append(
+      h('h1', { text: a.title || '(無標題)' }),
+      h('div', { class: 'chips' }, h('span', { class: 'chip', text: a.mainChannel || '—' }), a.tags.map(t => h('span', { class: 'chip', text: t }))),
+      h('div', { class: 'stats' },
+        h('span', { text: `主體 ${s.chars} 字（${s.bucket}）` }),
+        h('span', { text: `${s.nComponents} 個 component` }),
+        h('span', { text: `第 ${e.rowNo} 列` })),
+      h('div', { class: 'sid', text: `session id：${e.sessionId}` }));
+
+    const err = e.outcome.error;
+    const oc = h('div', { class: `outcome ${P.outcomeClass(e)}` }, h('strong', { text: P.outcomeLabel(e) }));
+    const dl = h('dl');
+    if (err) for (const [k, v] of Object.entries(err)) dl.append(h('dt', { text: k }), h('dd', { text: String(v) }));
+    if (e.outcome.schemaName) dl.append(h('dt', { text: 'schemaName' }), h('dd', { text: `${e.outcome.schemaName} v${e.outcome.schemaVersion || '?'}` }));
+    if (dl.children.length) oc.append(dl);
+    if (e.outcome.outputText) oc.append(h('div', { class: 't', text: e.outcome.outputText }));
+    doc.append(oc);
+    if (e.parseNote) doc.append(h('div', { class: 'note', text: e.parseNote }));
+
+    const body = h('div', { class: 'body' }, a.components.map(renderComponent));
+    const toggle = (label, cls) => h('label', null, h('input', { type: 'checkbox', onchange: ev => body.classList.toggle(cls, ev.target.checked) }), label);
+    doc.append(h('div', { class: 'toolbar' }, toggle('只顯示主體（隱藏圖片、圖輯、相關文章、code、影片）', 'body-only'), toggle('顯示 component id / type', 'show-meta')), body);
+
+    const raw = h('details', { class: 'raw fold' }, h('summary', { text: '原始資料（JSON）' }));
+    raw.addEventListener('toggle', () => { if (raw.open && !raw.querySelector('pre')) raw.append(h('pre', { class: 'rawjson', text: JSON.stringify({ sessionId: e.sessionId, article: a, outcome: e.outcome }, null, 2) })); });
+    doc.append(raw);
+    root.append(doc);
+    root.scrollTop = 0;
+  }
+
+  function renderList() {
+    const ul = $('list');
+    ul.replaceChildren();
+    for (const e of state.filtered) {
+      ul.append(h('li', {
+        class: 'item', role: 'option', tabindex: '0', 'data-key': e.key, 'aria-selected': String(e.key === state.selected),
+        onclick: () => select(e.key), onkeydown: ev => { if (ev.key === 'Enter') select(e.key); },
+      },
+        h('div', { class: 'ititle', text: e.article ? (e.article.title || '(無標題)') : `第 ${e.rowNo} 列（解析失敗）` }),
+        h('div', { class: 'imeta' },
+          h('span', { class: `badge ${P.outcomeClass(e)}`, text: P.outcomeLabel(e) }),
+          e.article ? h('span', { text: e.article.mainChannel || '—' }) : null,
+          e.stats ? h('span', { text: `${e.stats.chars} 字・${e.stats.bucket}` }) : null)));
+    }
+    $('count').textContent = `${state.filtered.length} / ${state.entries.length} 筆`;
+  }
+
+  function select(key) {
+    state.selected = key;
+    for (const li of $('list').children) li.setAttribute('aria-selected', String(li.dataset.key === key));
+    renderDetail();
+    const li = [...$('list').children].find(x => x.dataset.key === key);
+    if (li) li.scrollIntoView({ block: 'nearest' });
+  }
+
+  function applyFilters() {
+    const q = $('q').value.trim().toLowerCase(), fo = $('fOutcome').value, fc = $('fChannel').value;
+    state.filtered = state.entries.filter(e =>
+      (!q || e.haystack.includes(q)) && (!fo || P.outcomeLabel(e) === fo) && (!fc || (e.article && e.article.mainChannel === fc)));
+    if (!state.filtered.some(e => e.key === state.selected)) state.selected = null;
+    if (!state.selected && state.filtered.length) state.selected = state.filtered[0].key;
+    renderList();
+    renderDetail();
+  }
+
+  function fillSelect(sel, allLabel, values) {
+    sel.replaceChildren(h('option', { value: '', text: allLabel }), [...new Set(values)].map(v => h('option', { value: v, text: v })));
+  }
+
+  function loadText(text, name) {
+    const r = P.load(text);
+    state.entries = r.entries;
+    fillSelect($('fOutcome'), '全部結果', r.entries.map(P.outcomeLabel));
+    fillSelect($('fChannel'), '全部頻道', r.entries.map(e => e.article && e.article.mainChannel).filter(Boolean));
+    $('q').value = '';
+    state.selected = null;
+    $('empty').hidden = true;
+    $('layout').hidden = false;
+    const blocked = r.entries.filter(e => e.outcome.error).length, bad = r.entries.filter(e => e.parseError).length;
+    $('status').textContent = `${name}｜${r.entries.length} 筆｜有 error ${blocked}${bad ? `｜解析失敗 ${bad}` : ''}${r.notes.length ? `｜${r.notes.join('')}` : ''}`;
+    applyFilters();
+  }
+
+  async function loadFile(file) {
+    if (!file) return;
+    try { loadText(await file.text(), file.name); }
+    catch (err) { $('status').textContent = `讀取失敗：${err && err.message || err}`; }
+  }
+
+  $('pick').addEventListener('click', () => $('file').click());
+  $('file').addEventListener('change', ev => { loadFile(ev.target.files[0]); ev.target.value = ''; });
+  $('demo').addEventListener('click', () => loadText(P.buildDemoCsv(), '示範資料（虛構）'));
+  $('q').addEventListener('input', () => applyFilters());
+  $('fOutcome').addEventListener('change', () => applyFilters());
+  $('fChannel').addEventListener('change', () => applyFilters());
+  window.addEventListener('dragover', ev => { ev.preventDefault(); document.body.classList.add('dragging'); });
+  window.addEventListener('dragleave', ev => { if (!ev.relatedTarget) document.body.classList.remove('dragging'); });
+  window.addEventListener('drop', ev => { ev.preventDefault(); document.body.classList.remove('dragging'); loadFile(ev.dataTransfer.files[0]); });
+  document.addEventListener('keydown', ev => {
+    if ((ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp') || /^(INPUT|SELECT|TEXTAREA)$/.test(ev.target.tagName)) return;
+    const i = state.filtered.findIndex(e => e.key === state.selected), j = i + (ev.key === 'ArrowDown' ? 1 : -1);
+    if (state.filtered[j]) { ev.preventDefault(); select(state.filtered[j].key); }
+  });
+  if (location.hash === '#demo') loadText(P.buildDemoCsv(), '示範資料（虛構）');
+}
+
+if (typeof document !== 'undefined') initUI(Preview);
+</script>
+</body>
+</html>
