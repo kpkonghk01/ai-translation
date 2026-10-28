@@ -9,3 +9,9 @@ data-prohibited.csv
 # 雜項
 .DS_Store
 __pycache__/
+
+# 虛擬環境
+.venv/
+
+# 參考用的外部 repo 副本（media-cms、API、OpenCC 服務），不進本 repo
+refs/
