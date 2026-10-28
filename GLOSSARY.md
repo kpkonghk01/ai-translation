@@ -44,6 +44,10 @@ _Avoid_: 語言對, 路線
 一個被測的「模型或服務加設定」組合（plan 的 A–F）。
 _Avoid_: 方案以外的 solution, option；單講 model（只是 Approach 的一部分）
 
+**Current service**:
+公司現時的繁→簡轉換服務：OpenCC 加自訂 dictionary。方案 E 即它的實際輸出；標準 OpenCC 設定的輸出不能代替它。global.hk01.com 的簡體版由它產生，但編輯可在 CMS 手動校正，所以不等於純服務輸出。輸出隨服務版本與 opencc 版本而變，引用時要註明版本。
+_Avoid_: OpenCC baseline（容易被誤解為標準設定）
+
 **Run**:
 一個 Approach 對一篇 Article 在一個 Direction 上的一次執行。
 _Avoid_: trial, attempt
@@ -99,6 +103,10 @@ _Avoid_: 忠實度（太泛，與 Accuracy 混淆）
 **Softening**:
 譯文的力度低於原文，包括：(a) 刪走施害者或行為主體；(b) 委婉或中性化用詞；(c) 數量變模糊；(d) 刪走或概括具體細節；(e) 原文是斷言卻憑空加 hedging；(f) 直接引語中的粗口或惡毒字眼被清潔。
 _Avoid_: 弱化, 輕描淡寫, sanitization
+
+**Political fact**:
+標記為 `political` 的 Must-retain fact：屬於對中國政府不利的新聞（貪腐、審查、維權、軍事威脅等）。用來比較同一模型在這類文章與性罪行／暴力文章上的淡化率，以分辨 Softening 是題材一般性的，還是針對政治題材。
+_Avoid_: 敏感事實（太泛）
 
 **Amplification**:
 譯文的力度高於原文，比原文更聳動。與 Softening 同屬 Fidelity-of-force 的錯誤。
