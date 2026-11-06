@@ -6,6 +6,11 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
+# 檢查一律離線：即使呼叫者的 shell 載入了 .env，也先清掉所有 API key，並設離線旗標。
+# 評核框架的真 transport 見到 AI_TRANSLATION_OFFLINE 就拒絕送出。真跑評測由 Pan 在自己的終端機執行。
+unset GEMINI_API_KEY OPENROUTER_API_KEY DASHSCOPE_API_KEY ANTHROPIC_API_KEY
+export AI_TRANSLATION_OFFLINE=1
+
 logdir=$(mktemp -d)
 trap 'rm -rf "$logdir"' EXIT
 n_ok=0
