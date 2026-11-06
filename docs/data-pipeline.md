@@ -1,0 +1,87 @@
+# data/ 的產生與重做
+
+`data/` 與根目錄的 `data-prohibited.csv` 都被 git 排除，只存在 Pan 的本機。本文記錄每份資料怎樣產生、怎樣重做；決定與理由見 [consensus-summary.md](consensus-summary.md)。指令都在 repo 根目錄執行。
+
+## 目錄
+
+| 路徑 | 內容 |
+|---|---|
+| `data-prohibited.csv` | CMS 匯出，15 篇曾被 Gemini block 的文章（無標題列；session id、history JSON） |
+| `data/ground-truth-draft.{json,md}` | 上述 15 篇的 Must-retain fact，Pan 已同意 |
+| `data/sitemap-urls.tsv`、`search-urls.tsv`、`search-urls-china.tsv` | 候選網址 |
+| `data/web-articles/`、`web-articles-china/` | 轉換後的文章（與 CMS 匯出同一結構，另有 `meta`） |
+| `data/web-articles*-raw/` | 頁面 `__NEXT_DATA__` 裡的原始 article 物件，用來離線重轉與驗證 |
+| `data/web-articles*-global/` | `global.hk01.com` 的簡體版文字，只用來驗證 baseline 重現 |
+| `data/candidates*.tsv`、`candidates-screened.tsv`、`china-screened.tsv` | 篩選結果 |
+| `data/baseline-service/`、`baseline-service-china/` | 主簡體 baseline（服務 HEAD 290bf22 + opencc 1.4.2） |
+| `data/baseline-service-prod-v1.12.0/` | prod 現行版本的輸出，對照用 |
+| `data/baseline-env/` | 重現服務用的固定環境（見下文） |
+| `data/gt-slices/`、`data/gt-drafts/` | 60 篇 Must-retain fact 的分片、草稿與審閱樣本 |
+| `refs/`（git 排除） | `media-cms`、`media-cms-api`、`opencc-service` 的淺層 clone；opencc-service 已補全歷史；副本中非 `.example` 的 `.env*` 已刪除 |
+| `.venv/`（git 排除） | Python 的 OpenCC，用於重現服務 |
+
+## 抓取與轉換
+
+```bash
+# 抓文章（循序、間隔 2 秒、遇到 403/429/503 即停；已抓的會略過，所以中斷後重跑即可續跑）
+python3 -I tools/hk01_collect.py fetch data/sitemap-urls.tsv data/search-urls.tsv --out data/web-articles --delay 2 --with-global
+python3 -I tools/hk01_collect.py fetch data/search-urls-china.tsv --out data/web-articles-china --delay 2 --with-global
+
+# 改了 tools/hk01_web.py 之後，用保存的原始物件離線重轉，再驗證（tools/check.sh 每次都會跑 verify）
+python3 -I tools/hk01_collect.py reconvert --raw data/web-articles-raw --out data/web-articles
+python3 -I tools/hk01_collect.py verify --raw data/web-articles-raw --out data/web-articles
+
+# 彙總（題材、字數、長度分組）
+python3 -I tools/hk01_collect.py report --dir data/web-articles --out data/candidates.tsv
+```
+
+轉換器的已知限制：table 與 faq 以結構化 component 保存，v1 不翻譯、不計入 Main component 字數；table 的合併儲存格不保留。
+
+## 篩選
+
+```bash
+python3 -I tools/screen_candidates.py --web data/web-articles --glob data/web-articles-global \
+  --cms-csv data-prohibited.csv --controls 5 --batch1 25 --review-min-chars 1000 --out data/candidates-screened.tsv
+python3 -I tools/screen_china.py --web data/web-articles-china --glob data/web-articles-china-global --out data/china-screened.tsv
+```
+
+`--cms-csv` 只用來取出案件編號以計算每案名額。同案判斷只靠案件編號、系列名、標題相似度與相關文章連結；標題寫法差很多的同一事件抓不到，所以另有 `maybeSame` 欄提示，不自動剔除。
+
+## 簡體 baseline
+
+服務的做法（`refs/opencc-service` 的 `ConversionService`、`ConversionManager`）：整份 context 先 `JSON.stringify`，香港繁體→簡體分兩步，`hk2t.json` 再 `t2s.json`，最後 parse 回物件。`tools/service_baseline.py` 照做，並把設定檔裡 npm opencc 的標準詞典路徑換成固定版本的詞典。
+
+固定環境 `data/baseline-env/`：
+
+- `svc-v1.12.0/`：服務在 tag v1.12.0 的 `src/config`（`git -C refs/opencc-service archive v1.12.0 src/config`）。
+- `opencc-{1.3.1,1.4.1,1.4.2}-assets/`：`npm pack opencc@<版本>` 後只解出 `package/prebuilds/assets/*`，不執行套件內任何程式。壓縮檔的 sha512 已核對：1.3.1 對 v1.12.0 的 yarn.lock，1.4.1 對 HEAD 的 yarn.lock，1.4.2 對 npm registry。1.4.1 與 1.4.2 在 248 篇上的輸出完全相同。
+
+```bash
+# 主 baseline（一定要傳 --label，它會寫進每篇的 meta.baseline）
+.venv/bin/python -I tools/service_baseline.py --service refs/opencc-service --stock-dir data/baseline-env/opencc-1.4.2-assets \
+  convert --trad data/web-articles --out data/baseline-service --label "service-HEAD-290bf22+opencc-1.4.2"
+.venv/bin/python -I tools/service_baseline.py --service refs/opencc-service --stock-dir data/baseline-env/opencc-1.4.2-assets \
+  convert --trad data/web-articles-china --out data/baseline-service-china --label "service-HEAD-290bf22+opencc-1.4.2"
+
+# 驗證重現：prod 現行版本對 global 簡體版
+.venv/bin/python -I tools/service_baseline.py --service data/baseline-env/svc-v1.12.0 --stock-dir data/baseline-env/opencc-1.3.1-assets \
+  validate --trad data/web-articles --glob data/web-articles-global
+```
+
+驗證結果（2026-10-28）：global 簡體版對應服務 v1.12.0 + opencc 1.3.1，161 篇吻合 1893/1943 段；唯一殘留的字元差異是 1 篇的 `雪糕`（疑似人工校正）。其餘不吻合的段落來自 quote 與部分 highlight 沒有被簡體頁解析到，不是轉換差異。服務 HEAD 與 v1.12.0 的差異集中在 `舖`、`擡` 與 `雪櫃` → `冰箱`。更早的 v1.7.0–v1.10.1 用 `hk01-digital/media-opencc` 的 fork（1.1.9），沒有重現。
+
+現有 15 篇 CMS 文章還沒有 baseline：CMS 匯出是 CSV，需要先寫載入。
+
+## Ground truth
+
+```bash
+# 驗證並渲染（任何 id 或 anchor 對不上就失敗；另寫一份「數字或引語不在原句」的警告 .warnings.tsv）
+python3 -I tools/render_ground_truth.py data/gt-drafts/draft-{a,b,c,d}.json --web data/web-articles --web data/web-articles-china --out data/gt-drafts/all.md
+python3 -I tools/render_ground_truth.py data/ground-truth-draft.json --csv data-prohibited.csv --out /tmp/gt.md
+
+# 審閱樣本（固定種子，可重現；包含全部 NOT-NEGATIVE? 的文章與有 item 的對照文章）
+python3 -I tools/sample_ground_truth.py data/gt-drafts/draft-{a,b,c,d}.json --general 5 --political 5 --seed 1 --out data/gt-drafts/review-sample.json
+
+# 精簡列印一篇文章（id｜type｜文字）
+python3 -I tools/dump_article.py data/web-articles/<id>.json
+```
