@@ -16,6 +16,7 @@
 | `data/baseline-service/`、`baseline-service-china/` | 主簡體 baseline（服務 HEAD 290bf22 + opencc 1.4.2） |
 | `data/baseline-service-prod-v1.12.0/` | prod 現行版本的輸出，對照用 |
 | `data/baseline-env/` | 重現服務用的固定環境（見下文） |
+| `data/experiments/<實驗 id>/` | 評核框架的輸出：`runs.jsonl`（每行一個 Run）、`translations/`、`raw/`（原始回應）、`components.jsonl`（check 結果）、`report.md` |
 | `data/gt-slices/`、`data/gt-drafts/` | 60 篇 Must-retain fact 的分片、草稿與審閱樣本 |
 | `refs/`（git 排除） | `media-cms`、`media-cms-api`、`opencc-service` 的淺層 clone；opencc-service 已補全歷史；副本中非 `.example` 的 `.env*` 已刪除 |
 | `.venv/`（git 排除） | Python 的 OpenCC，用於重現服務 |
@@ -71,6 +72,30 @@ python3 -I tools/screen_china.py --web data/web-articles-china --glob data/web-a
 驗證結果（2026-10-28）：global 簡體版對應服務 v1.12.0 + opencc 1.3.1，161 篇吻合 1893/1943 段；唯一殘留的字元差異是 1 篇的 `雪糕`（疑似人工校正）。其餘不吻合的段落來自 quote 與部分 highlight 沒有被簡體頁解析到，不是轉換差異。服務 HEAD 與 v1.12.0 的差異集中在 `舖`、`擡` 與 `雪櫃` → `冰箱`。更早的 v1.7.0–v1.10.1 用 `hk01-digital/media-opencc` 的 fork（1.1.9），沒有重現。
 
 現有 15 篇 CMS 文章還沒有 baseline：CMS 匯出是 CSV，需要先寫載入。
+
+## 翻譯評測（評核框架）
+
+評核框架是 uv 管理的 Python package（`src/translation_eval/`），指令一律在 repo 根目錄、以 `uv run --locked python -I -m translation_eval <子命令>` 執行。設定在 `configs/`（實驗設定與 Approach 設定，路徑都相對於 repo 根目錄），輸出預設寫在 `data/experiments/<實驗 id>/`。設計見 [spec](../.scratch/evaluation-framework/spec.md)。
+
+```bash
+# 預覽：不送出任何請求，也不需要 key；印出請求數、估計輸入字數和 endpoint
+uv run --locked python -I -m translation_eval translate --config configs/experiments/tracer-bullet.json --dry-run
+
+# 真跑（會呼叫 API）：只由 Pan 在自己的終端機執行，不經過 agent。
+# uv 的 --env-file 把 .env 載入這個行程的環境變數；程式只讀 GEMINI_API_KEY，不讀 .env 檔。
+# agent 的 permission 設定已禁止 --env-file 這個參數。
+uv run --locked --env-file .env python -I -m translation_eval translate --config configs/experiments/tracer-bullet.json --article 60403903 --limit 1
+
+# 以下兩步不用 key，也不連網
+uv run --locked python -I -m translation_eval check --config configs/experiments/tracer-bullet.json
+uv run --locked python -I -m translation_eval report --config configs/experiments/tracer-bullet.json
+```
+
+- `translate` 可以中斷後重跑同一條指令：已有紀錄的 Run 會略過；`--redo-errors` 重做結果為 `error` 的 Run（`block`、`refusal`、`malformed`、`truncated` 是結果，不會重做）。`--article <id>`（可重覆）只跑指定文章，`--limit <N>` 最多執行 N 個 Run。
+- `check` 與 `report` 每次都從 `runs.jsonl` 整份重算。`report` 發現有 `ok` 的 Run 還沒有 `check` 結果時會停止，不產生報告。
+- 終端只印 id、結果類別和數量；原始回應只存 response body，不存 request headers，也不含 key。
+- 測試與離線：`tools/check.sh` 設了 `AI_TRANSLATION_OFFLINE` 並清掉所有 key，真 transport 見到這個變數就拒絕送出任何請求；測試一律注入假 transport。
+- 煙霧測試（Pan）：對 1 篇文章跑一次後，回報結果類別和數量，不貼內容。若每個 Run 都是 `error` 且原因是 `HTTP 400 INVALID_ARGUMENT`，先看 `raw/` 裡的回應：最可能是 safety settings 的 category 或 key 的 header 名稱與 Google 現行的不符（見 `src/translation_eval/providers/gemini.py`）。
 
 ## Ground truth
 

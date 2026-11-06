@@ -1,0 +1,6 @@
+{
+  "id": "tracer-bullet",
+  "articles": {"dir": "data/web-articles", "ids": ["60403903"]},
+  "directions": ["trad-to-en"],
+  "approaches": [{"config": "configs/approaches/a-gemini-flash-lite.json", "runs": 1}]
+}

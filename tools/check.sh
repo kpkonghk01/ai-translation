@@ -49,6 +49,17 @@ else
   echo "  FAIL  test_preview：找不到 node"
 fi
 
+echo "評核框架："
+# package 內只有 transport 模組可以 import 網絡相關的庫；package 不可提及 .env 或 dotenv
+run package-rules python3 -I tools/check_package_rules.py
+if command -v uv >/dev/null 2>&1; then
+  run test_translation_eval uv run --locked python -I -m unittest discover -s tests
+else
+  n_fail=$((n_fail + 1))
+  failed="$failed test_translation_eval"
+  echo "  FAIL  test_translation_eval：找不到 uv"
+fi
+
 echo "本機資料檢查："
 if [ -f data-prohibited.csv ] && [ -f data/ground-truth-draft.json ] && [ -f data/ground-truth-draft.md ]; then
   run cms-ground-truth-unchanged cms_ground_truth_unchanged

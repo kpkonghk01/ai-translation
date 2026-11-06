@@ -1,0 +1,16 @@
+[project]
+name = "translation-eval"
+version = "0.1.0"
+description = "AI 翻譯（繁→英、繁→簡）的評核框架"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.9,<3",
+    "opencc==1.4.2",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.5,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "translation_eval"
