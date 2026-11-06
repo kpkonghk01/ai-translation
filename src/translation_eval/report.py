@@ -8,7 +8,6 @@
 """
 from collections import Counter
 
-from .check import OMISSION
 from .config import Experiment, PlannedApproach, load_experiment
 from .errors import InputError
 from .schemas import ComponentResult, Outcome, RunKey, RunRecord
@@ -17,7 +16,7 @@ from .store import OutputDir
 MAX_LISTED = 20
 
 
-def ratio(numerator: int, denominator: int) -> str:
+def format_ratio(numerator: int, denominator: int) -> str:
     if denominator == 0:
         return f"{numerator}/{denominator}（—）"
     return f"{numerator}/{denominator}（{100 * numerator / denominator:.1f}%）"
@@ -35,7 +34,7 @@ def render(experiment: Experiment, records: list[RunRecord], rows: list[Componen
         f"- 實驗 id：{cfg.id}",
         f"- 文章：{len(cfg.articles.ids)} 篇（{'、'.join(cfg.articles.ids)}）",
         f"- Direction：{'、'.join(cfg.directions)}",
-        f"- 輸入版本：{'、'.join(sorted({r.input_version for r in records}))}",
+        f"- 輸入版本：{'、'.join(sorted({r.input_variant for r in records}))}",
         "", "## Approach 設定", "",
     ]
     for planned in experiment.approaches:
@@ -55,18 +54,18 @@ def render(experiment: Experiment, records: list[RunRecord], rows: list[Componen
 
 
 def approach_lines(planned: PlannedApproach, records: list[RunRecord]) -> list[str]:
-    a = planned.config
+    approach = planned.config
     hashes = Counter(r.config_hash for r in records)
     hash_text = "、".join(
         f"{h}（{n} 個 Run{'' if h == planned.config_hash else '，與目前設定不同'}）" for h, n in sorted(hashes.items())
     ) or f"{planned.config_hash}（目前設定，還沒有 Run）"
-    temperature = "API 預設" if a.temperature is None else a.temperature
-    max_tokens = "API 預設" if a.max_output_tokens is None else a.max_output_tokens
+    temperature = "API 預設" if approach.temperature is None else approach.temperature
+    max_tokens = "API 預設" if approach.max_output_tokens is None else approach.max_output_tokens
     return [
-        f"### {a.id}", "",
-        f"- 模型家族：{a.family}；provider：{a.provider}；模型：{a.model}",
-        f"- 請求模式：{a.request_mode}；temperature：{temperature}；max_output_tokens：{max_tokens}；timeout：{a.timeout_seconds} 秒；併發：{a.concurrency}",
-        f"- 重試：最多 {a.retry.max_attempts} 次嘗試，退避起點 {a.retry.base_delay_seconds} 秒",
+        f"### {approach.id}", "",
+        f"- 模型家族：{approach.family}；provider：{approach.provider}；模型：{approach.model}",
+        f"- 請求模式：{approach.request_mode}；temperature：{temperature}；max_output_tokens：{max_tokens}；timeout：{approach.timeout_seconds} 秒；併發：{approach.concurrency}",
+        f"- 重試：最多 {approach.retry.max_attempts} 次嘗試，退避起點 {approach.retry.base_delay_seconds} 秒",
         f"- 每篇每個 Direction 的 Run 次數：{planned.runs}",
         f"- 設定 hash：{hash_text}",
         f"- 實際回應的模型版本：{_counts(r.model_version for r in records) or '無'}",
@@ -84,32 +83,30 @@ def section_lines(approach_id: str, direction: str, planned: int | None, records
         recorded = f"不在目前的實驗設定內，已有紀錄 {n}"
     else:
         recorded = f"計畫 {planned}，已有紀錄 {n}" + ("（未完成）" if n < planned else "")
-    omissions = sum(1 for r in rows for f in r.findings if f.subtype == OMISSION)
+    omissions = sum(r.n_omissions for r in rows)
     checked_runs = len({RunKey.of(r) for r in rows})
     n_components = sum(1 for r in rows if r.source_type is not None)
-    others = "、".join(f"{o} {ratio(by_outcome[Outcome(o)], n)}" for o in ("malformed", "truncated", "error"))
+    others = "、".join(f"{o.value} {format_ratio(by_outcome[o], n)}" for o in (Outcome.MALFORMED, Outcome.TRUNCATED, Outcome.ERROR))
     return [
         f"## {approach_id} × {direction}", "",
         f"- Run：{recorded}",
-        f"- Block 率：{ratio(by_outcome[Outcome.BLOCK], n)}；原因分佈：{reason_text}",
-        f"- Refusal 率：{ratio(by_outcome[Outcome.REFUSAL], n)}",
+        f"- Block 率：{format_ratio(by_outcome[Outcome.BLOCK], n)}；原因分佈：{reason_text}",
+        f"- Refusal 率：{format_ratio(by_outcome[Outcome.REFUSAL], n)}",
         f"- 其他失敗：{others}",
         f"- 漏段數：{omissions}（已檢查 {checked_runs} 個 ok 的 Run、共 {n_components} 個 Component）",
         "",
     ]
 
 
-def run(args) -> int:
+def handle(args) -> int:
     experiment = load_experiment(args.config)
     out = OutputDir(args.data_dir, experiment.config.id)
-    records = out.read_runs()
-    if not records:
-        raise InputError(f"{out.runs_path}：沒有 Run 紀錄，先執行 translate")
+    records = out.require_runs()
     rows = out.read_components()
     checked = {RunKey.of(r) for r in rows}
     unchecked = [r for r in records if r.outcome is Outcome.OK and RunKey.of(r) not in checked]
     if unchecked:
-        problems = [f"ok 的 Run 還沒有 check 結果，先執行 check：{r.article_id} {r.approach} {r.direction} r{r.run_index}"
+        problems = [f"ok 的 Run 還沒有 check 結果，先執行 check：{r.label}"
                     for r in unchecked[:MAX_LISTED]]
         if len(unchecked) > MAX_LISTED:
             problems.append(f"…另有 {len(unchecked) - MAX_LISTED} 個")

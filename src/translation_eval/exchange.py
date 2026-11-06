@@ -4,14 +4,12 @@
 否則 Block 率就不是單次嘗試的結果。
 """
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from .outcome import Interpretation
 from .providers import Adapter
 from .schemas import Attempt, Outcome, RetryConfig
 from .transport import Request, Transport, TransportFailure
-
-REDACTED = "[REDACTED]"
 
 
 @dataclass
@@ -21,28 +19,16 @@ class Exchange:
     attempts: list[Attempt]
 
 
-def _redact(text: str, secrets: tuple[str, ...]) -> str:
-    for secret in secrets:
-        text = text.replace(secret, REDACTED)
-    return text
-
-
-def execute(transport: Transport, adapter: Adapter, request: Request, retry: RetryConfig, secrets: tuple[str, ...] = ()) -> Exchange:
-    """secrets 是這個請求用到的 key。即使 transport 的錯誤訊息或伺服器的回應把 key 帶了回來，
-    記下來的說明和原始回應也不會含有它。"""
+def send_with_retries(transport: Transport, adapter: Adapter, request: Request, retry: RetryConfig) -> Exchange:
     attempts: list[Attempt] = []
     for n in range(1, retry.max_attempts + 1):
         started = time.monotonic()
         try:
             response = transport.send(request)
         except TransportFailure as e:
-            result, raw, status = Interpretation(Outcome.ERROR, _redact(str(e), secrets), retryable=True), None, None
+            result, raw, status = Interpretation(Outcome.ERROR, str(e), retryable=True), None, None
         else:
-            result = adapter.interpret(response)
-            if result.reason:
-                result = replace(result, reason=_redact(result.reason, secrets))
-            raw = _redact(response.body.decode("utf-8", errors="surrogateescape"), secrets).encode("utf-8", errors="surrogateescape")
-            status = response.status
+            result, raw, status = adapter.interpret(response), response.body, response.status
         attempts.append(Attempt(http_status=status, outcome=result.outcome, reason=result.reason,
                                 latency_seconds=time.monotonic() - started))
         if not result.retryable or n == retry.max_attempts:

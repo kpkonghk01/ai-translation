@@ -29,7 +29,7 @@ class Response:
     body: bytes
 
 
-class TransportRefused(Exception):
+class TransportForbidden(Exception):
     """transport 拒絕送出：這是設定或環境的問題，不是某個 Run 的結果，所以不重試、不記成 error。"""
 
 
@@ -56,9 +56,9 @@ _OPENER = urllib.request.build_opener(_NoRedirect)
 class UrllibTransport:
     def send(self, request: Request) -> Response:
         if OFFLINE_ENV in os.environ:
-            raise TransportRefused(f"已設定 {OFFLINE_ENV}：離線模式不送出任何請求。測試要注入假的 transport")
+            raise TransportForbidden(f"已設定 {OFFLINE_ENV}：離線模式不送出任何請求。測試要注入假的 transport")
         if not request.url.startswith("https://"):
-            raise TransportRefused("只允許 https 的網址")
+            raise TransportForbidden("只允許 https 的網址")
         req = urllib.request.Request(request.url, data=request.body, headers=request.headers, method=request.method)
         try:
             with _OPENER.open(req, timeout=request.timeout_seconds) as resp:

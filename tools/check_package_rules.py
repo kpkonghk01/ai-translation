@@ -16,6 +16,7 @@ TRANSPORT_MODULE = "transport.py"
 NETWORK_MODULES = (
     "socket", "socketserver", "ssl", "http.client", "http.server", "urllib.request", "urllib.error", "urllib3",
     "requests", "httpx", "aiohttp", "websocket", "websockets", "ftplib", "smtplib", "poplib", "imaplib", "telnetlib", "xmlrpc",
+    "subprocess",   # 不是網絡庫，但可以叫 curl 之類的程式，繞過 transport
 )
 _DOTENV = re.compile(r"dotenv|(?<![\w])\.env(?![A-Za-z0-9_])", re.IGNORECASE)
 

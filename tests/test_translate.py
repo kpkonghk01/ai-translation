@@ -8,12 +8,8 @@ import unittest
 
 import gemini_samples
 from fake_transport import FakeTransport
-from fixtures import APPROACH, FAKE_KEY, KEY_ENV, Workspace, good_translation, source_article
-from translation_eval.transport import TransportTimeout
-
-
-def ok_response(article_id: str = "9000001"):
-    return gemini_samples.ok(json.dumps(good_translation(source_article(article_id)), ensure_ascii=False))
+from fixtures import APPROACH, FAKE_KEY, KEY_ENV, Workspace, good_translation, ok_response, source_article
+from translation_eval.transport import TransportForbidden, TransportTimeout
 
 
 class TranslateTracerTest(Workspace):
@@ -27,8 +23,8 @@ class TranslateTracerTest(Workspace):
         self.assertEqual(len(transport.requests), 1)
         [record] = self.read_runs()
         self.assertEqual(
-            {k: record[k] for k in ("article_id", "approach", "direction", "input_version", "run_index", "outcome")},
-            {"article_id": "9000001", "approach": "a", "direction": "trad-to-en", "input_version": "full", "run_index": 1, "outcome": "ok"},
+            {k: record[k] for k in ("article_id", "approach", "direction", "input_variant", "run_index", "outcome")},
+            {"article_id": "9000001", "approach": "a", "direction": "trad-to-en", "input_variant": "full", "run_index": 1, "outcome": "ok"},
         )
         self.assertEqual((record["input_tokens"], record["output_tokens"], record["thought_tokens"]), (120, 80, 30))
         self.assertEqual(record["model_version"], gemini_samples.MODEL_VERSION)
@@ -93,6 +89,19 @@ class ResultClassTest(Workspace):
             "json that is not an article": (gemini_samples.ok('{"answer": 42}'), "malformed", None),
             "unknown response format": (gemini_samples.unknown_format(), "error", None),
             "unknown finish reason": (gemini_samples.safety_stopped(partial, "RECITATION"), "error", None),
+            "stopped by sensitive-information filter": (gemini_samples.safety_stopped(partial, "SPII"), "block", "output:SPII"),
+            "unspecified block reason and no candidates": (gemini_samples.prompt_blocked("BLOCK_REASON_UNSPECIFIED"), "error", None),
+            "refusal returned as a json string": (gemini_samples.ok(json.dumps("I'm sorry, but I can't help with translating this article.")), "refusal", None),
+            "refusal inside a json object": (gemini_samples.ok(json.dumps({"error": "I cannot translate this article."})), "refusal", None),
+            "json array": (gemini_samples.ok('["a", "b"]'), "malformed", None),
+            "stop with an empty output": (gemini_samples.candidate_with({"role": "model"}), "malformed", None),
+            "stop without content": (gemini_samples.candidate_with(None), "error", None),
+            "parts is null": (gemini_samples.candidate_with({"role": "model", "parts": None}), "error", None),
+            "part text is not a string": (gemini_samples.candidate_with({"parts": [{"text": 5}]}), "error", None),
+            "part is not an object": (gemini_samples.candidate_with({"parts": ["x"]}), "error", None),
+            "http 200 with a body that is not json": (gemini_samples.not_json(), "error", None),
+            "token count is not a number": (gemini_samples.with_fields(ok_response(), usageMetadata={"promptTokenCount": "many"}), "error", None),
+            "model version is not a string": (gemini_samples.with_fields(ok_response(), modelVersion=["x"]), "error", None),
         }
         for name, (sample, outcome, reason) in cases.items():
             with self.subTest(name):
@@ -223,6 +232,24 @@ class RunPlanTest(Workspace):
         self.assertEqual(transport.requests, [])
         self.assertEqual([r["outcome"] for r in self.read_runs()], ["block", "refusal"])
 
+    def test_redo_errors_keeps_each_old_record_until_its_replacement_exists(self):
+        self.rewrite_experiment(lambda e: e["articles"].update(ids=["9000001"]))
+        self.run_cli("translate", transport=FakeTransport(gemini_samples.unknown_format(), gemini_samples.unknown_format()))
+
+        # 第一個重做成功，第二個被 transport 拒絕：已成功的換掉舊紀錄，還沒重做的舊紀錄不能不見
+        refusing = FakeTransport(ok_response(), TransportForbidden("test"))
+        code, _, _ = self.run_cli("translate", "--redo-errors", transport=refusing)
+
+        self.assertNotEqual(code, 0)
+        self.assertEqual(sorted(r["outcome"] for r in self.read_runs()), ["error", "ok"])
+
+    def test_redo_errors_with_a_transport_that_refuses_loses_nothing(self):
+        self.rewrite_experiment(lambda e: e["articles"].update(ids=["9000001"]))
+        self.run_cli("translate", transport=FakeTransport(gemini_samples.unknown_format(), gemini_samples.unknown_format()))
+        code, _, _ = self.run_cli("translate", "--redo-errors")   # 沒有注入 transport，離線旗標開著
+        self.assertNotEqual(code, 0)
+        self.assertEqual([r["outcome"] for r in self.read_runs()], ["error", "error"])
+
     def test_article_option_limits_the_run_to_the_given_articles(self):
         _, _, _, transport = self.translate(2, "--article", "9000002")
         self.assertEqual(len(transport.requests), 2)
@@ -256,6 +283,7 @@ class DryRunTest(Workspace):
         self.assertFalse(os.path.exists(self.data_dir))
         self.assertIn("請求數：4", out)
         self.assertIn("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent", out)
+        self.assertIn("併發：1", out)
         self.assertNotIn(FAKE_KEY, out)
 
     def test_estimated_input_chars_match_the_requests_a_real_run_sends(self):

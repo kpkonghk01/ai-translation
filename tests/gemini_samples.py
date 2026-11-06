@@ -63,6 +63,23 @@ def server_error(status: int = 503) -> Response:
     return _response(status, {"error": {"code": status, "message": "The service is unavailable.", "status": "UNAVAILABLE"}})
 
 
+def candidate_with(content, finish_reason: str = "STOP") -> Response:
+    """candidates[0].content 由呼叫者指定：用來造出結構怪異的回應。"""
+    return _response(200, {"candidates": [{"content": content, "finishReason": finish_reason}], "modelVersion": MODEL_VERSION})
+
+
+def with_fields(response: Response, **fields) -> Response:
+    """在既有回應的 JSON 頂層加欄位或覆蓋欄位。"""
+    body = json.loads(response.body)
+    body.update(fields)
+    return _response(response.status, body)
+
+
+def not_json(status: int = 200) -> Response:
+    """例如中途的代理伺服器回了一頁 HTML。"""
+    return Response(status=status, headers={"content-type": "text/html"}, body=b"<html>proxy page</html>")
+
+
 def client_error(status: int = 400) -> Response:
     """不會因重試而好轉的 4xx（例如請求本身不合法）。"""
     return _response(status, {"error": {"code": status, "message": "Invalid value.", "status": "INVALID_ARGUMENT"}})

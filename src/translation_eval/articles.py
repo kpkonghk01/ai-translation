@@ -2,17 +2,16 @@
 
 title 與 tags 沒有 id：評核時用保留的 Component id（TITLE_ID、TAGS_ID）與其他 Component 一樣對齊。
 """
-import json
 import os
 from dataclasses import dataclass
 
-from pydantic import ValidationError
-
 from .errors import InputError
+from .loading import read_model
 from .schemas import Article
 
 TITLE_ID = "title"
 TAGS_ID = "tags"
+MAX_LISTED_UNKNOWN = 5
 
 
 @dataclass(frozen=True)
@@ -22,22 +21,17 @@ class ExpectedComponent:
 
 
 def load_article(directory: str, article_id: str) -> Article:
-    path = os.path.join(directory, f"{article_id}.json")
-    try:
-        with open(path, encoding="utf-8") as f:
-            raw = json.load(f)
-    except OSError as e:
-        raise InputError(f"文章 {article_id}：讀不到 {path}（{type(e).__name__}）") from e
-    except json.JSONDecodeError as e:
-        raise InputError(f"文章 {article_id}：不是合法的 JSON（第 {e.lineno} 行）") from e
-    try:
-        article = Article.model_validate(raw)
-    except ValidationError as e:
-        raise InputError(f"文章 {article_id}：{'.'.join(str(p) for p in err['loc'])}：{err['msg']}" for err in e.errors()) from e
+    article = read_model(os.path.join(directory, f"{article_id}.json"), Article)
     ids = [c.id for c in article.components]
     duplicated = sorted({i for i in ids if ids.count(i) > 1} | ({TITLE_ID, TAGS_ID} & set(ids)))
     if duplicated:
         raise InputError(f"文章 {article_id}：Component id 重覆或與保留的 id 衝突：{', '.join(duplicated)}")
+    # 轉換器遇到不認識的東西會記在 meta.unknown：這樣的文章可能不完整，要先檢視，不當作完整的原文去翻譯
+    meta = (article.model_extra or {}).get("meta")
+    unknown = meta.get("unknown") if isinstance(meta, dict) else None
+    if unknown:
+        listed = ", ".join(str(u)[:40] for u in unknown[:MAX_LISTED_UNKNOWN])
+        raise InputError(f"文章 {article_id}：轉換器在 meta.unknown 記了 {len(unknown)} 項（{listed}），先檢視再翻譯")
     return article
 
 

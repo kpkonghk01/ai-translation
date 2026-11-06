@@ -16,7 +16,7 @@ class Direction(StrEnum):
     TRAD_TO_EN = "trad-to-en"   # 繁→簡隨 ticket 05 加入
 
 
-class InputVersion(StrEnum):
+class InputVariant(StrEnum):
     FULL = "full"   # main-only 隨 ticket 02 加入
 
 
@@ -43,7 +43,7 @@ class Severity(StrEnum):
     CRITICAL = "critical"
 
 
-class Strict(BaseModel):
+class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
@@ -52,12 +52,12 @@ class Strict(BaseModel):
 PROVIDER_KEY_ENV = {"gemini": "GEMINI_API_KEY"}
 
 
-class RetryConfig(Strict):
+class RetryConfig(StrictModel):
     max_attempts: int = Field(default=4, ge=1)
     base_delay_seconds: float = Field(default=2.0, ge=0)
 
 
-class ApproachConfig(Strict):
+class ApproachConfig(StrictModel):
     id: Slug
     family: str = Field(min_length=1)
     provider: Literal["gemini"]
@@ -71,7 +71,7 @@ class ApproachConfig(Strict):
     concurrency: int = 1
 
     @model_validator(mode="after")
-    def _check(self):
+    def _require_own_key_env_and_serial_run(self):
         # key 只能送去它自己的 provider，不能把別家的 key 指給這個 endpoint
         if self.api_key_env != PROVIDER_KEY_ENV[self.provider]:
             raise ValueError(f"provider {self.provider} 的 api_key_env 必須是 {PROVIDER_KEY_ENV[self.provider]}")
@@ -80,7 +80,7 @@ class ApproachConfig(Strict):
         return self
 
 
-class ArticleSet(Strict):
+class ArticleSet(StrictModel):
     dir: str
     ids: list[Slug] = Field(min_length=1)
 
@@ -91,12 +91,12 @@ class ArticleSet(Strict):
         return self
 
 
-class ApproachEntry(Strict):
+class ApproachEntry(StrictModel):
     config: str
     runs: int = Field(ge=1)
 
 
-class ExperimentConfig(Strict):
+class ExperimentConfig(StrictModel):
     id: Slug
     articles: ArticleSet
     directions: list[Direction] = Field(min_length=1)
@@ -117,15 +117,19 @@ class Component(BaseModel):
     type: str
 
 
-class Article(BaseModel):
-    """文章檔（與 tools/hk01_web.py 的輸出同一結構）。其餘欄位（meta、mainChannel）保留但不送給模型。"""
+class _ArticleShape(BaseModel):
+    """原文與譯文共有的結構。兩者的 title、tags 規則不同，所以各自定義，不互相繼承。"""
     model_config = ConfigDict(extra="allow")
-    title: str
-    tags: list[str] = []
     components: list[Component]
 
 
-class Translation(Article):
+class Article(_ArticleShape):
+    """文章檔（與 tools/hk01_web.py 的輸出同一結構）。其餘欄位（meta、mainChannel）保留但不送給模型。"""
+    title: str
+    tags: list[str] = []
+
+
+class Translation(_ArticleShape):
     """譯文：title 與 tags 可以缺少，缺少就是漏段，由 check 判定，不在這裡擋。"""
     title: str | None = None
     tags: list[str] | None = None
@@ -133,7 +137,7 @@ class Translation(Article):
 
 # ───────────── Run 紀錄 ─────────────
 
-class Attempt(Strict):
+class Attempt(StrictModel):
     """一次請求嘗試。429、5xx、timeout 會重試，每次嘗試都留一筆。"""
     http_status: int | None
     outcome: Outcome
@@ -141,17 +145,22 @@ class Attempt(Strict):
     latency_seconds: float
 
 
-class RunKey(Strict):
+class RunKey(StrictModel):
     article_id: Slug
     approach: Slug
     direction: Direction
-    input_version: InputVersion
+    input_variant: InputVariant
     run_index: int = Field(ge=1)
 
     @classmethod
     def of(cls, record: "RunKey") -> "RunKey":
         """從 Run 紀錄取出 key（紀錄本身也是 RunKey 的子類，直接比較不會相等）。"""
         return cls(**{name: getattr(record, name) for name in cls.model_fields})
+
+    @property
+    def label(self) -> str:
+        """終端輸出與錯誤訊息裡指稱一個 Run 的寫法：只有 id 與類型。"""
+        return f"{self.article_id} {self.approach} {self.direction} {self.input_variant} r{self.run_index}"
 
 
 class RunRecord(RunKey):
@@ -175,7 +184,14 @@ class RunRecord(RunKey):
 
 # ───────────── Component 結果 ─────────────
 
-class Finding(Strict):
+# Deterministic check 的 Finding 子類
+OMISSION = "omission"
+EXTRA_COMPONENT = "extra-component"
+DUPLICATE_COMPONENT = "duplicate-component"
+TYPE_CHANGED = "type-changed"
+
+
+class Finding(StrictModel):
     """評核者指出的一個具體問題（計分）。Warning 不計分，不用這個 model。"""
     source: Literal["deterministic"]
     dimension: Dimension
@@ -191,3 +207,7 @@ class ComponentResult(RunKey):
     component_id: str
     source_type: str | None
     findings: list[Finding] = []
+
+    @property
+    def n_omissions(self) -> int:
+        return sum(1 for f in self.findings if f.subtype == OMISSION)

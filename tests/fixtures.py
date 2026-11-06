@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import gemini_samples
 from translation_eval import cli
 from translation_eval.transport import OFFLINE_ENV
 
@@ -48,6 +49,25 @@ def good_translation(article: dict) -> dict:
             t["caption"] = english["caption"]
         components.append(t)
     return {"title": "Fictional city hall renovation delayed", "tags": ["Fictional", "Test"], "components": components}
+
+
+ARTICLE_ID = "9000001"
+
+
+def ok_response(article_id: str = ARTICLE_ID):
+    """Gemini 的正常回應，內容是 good_translation。"""
+    return gemini_samples.ok(json.dumps(good_translation(source_article(article_id)), ensure_ascii=False))
+
+
+def translation_with(mutate):
+    """good_translation 加上一處改動，用來造出結構有問題的譯文。"""
+    translation = copy.deepcopy(good_translation(source_article(ARTICLE_ID)))
+    mutate(translation)
+    return translation
+
+
+def component(translation, suffix):
+    return next(c for c in translation["components"] if c["id"] == f"{ARTICLE_ID}-{suffix}")
 
 
 APPROACH = {

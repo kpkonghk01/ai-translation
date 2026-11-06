@@ -6,9 +6,8 @@ from unittest import mock
 
 import gemini_samples
 from fake_transport import FakeTransport
-from fixtures import APPROACH, FAKE_KEY, KEY_ENV, Workspace, good_translation, source_article
-from test_translate import ok_response
-from translation_eval.transport import OFFLINE_ENV, Request, TransportFailure, TransportRefused, UrllibTransport
+from fixtures import APPROACH, FAKE_KEY, KEY_ENV, Workspace, good_translation, ok_response, source_article
+from translation_eval.transport import OFFLINE_ENV, Request, TransportFailure, TransportForbidden, UrllibTransport
 
 
 class InvalidInputTest(Workspace):
@@ -62,6 +61,12 @@ class InvalidInputTest(Workspace):
         self.rewrite_experiment(lambda e: e["approaches"].append(dict(e["approaches"][0])))
         self.assert_fails_cleanly("Approach id 重覆")
 
+    def test_article_the_converter_flagged_as_incomplete_is_rejected(self):
+        flagged = source_article()
+        flagged["meta"]["unknown"] = ["block:poll"]
+        self.write_json(os.path.join(self.articles_dir, "9000001.json"), flagged)
+        self.assert_fails_cleanly("meta.unknown")
+
     def test_missing_or_broken_article_file(self):
         os.remove(os.path.join(self.articles_dir, "9000001.json"))
         self.assert_fails_cleanly("9000001")
@@ -100,9 +105,11 @@ class KeyTest(Workspace):
 
     def test_the_key_is_sent_but_never_appears_in_any_output_file_or_message(self):
         # 最壞的情況：transport 的錯誤訊息和伺服器的回應都把 key 帶了回來
-        echoed = json.loads(ok_response().body)
-        echoed["echo"] = f"you sent {FAKE_KEY}"
-        leaking = gemini_samples._response(200, echoed)
+        # 連譯文和模型版本欄位都帶著 key
+        translation = good_translation(source_article())
+        translation["title"] = f"Title {FAKE_KEY}"
+        leaking = gemini_samples.with_fields(gemini_samples.ok(json.dumps(translation)), echo=f"you sent {FAKE_KEY}",
+                                             modelVersion=f"model-{FAKE_KEY}")
         transport = FakeTransport(TransportFailure(f"connection failed for {FAKE_KEY}"), leaking)
 
         code, out, err = self.run_cli("translate", transport=transport)
@@ -130,14 +137,14 @@ class OfflineTest(Workspace):
         self.assertFalse(os.path.exists(os.path.join(self.out_dir, "runs.jsonl")), "被拒絕的請求不可以記成 Run 的結果")
 
     def test_the_real_transport_refuses_when_offline(self):
-        with self.assertRaises(TransportRefused):
+        with self.assertRaises(TransportForbidden):
             UrllibTransport().send(Request("GET", "https://example.invalid/", {}, b"", 1))
 
     def test_the_real_transport_only_sends_https(self):
         del os.environ[OFFLINE_ENV]
-        with self.assertRaises(TransportRefused):
+        with self.assertRaises(TransportForbidden):
             UrllibTransport().send(Request("GET", "http://example.invalid/", {}, b"", 1))
-        with self.assertRaises(TransportRefused):
+        with self.assertRaises(TransportForbidden):
             UrllibTransport().send(Request("GET", "file:///etc/hosts", {}, b"", 1))
 
 

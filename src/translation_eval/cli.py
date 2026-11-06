@@ -1,10 +1,17 @@
-"""子命令的分派。每個子命令都可以注入 transport：測試傳假的，正式執行用真的。"""
+"""子命令的分派。每個子命令都可以注入 transport：測試傳假的，正式執行用真的。
+
+用法（在 repo 根目錄）：
+  uv run --locked python -I -m translation_eval translate --config <實驗設定> [--dry-run] [--article <id>] [--limit <N>] [--redo-errors]
+  uv run --locked python -I -m translation_eval check --config <實驗設定>
+  uv run --locked python -I -m translation_eval report --config <實驗設定>
+各子命令都有 --data-dir（預設 data）。需要 key 的只有 translate，真跑的指令見 docs/data-pipeline.md。
+"""
 import argparse
 import sys
 
 from . import check, report, translate
 from .errors import InputError
-from .transport import Transport, TransportRefused, UrllibTransport
+from .transport import Transport, TransportForbidden, UrllibTransport
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,17 +41,17 @@ def main(argv=None, transport: Transport | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "translate":
-            return translate.run(args, transport or UrllibTransport())
+            return translate.handle(args, transport or UrllibTransport())
         if args.command == "check":
-            return check.run(args)
+            return check.handle(args)
         if args.command == "report":
-            return report.run(args)
+            return report.handle(args)
     except InputError as e:
         print(f"{args.command}：已停止，沒有送出請求，也沒有寫出任何檔案：", file=sys.stderr)
         for problem in e.problems:
             print(f"- {problem}", file=sys.stderr)
         return 1
-    except TransportRefused as e:
+    except TransportForbidden as e:
         print(f"{args.command}：已停止，transport 拒絕送出請求：{e}", file=sys.stderr)
         return 1
     raise AssertionError(args.command)

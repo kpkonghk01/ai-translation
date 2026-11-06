@@ -6,8 +6,7 @@ import unittest
 
 import gemini_samples
 from fake_transport import FakeTransport
-from fixtures import Workspace, good_translation, source_article
-from test_check import ARTICLE_ID, component, translation_with
+from fixtures import ARTICLE_ID, Workspace, component, good_translation, source_article, translation_with
 
 
 class ReportTest(Workspace):

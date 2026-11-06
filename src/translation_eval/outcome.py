@@ -48,9 +48,16 @@ def classify_text(text: str) -> tuple[Outcome, str | None, dict | None]:
         payload = json.loads(fenced.group(1) if fenced else stripped)
     except json.JSONDecodeError:
         attempted_json = stripped.startswith(("{", "[", "```"))   # 想輸出 JSON 但壞了，不是拒絕
-        if not attempted_json and looks_like_refusal(stripped):
-            return Outcome.REFUSAL, "輸出是拒絕語", None
-        return Outcome.MALFORMED, "輸出不是 JSON", None
-    if not isinstance(payload, dict):
-        return Outcome.MALFORMED, "輸出的 JSON 不是物件", None
+        if attempted_json:
+            return Outcome.MALFORMED, "輸出不是 JSON", None
+        return refusal_or_malformed(stripped, "輸出不是 JSON")
+    if not isinstance(payload, dict):   # 例如把拒絕語包成 JSON 字串：responseMimeType 要求 JSON，拒絕也常是 JSON
+        return refusal_or_malformed(stripped, "輸出的 JSON 不是物件")
     return Outcome.OK, None, payload
+
+
+def refusal_or_malformed(text: str, malformed_reason: str) -> tuple[Outcome, str | None, None]:
+    """不是預期的 JSON 時：符合拒絕語的樣式是 refusal，否則是 malformed。"""
+    if looks_like_refusal(text):
+        return Outcome.REFUSAL, "輸出是拒絕語", None
+    return Outcome.MALFORMED, malformed_reason, None

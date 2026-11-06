@@ -36,7 +36,7 @@ class PackageRulesTest(unittest.TestCase):
         imports = [
             "import socket", "import ssl", "import http.client", "from http import client", "import urllib.request",
             "from urllib import request", "from urllib.request import urlopen", "import urllib3", "import requests",
-            "import httpx", "import aiohttp", "from socket import create_connection", "import smtplib",
+            "import httpx", "import aiohttp", "from socket import create_connection", "import smtplib", "import subprocess",
         ]
         for statement in imports:
             with self.subTest(statement):

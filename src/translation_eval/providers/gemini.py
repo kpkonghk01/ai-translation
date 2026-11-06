@@ -1,7 +1,8 @@
 """Gemini（AI Studio，付費 key）的 generateContent。
 
 解讀規則照官方 API reference 的 GenerateContentResponse（2026-11-06 核對）。
-不認識的格式一律是 error，絕不當作 ok。
+不認識的格式一律是 error，絕不當作 ok；任何欄位的型別不符也是不認識的格式，而不是讓程式拋出例外：
+一個怪異的回應不可以令整批執行中斷。
 """
 import json
 import re
@@ -26,6 +27,32 @@ LOWEST_THRESHOLD = "OFF"
 # 安全類的 finishReason 一律是 Block。RECITATION、LANGUAGE、OTHER 等不是安全機制，不認識的值記為 error。
 BLOCK_FINISH_REASONS = {"SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"}
 
+UNRECOGNISED = Interpretation(Outcome.ERROR, "回應格式不認識")
+
+
+class _Unrecognised(Exception):
+    """回應的某個欄位型別不符。"""
+
+
+def _count(value) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise _Unrecognised
+    return value
+
+
+def _output_text(candidate: dict) -> str:
+    content = candidate.get("content")
+    if not isinstance(content, dict):
+        raise _Unrecognised
+    if "parts" not in content:   # 正常結束但沒有任何輸出
+        return ""
+    parts = content["parts"]
+    if not isinstance(parts, list) or not all(isinstance(p, dict) and isinstance(p.get("text", ""), str) for p in parts):
+        raise _Unrecognised
+    return "".join(p.get("text", "") for p in parts)
+
 
 class GeminiAdapter:
     def endpoint(self, approach: ApproachConfig) -> str:
@@ -48,7 +75,6 @@ class GeminiAdapter:
         return Request("POST", self.endpoint(approach), headers, json.dumps(body, ensure_ascii=False).encode("utf-8"), approach.timeout_seconds)
 
     def interpret(self, response: Response) -> Interpretation:
-        unrecognised = Interpretation(Outcome.ERROR, "回應格式不認識")
         try:
             body = json.loads(response.body)
         except ValueError:
@@ -56,13 +82,24 @@ class GeminiAdapter:
         if response.status != 200:
             return self._http_error(response.status, body)
         if not isinstance(body, dict):
-            return unrecognised
-        usage = body.get("usageMetadata") if isinstance(body.get("usageMetadata"), dict) else {}
+            return UNRECOGNISED
+        try:
+            return self._interpret_ok_status(body)
+        except _Unrecognised:
+            return UNRECOGNISED
+
+    def _interpret_ok_status(self, body: dict) -> Interpretation:
+        usage = body.get("usageMetadata")
+        if usage is None:
+            usage = {}
+        model_version = body.get("modelVersion")
+        if not isinstance(usage, dict) or not (model_version is None or isinstance(model_version, str)):
+            raise _Unrecognised
         meta = {
-            "input_tokens": usage.get("promptTokenCount"),
-            "output_tokens": usage.get("candidatesTokenCount"),
-            "thought_tokens": usage.get("thoughtsTokenCount"),
-            "model_version": body.get("modelVersion"),
+            "input_tokens": _count(usage.get("promptTokenCount")),
+            "output_tokens": _count(usage.get("candidatesTokenCount")),
+            "thought_tokens": _count(usage.get("thoughtsTokenCount")),
+            "model_version": model_version,
         }
         feedback = body.get("promptFeedback")
         block_reason = feedback.get("blockReason") if isinstance(feedback, dict) else None
@@ -70,7 +107,7 @@ class GeminiAdapter:
             return Interpretation(Outcome.BLOCK, f"prompt:{block_reason}", **meta)   # 輸入端被擋，沒有 candidates
         candidates = body.get("candidates")
         if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
-            return unrecognised
+            raise _Unrecognised
         candidate = candidates[0]
         finish = candidate.get("finishReason")
         if finish in BLOCK_FINISH_REASONS:   # 即使已有部分輸出也是 Block：殘缺的譯文不能拿去評分
@@ -79,8 +116,7 @@ class GeminiAdapter:
             return Interpretation(Outcome.TRUNCATED, "MAX_TOKENS", **meta)
         if finish != "STOP":
             return Interpretation(Outcome.ERROR, f"finishReason {str(finish)[:40]}", **meta)
-        text = "".join(p.get("text", "") for p in candidate.get("content", {}).get("parts", []) if isinstance(p, dict))
-        outcome, reason, payload = classify_text(text)
+        outcome, reason, payload = classify_text(_output_text(candidate))
         return Interpretation(outcome, reason, payload, **meta)
 
     @staticmethod

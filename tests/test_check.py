@@ -6,19 +6,7 @@ import unittest
 
 import gemini_samples
 from fake_transport import FakeTransport
-from fixtures import Workspace, good_translation, source_article
-
-ARTICLE_ID = "9000001"
-
-
-def translation_with(mutate):
-    translation = copy.deepcopy(good_translation(source_article(ARTICLE_ID)))
-    mutate(translation)
-    return translation
-
-
-def component(translation, suffix):
-    return next(c for c in translation["components"] if c["id"] == f"{ARTICLE_ID}-{suffix}")
+from fixtures import ARTICLE_ID, Workspace, component, good_translation, source_article, translation_with
 
 
 class CheckTest(Workspace):

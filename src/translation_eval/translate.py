@@ -18,23 +18,23 @@ from pydantic import ValidationError
 from .articles import load_article, request_payload
 from .config import PlannedApproach, load_experiment
 from .errors import InputError
-from .exchange import execute
-from .outcome import Interpretation
+from .exchange import send_with_retries
+from .outcome import Interpretation, refusal_or_malformed
 from .prompts import translation_template
 from .providers import adapter_for
-from .schemas import Article, InputVersion, Outcome, RunKey, RunRecord, Translation
+from .schemas import Article, InputVariant, Outcome, RunKey, RunRecord, Translation
 from .store import OutputDir
 from .transport import Transport
 
 
 def plan(experiment, article_ids):
-    """要執行的 Run：依文章、Approach、Direction、Run 序號的順序。"""
+    """要執行的 Run。文章放在最外層：用 --limit 試跑時，會先把第一篇的所有 Run 跑完，而不是每篇各跑一個。"""
     for article_id in article_ids:
         for planned in experiment.approaches:
             for direction in experiment.config.directions:
                 for run_index in range(1, planned.runs + 1):
-                    key = RunKey(article_id=article_id, approach=planned.config.id, direction=direction,
-                                 input_version=InputVersion.FULL, run_index=run_index)
+                    key = RunKey(article_id=article_id, approach=planned.id, direction=direction,
+                                 input_variant=InputVariant.FULL, run_index=run_index)
                     yield key, planned
 
 
@@ -49,7 +49,7 @@ def user_text(article: Article) -> str:
     return json.dumps(request_payload(article), ensure_ascii=False)
 
 
-def run(args, transport: Transport) -> int:
+def handle(args, transport: Transport) -> int:
     experiment = load_experiment(args.config)
     cfg = experiment.config
     article_ids = select_articles(cfg.articles.ids, args.article)
@@ -75,14 +75,11 @@ def run(args, transport: Transport) -> int:
     if missing:
         raise InputError([f"缺少環境變數 {name}" for name in missing])
 
-    redo = {key for key, _ in pending if key in done}
-    if redo:
-        out.drop_runs(redo)
     outcomes = Counter()
     for key, planned in pending:
-        record = translate_one(transport, key, planned, articles[key.article_id], out)
+        record = translate_one(transport, key, planned, articles[key.article_id], out, replaces_existing=key in done)
         outcomes[record.outcome] += 1
-        print(f"{key.article_id} {key.approach} {key.direction} {key.input_version} r{key.run_index}: {record.outcome}")
+        print(f"{key.label}: {record.outcome}")
     summary = "、".join(f"{o} {n}" for o, n in sorted(outcomes.items())) or "沒有要執行的 Run"
     print(f"完成 {len(pending)} 個 Run（已有紀錄而略過：{skipped}）：{summary}")
     return 0
@@ -90,39 +87,42 @@ def run(args, transport: Transport) -> int:
 
 def dry_run(pending, skipped: int, articles) -> int:
     chars = 0
-    endpoints = {}
+    destinations = {}
     for key, planned in pending:
         chars += len(translation_template(key.direction).text) + len(user_text(articles[key.article_id]))
-        endpoints[planned.config.id] = adapter_for(planned.config).endpoint(planned.config)
+        destinations[planned.id] = (adapter_for(planned.config).endpoint(planned.config), planned.config.concurrency)
     print("dry-run：不送出任何請求，也不寫出任何檔案")
     print(f"Run：{len(pending)}（已有紀錄而略過：{skipped}）")
     print(f"請求數：{len(pending)}")
     print(f"估計輸入字數：{chars}")
-    for approach_id, endpoint in endpoints.items():
-        print(f"endpoint：{approach_id} {endpoint}")
+    for approach_id, (endpoint, concurrency) in destinations.items():
+        print(f"endpoint：{approach_id} {endpoint}（併發：{concurrency}）")
     return 0
 
 
 def require_translation_shape(result: Interpretation) -> Interpretation:
-    """ok 的 JSON 還要有譯文的結構（components 是物件清單、每個有 id 與 type），否則是 malformed。
+    """ok 的 JSON 還要有譯文的結構（components 是物件清單、每個有 id 與 type），否則不是預期的 JSON：
+    符合拒絕語的樣式是 refusal，否則是 malformed。
     Component 缺少、多出或 type 被改不在這裡判：那是 check 的工作，Run 本身仍是 ok。"""
     if result.outcome is not Outcome.OK:
         return result
     try:
         Translation.model_validate(result.payload)
     except ValidationError:
-        return replace(result, outcome=Outcome.MALFORMED, reason="JSON 不是譯文的結構", payload=None)
+        outcome, reason, _ = refusal_or_malformed(json.dumps(result.payload, ensure_ascii=False), "JSON 不是譯文的結構")
+        return replace(result, outcome=outcome, reason=reason, payload=None)
     return result
 
 
-def translate_one(transport: Transport, key: RunKey, planned: PlannedApproach, article: Article, out: OutputDir) -> RunRecord:
+def translate_one(transport: Transport, key: RunKey, planned: PlannedApproach, article: Article, out: OutputDir, *,
+                  replaces_existing: bool) -> RunRecord:
     approach = planned.config
     adapter = adapter_for(approach)
     template = translation_template(key.direction)
     api_key = os.environ[approach.api_key_env]
     request = adapter.build_request(approach, template.text, user_text(article), api_key)
 
-    exchange = execute(transport, adapter, request, approach.retry, secrets=(api_key,))
+    exchange = send_with_retries(transport, adapter, request, approach.retry)
     result = require_translation_shape(exchange.interpretation)
     record = RunRecord(
         **key.model_dump(),
@@ -142,4 +142,4 @@ def translate_one(transport: Transport, key: RunKey, planned: PlannedApproach, a
         created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
     )
     translation = result.payload if result.outcome is Outcome.OK else None
-    return out.write_run(record, exchange.raw_body, translation)
+    return out.write_run(record, exchange.raw_body, translation, secrets=(api_key,), replaces_existing=replaces_existing)

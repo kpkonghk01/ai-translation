@@ -6,9 +6,8 @@ import hashlib
 import json
 from dataclasses import dataclass
 
-from pydantic import BaseModel, ValidationError
-
 from .errors import InputError
+from .loading import read_model
 from .schemas import ApproachConfig, ExperimentConfig
 
 
@@ -19,26 +18,15 @@ class PlannedApproach:
     runs: int
     config_hash: str
 
+    @property
+    def id(self) -> str:
+        return self.config.id
+
 
 @dataclass(frozen=True)
 class Experiment:
     config: ExperimentConfig
     approaches: list[PlannedApproach]
-
-
-def read_model(path: str, model: type[BaseModel]):
-    """讀 JSON 檔並以 model 驗證。錯誤訊息只列欄位位置和原因，不回顯輸入值。"""
-    try:
-        with open(path, encoding="utf-8") as f:
-            raw = json.load(f)
-    except OSError as e:
-        raise InputError(f"{path}：讀不到檔案（{type(e).__name__}）") from e
-    except json.JSONDecodeError as e:
-        raise InputError(f"{path}：不是合法的 JSON（第 {e.lineno} 行）") from e
-    try:
-        return model.model_validate(raw)
-    except ValidationError as e:
-        raise InputError([f"{path}：{'.'.join(str(p) for p in err['loc']) or '(根)'}：{err['msg']}" for err in e.errors()]) from e
 
 
 def config_hash(approach: ApproachConfig) -> str:
