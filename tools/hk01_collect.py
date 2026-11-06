@@ -233,6 +233,37 @@ def cmd_reconvert(a):
     print(f"重轉 {n} 篇 → {a.out}")
 
 
+def cmd_verify(a):
+    """原始物件對轉換結果：缺少轉換檔、不認得的型別、原始文字沒有出現在結果，任何一項就以非 0 結束。
+    訊息只列文章 id、區塊型別與字數，不印文字內容。"""
+    problems, n = [], 0
+    for name in sorted(os.listdir(a.raw)):
+        if not (name.endswith(".json") and name[:-5].isdigit()):
+            continue
+        n += 1
+        aid = name[:-5]
+        with open(os.path.join(a.raw, name), encoding="utf-8") as f:
+            raw = json.load(f)
+        path = os.path.join(a.out, name)
+        if not os.path.exists(path):
+            problems.append(f"{aid}：沒有轉換結果")
+            continue
+        with open(path, encoding="utf-8") as f:
+            art = json.load(f)
+        problems += [f"{aid}：不認得的型別 {u}" for u in art["meta"].get("unknown", [])]
+        problems += [f"{aid}：{u['block']} 區塊有 {len(u['text'])} 字沒有出現在轉換結果" for u in W.uncovered_texts(raw, art)]
+    if problems:
+        print(f"verify：{n} 篇中發現 {len(problems)} 個問題（{a.out}）", file=sys.stderr)
+        for p in problems[:40]:
+            print("  " + p, file=sys.stderr)
+        if len(problems) > 40:
+            print(f"  ……另有 {len(problems) - 40} 個", file=sys.stderr)
+        print("先修 tools/hk01_web.py，再用 reconvert 重轉。", file=sys.stderr)
+        return 1
+    print(f"verify：OK（{n} 篇；沒有不認得的型別，原始文字全部出現在轉換結果）")
+    return 0
+
+
 # ───────────── report ─────────────
 def cmd_report(a):
     rows, unknown_kinds, by_topic = [], {}, {}
@@ -258,6 +289,7 @@ def cmd_report(a):
     for t, b in sorted(by_topic.items()):
         print(f"  {t or '(無)'}: {b}")
     print("不認得的型別（需要檢視）：", unknown_kinds or "無")
+    return 1 if unknown_kinds else 0
 
 
 def main(argv=None):
@@ -280,13 +312,17 @@ def main(argv=None):
     rc.add_argument("--raw", required=True, help="fetch 保存的 -raw 目錄")
     rc.add_argument("--out", required=True)
     rc.set_defaults(fn=cmd_reconvert)
+    v = sub.add_parser("verify", help="檢查轉換有沒有漏掉原文（不認得的型別也算失敗）")
+    v.add_argument("--raw", required=True, help="fetch 保存的 -raw 目錄")
+    v.add_argument("--out", required=True, help="對應的轉換結果目錄")
+    v.set_defaults(fn=cmd_verify)
     r = sub.add_parser("report")
     r.add_argument("--dir", required=True)
     r.add_argument("--out", required=True)
     r.set_defaults(fn=cmd_report)
     a = p.parse_args(argv)
-    a.fn(a)
+    return a.fn(a) or 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

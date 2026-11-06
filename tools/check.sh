@@ -48,7 +48,17 @@ echo "本機資料檢查："
 if [ -f data-prohibited.csv ] && [ -f data/ground-truth-draft.json ] && [ -f data/ground-truth-draft.md ]; then
   run cms-ground-truth-unchanged cms_ground_truth_unchanged
 else
-  echo "  略過：本機沒有 data/ 或 data-prohibited.csv（這些檢查只在有資料的機器上跑）"
+  echo "  略過 cms-ground-truth-unchanged：本機沒有 data/ground-truth-draft.* 或 data-prohibited.csv"
+fi
+# 每個抓取保存的原始物件目錄（data/web-articles*-raw），轉換結果都不可以漏掉原文
+n_raw=0
+for raw in data/web-articles*-raw; do
+  [ -d "$raw" ] || continue
+  n_raw=$((n_raw + 1))
+  run "verify-$(basename "${raw%-raw}")" python3 -I tools/hk01_collect.py verify --raw "$raw" --out "${raw%-raw}"
+done
+if [ "$n_raw" -eq 0 ]; then
+  echo "  略過 verify：本機沒有 data/web-articles*-raw"
 fi
 
 echo

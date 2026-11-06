@@ -233,6 +233,57 @@ class ConvertTests(unittest.TestCase):
             W.parse_page('<script id="__NEXT_DATA__">not json</script>', "u", "t")
 
 
+class CoverageTests(unittest.TestCase):
+    """原始物件裡每一段看得見的文字，都必須出現在轉換結果中。"""
+
+    def convert(self, art):
+        return W.convert_article(art, "https://www.hk01.com/x/111/y", "t")
+
+    def test_every_known_block_type_is_fully_covered(self):
+        blocks = fake_article()["blocks"] + [
+            {"blockType": "quote", "message": "引言內容", "author": "某人"},
+            {"blockType": "gallery", "images": [{"caption": "圖一"}, {"caption": ""}]},
+            {"blockType": "code", "htmlString": "<div>&amp;</div>", "image": None},
+            {"blockType": "video", "caption": "影片說明", "videoId": "abc", "type": "youtube"},
+            {"blockType": "motiongraphic", "htmlTokens": [], "image": {"caption": "動態圖", "cdnUrl": "https://cdn/x"}},
+            {"blockType": "faq", "questionsAndAnswers": [{"question": {"htmlTokens": [[{"type": "text", "content": "問"}]]},
+                                                         "answer": {"htmlTokens": [[{"type": "boldText", "content": "答"}]]}}]},
+            {"blockType": "table", "htmlString": "<table>不是正文</table>", "table": {"type": "table", "name": "表名", "description": "表說明", "children": [
+                {"type": "caption", "htmlTokens": [[{"type": "text", "content": "表題"}]]},
+                {"type": "row", "children": [{"type": "td", "htmlTokens": [[{"type": "text", "content": "格"}]]}]}]}},
+        ]
+        art = fake_article(blocks=blocks)
+        self.assertEqual(W.uncovered_texts(art, self.convert(art)), [])
+
+    def test_related_article_metadata_is_not_required(self):
+        block = {"blockType": "related", "articles": [{"data": {"title": "相關一", "description": "相關文章的摘要",
+                                                                 "zone": {"name": "社會", "publishName": "社會"}, "authors": [{"publishName": "記者"}]}}]}
+        art = fake_article(blocks=[block])
+        self.assertEqual(W.uncovered_texts(art, self.convert(art)), [])
+
+    def test_text_dropped_by_the_converter_is_reported(self):
+        art = fake_article()
+        out = self.convert(art)
+        out["components"] = [c for c in out["components"] if c.get("text") != "第一段"]
+        self.assertEqual([u["text"] for u in W.uncovered_texts(art, out)], ["第一段"])
+
+    def test_text_inside_an_unknown_block_type_is_reported(self):
+        art = fake_article(blocks=[{"blockType": "poll", "question": {"content": "投票問題"}, "options": [{"title": "選項甲"}]}])
+        got = W.uncovered_texts(art, self.convert(art))
+        self.assertEqual(sorted(u["text"] for u in got), ["投票問題", "選項甲"])
+        self.assertTrue(all(u["block"] == "poll" for u in got))
+
+    def test_title_and_tags_are_checked(self):
+        art = fake_article()
+        out = self.convert(art)
+        out["tags"] = ["標籤一"]
+        self.assertEqual([u["text"] for u in W.uncovered_texts(art, out)], ["標籤二"])
+
+    def test_html_entities_are_compared_after_unescaping(self):
+        art = fake_article(blocks=[{"blockType": "text", "htmlTokens": [[{"type": "text", "content": "甲 &amp; 乙"}]]}])
+        self.assertEqual(W.uncovered_texts(art, self.convert(art)), [])
+
+
 class StatsTests(unittest.TestCase):
     def test_main_chars_excludes_peripheral(self):
         a = W.parse_page(page(fake_article()), "https://www.hk01.com/x/111/y", "t")

@@ -85,6 +85,52 @@ class ReconvertTests(unittest.TestCase):
         self.assertEqual((m["url"], m["fetchedAt"], m["topic"]), ("https://www.hk01.com/a/7/old", "2026-01-01T00:00:00+00:00", "sexual"))
 
 
+class VerifyTests(unittest.TestCase):
+    RAW = ReconvertTests.RAW
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.raw, self.out = os.path.join(self.tmp, "raw"), os.path.join(self.tmp, "out")
+        os.makedirs(self.raw)
+        C.save_json(os.path.join(self.raw, "7.json"), self.RAW)
+        C.cmd_reconvert(argparse.Namespace(raw=self.raw, out=self.out))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def verify(self):
+        return C.cmd_verify(argparse.Namespace(raw=self.raw, out=self.out))
+
+    def test_clean_conversion_passes(self):
+        self.assertEqual(self.verify(), 0)
+
+    def test_dropped_text_fails(self):
+        path = os.path.join(self.out, "7.json")
+        with open(path, encoding="utf-8") as f:
+            art = json.load(f)
+        art["components"] = [c for c in art["components"] if c["type"] != "paragraph"]
+        C.save_json(path, art)
+        self.assertEqual(self.verify(), 1)
+
+    def test_unknown_type_fails(self):
+        raw = dict(self.RAW, blocks=self.RAW["blocks"] + [{"blockType": "poll"}])
+        C.save_json(os.path.join(self.raw, "7.json"), raw)
+        C.cmd_reconvert(argparse.Namespace(raw=self.raw, out=self.out))
+        self.assertEqual(self.verify(), 1)
+
+    def test_missing_converted_article_fails(self):
+        os.remove(os.path.join(self.out, "7.json"))
+        self.assertEqual(self.verify(), 1)
+
+    def test_report_exits_nonzero_when_unknown_types_exist(self):
+        report = os.path.join(self.tmp, "report.tsv")
+        self.assertEqual(C.cmd_report(argparse.Namespace(dir=self.out, out=report)), 0)
+        raw = dict(self.RAW, blocks=self.RAW["blocks"] + [{"blockType": "poll"}])
+        C.save_json(os.path.join(self.raw, "7.json"), raw)
+        C.cmd_reconvert(argparse.Namespace(raw=self.raw, out=self.out))
+        self.assertEqual(C.cmd_report(argparse.Namespace(dir=self.out, out=report)), 1)
+
+
 class RedirectTests(unittest.TestCase):
     def test_redirect_to_other_host_is_refused(self):
         h = C._SafeRedirect()

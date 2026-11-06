@@ -177,6 +177,63 @@ def convert_article(art, url, fetched_at):
     }
 
 
+# ───────────── 覆蓋檢查：原始物件裡看得見的文字，必須都出現在轉換結果 ─────────────
+# 存放看得見文字的 key；其他 key（type、link、cdnUrl、id 等）不是正文
+TEXT_KEYS = {"content", "caption", "message", "author", "title", "name", "description", "htmlString", "summary"}
+
+
+def _visible_strings(node, skip=()):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k in skip:
+                continue
+            if k in TEXT_KEYS and isinstance(v, str):
+                yield v
+            elif k in TEXT_KEYS and isinstance(v, list) and all(isinstance(x, str) for x in v):
+                yield from v
+            else:
+                yield from _visible_strings(v, skip)
+    elif isinstance(node, list):
+        for x in node:
+            yield from _visible_strings(x, skip)
+
+
+def _block_texts(block):
+    kind = block.get("blockType")
+    if kind == "related":   # 只要求相關文章的標題；摘要、頻道名、作者等不是本文內容
+        return [a["data"].get("title", "") for a in block.get("articles", [])
+                if isinstance(a, dict) and isinstance(a.get("data"), dict)]
+    skip = ("htmlString",) if kind == "table" else ()   # table 的 htmlString 是同一份表格的 HTML 版本
+    return list(_visible_strings({k: v for k, v in block.items() if k != "blockType"}, skip))
+
+
+def _converted_strings(article):
+    out = [article.get("title", "")] + [t for t in article.get("tags", []) if isinstance(t, str)]
+    for c in article.get("components", []):
+        out += [c[k] for k in ("text", "caption", "source", "code", "name", "description") if isinstance(c.get(k), str)]
+        out += [x for k in ("captions", "titles") for x in c.get(k, []) if isinstance(x, str)]
+        out += [qa.get(k, "") for qa in c.get("items", []) for k in ("question", "answer")]
+        out += [cell for row in c.get("rows", []) for cell in row]
+    return out
+
+
+def uncovered_texts(raw, converted):
+    """原始 article 物件中看得見、卻沒有出現在轉換結果的文字 → [{"block": 型別, "text": 文字}]。"""
+    blob = "\n".join(_converted_strings(converted))
+    found = [("title", raw.get("title", ""))]
+    found += [("tags", t.get("tagName", "")) for t in raw.get("tags", []) if isinstance(t, dict)]
+    for b in raw.get("blocks", []):
+        found += [(b.get("blockType"), s) for s in _block_texts(b)]
+    out, seen = [], set()
+    for block, s in found:
+        s = s.strip()
+        if not s or s in seen or s in blob or html.unescape(s) in blob:
+            continue
+        seen.add(s)
+        out.append({"block": block, "text": s})
+    return out
+
+
 def parse_page(page_html, url, fetched_at):
     return convert_article(extract_article(page_html), url, fetched_at)
 
