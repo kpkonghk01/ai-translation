@@ -33,7 +33,7 @@
 
 除最後一項外都已完成，commit 見 git log。Pan 的真跑指令見 `docs/data-pipeline.md` 的「翻譯評測」。
 
-規格沒寫、實作時做了選擇的地方，請 Pan 確認（都容易改）：
+規格沒寫、實作時做了選擇的地方（Pan 已於 2026-11-06 確認，沒有異議）：
 
 - `check` 對規格沒寫的情況：多出的 Component 與重覆的 id 記為 Locale & Format／major，type 被改記為 Locale & Format／minor。缺少的 Component 照規格記為 Accuracy／omission／major。
 - Gemini：`SPII` 與 `SAFETY`、`BLOCKLIST`、`PROHIBITED_CONTENT` 一樣記為 Block；`RECITATION`、`LANGUAGE`、`OTHER` 等其他 finishReason 記為 error。
@@ -41,6 +41,6 @@
 - 實驗設定的 `runs` 必須明確寫，沒有預設值，免得忘了寫就跑出多倍費用。
 - prompt 範本由 Direction 決定，不放在 Approach 設定裡，確保同一 Direction 的所有 Approach 用同一份。
 - 文章檔的 `meta.unknown` 不是空的就拒絕翻譯，要先檢視（現有的本機文章都是空的）。
-- GLOSSARY 沒有「Attempt」：程式與報告用「嘗試」指一個請求的重試（spec 也這樣用），但 Run 的 _Avoid_ 列了 attempt。建議在 GLOSSARY 加一條，或告訴我改名。
+- GLOSSARY 原本沒有「Attempt」：程式與報告用「嘗試」指一個請求的重試（spec 也這樣用），但 Run 的 _Avoid_ 列了 attempt。Pan 決定加一條，已加入 GLOSSARY。
 
 煙霧測試若每個 Run 都是 `HTTP 400 INVALID_ARGUMENT`：先看 `raw/` 裡的回應。官方 API reference 沒有寫 key 的 header 名稱，程式用 `x-goog-api-key`（來自 Google 的快速入門，這次沒有核對到）；safety category 含 `HARM_CATEGORY_JAILBREAK`，threshold 用 `OFF`，兩者都在 `providers/gemini.py` 一處可改。

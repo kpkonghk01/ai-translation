@@ -50,7 +50,11 @@ _Avoid_: OpenCC baseline（容易被誤解為標準設定）
 
 **Run**:
 一個 Approach 對一篇 Article 在一個 Direction 上的一次執行。
-_Avoid_: trial, attempt
+_Avoid_: trial；attempt（見 Attempt，那是 Run 之內的一次送出）
+
+**Attempt**:
+一個 Run 內同一個請求的一次送出；請求遇到暫時性失敗時會再送，所以一個 Run 可以有多個 Attempt。Block 和 Refusal 是 Run 的結果，不會再送；要重複量度，就增加 Run 次數。
+_Avoid_: 用來指整個 Run
 
 **Input variant**:
 送給 Approach 的輸入版本：`full`（整篇）或 `main-only`（只有 Main component，用於 Block 誘因實驗）。中文寫作「輸入版本」。
