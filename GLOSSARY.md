@@ -52,6 +52,9 @@ _Avoid_: OpenCC baseline（容易被誤解為標準設定）
 一個 Approach 對一篇 Article 在一個 Direction 上的一次執行。
 _Avoid_: trial, attempt
 
+**Input variant**:
+送給 Approach 的輸入版本：`full`（整篇）或 `main-only`（只有 Main component，用於 Block 誘因實驗）。中文寫作「輸入版本」。
+
 ### Failure outcomes
 
 **Block**:
@@ -74,6 +77,19 @@ _Avoid_: issue, comment, error（泛指時可用，但記錄單位叫 Finding）
 **Judge**:
 負責產生 Finding 的 LLM，相對於人手 reviewer。
 _Avoid_: grader, scorer
+
+**Primary Judge**:
+在一個題材分組中決定 Gate 的 Judge。其他 Judge 只作實驗，結果單獨報告，不決定 Gate。中文寫作「主 Judge」。
+
+**Verdict**:
+Judge 或人手對一條 Must-retain fact 的判定：Present（保留）、Weakened（被削弱）或 Absent（缺失）。
+
+**Warning**:
+Deterministic check 標出、交人手看但不計分的提示，例如長度比例異常、數字或引語疑似遺失、疑似 Refusal。Finding 計分，Warning 不計分。中文寫作「警示」。
+_Avoid_: flag；把 Warning 叫作 Finding
+
+**Review decision**:
+人手對一個審閱項目的決定：接受、駁回、改判 Verdict 或改判 Severity。報告重算時套用，不改動 Judge 的原始輸出。中文寫作「審閱決定」。
 
 **Dimension**:
 評核的面向，共五個：Accuracy、Terminology、Fluency、Fidelity-of-force、Locale & Format。

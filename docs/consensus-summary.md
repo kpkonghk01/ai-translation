@@ -4,7 +4,7 @@ Status: 待確認
 Owner: Pan
 Last updated: 2026-11-06
 
-只記決定與理由。用詞見 [GLOSSARY.md](../GLOSSARY.md)；背景與方案見 [plan.md](../plan.md)；`data/` 的內容怎樣產生、怎樣重做見 [data-pipeline.md](data-pipeline.md)；目前進度見 [status.md](status.md)。本文不含任何文章內容。
+只記決定與理由。用詞見 [GLOSSARY.md](../GLOSSARY.md)；背景與方案見 [plan.md](../plan.md)；`data/` 的內容怎樣產生、怎樣重做見 [data-pipeline.md](data-pipeline.md)；目前進度見 [status.md](status.md)；評核框架實作層面的決定見 [spec](../.scratch/evaluation-framework/spec.md)。本文不含任何文章內容。
 
 ## 1. 目標
 
@@ -42,7 +42,10 @@ Last updated: 2026-11-06
 | 中國負面新聞組選文 | 收約 30 篇，10 個子類各 3 篇；近 365 天發佈者優先 → 即時新聞頻道優先於分析頻道 → 字數多者優先；同案最多 2 篇；不足 300 字不收。「對中國政府不利」由人判斷，腳本不做；5 篇標題看來不一定負面的（兩會、四中全會公報、礦產出口管制、日本首相涉台言論、廣電總局整改）保留 | Q32, Q33 |
 | dealigned 模型 | **暫不測**（方案 C、D 的 dealigned 版本）：Pan 本機跑不動；等有 GPU 環境（plan 的 Phase 3 EC2）再說。目前只測 API 方案 A、B、F 與方案 E | Pan，2026-10-28 |
 | 簡體 baseline | `global.hk01.com` 的簡體版由現行服務產生，但編輯可在 CMS 手動校正，所以不等於純服務輸出。**baseline 以重現的純服務輸出為準**（依服務做法整份 JSON 轉換、先 hk2t 再 t2s），global 簡體版只用來驗證重現是否準確。**主 baseline = 服務 HEAD（290bf22）+ opencc 1.4.2（npm 最新）**：LLM 翻譯不會殘留 `舖`、`擡` 這類繁體字，Pan 不想舊版詞典的缺漏影響翻譯品質的比較。prod 現行（v1.12.0 + opencc 1.3.1）只作對照。每份 baseline 在 meta 註明版本。重現方法與驗證結果見 data-pipeline.md | Q23, Q24, Q27 |
-| 技術 | Python 3.12 + uv，pydantic 定 schema；輸出 JSONL，每行一個「Component × Approach × Direction × Run」；資料放 repo 外或被 `.gitignore` 排除 | Q7 |
+| 技術 | Python ≥ 3.12（現有 `.venv` 為 3.13）+ uv（專案設定與 lockfile），pydantic 定 schema；輸出 JSONL，每行一個「Component × Approach × Direction × Run」；資料放 repo 外或被 `.gitignore` 排除。現有的標準庫工具維持原狀 | Q7, Q39 |
+| 測試 seam | 所有對外呼叫（被測 Approach、Judge、交叉檢驗）經同一個可替換的 HTTP transport；測試注入假 transport，不連網就能跑完整條流程。檢查時一律清掉 key 並設離線旗標，真跑由 Pan 執行 | Q38 |
+| 複合事實 | 事實裡任一要點被淡化，即判 Weakened | spec 第 6 節 |
+| 分數正規化 | 預設以每千字原文的罰分正規化，同時列出總罰分；權重 1 / 5 / 25 可調 | spec 第 7 節 |
 | Preview | 單一 `preview.html`，純前端、無外連、不內嵌資料；CSV 解析獨立成 adapter，日後可載入翻譯結果。只做 viewer，只做桌面版 | Q8, Q9 |
 
 ## 3. 評核流程
@@ -103,12 +106,10 @@ Article JSON
 |---|---|---|
 | 繁→簡目標（Q5）、繁→英 style guide（Q6）、成功準則（第 5 節） | Ivan / Stephen | 產品決定 |
 | NOT-NEGATIVE? 的 2 篇（60287780、60307158）是否另列為「中性政治」，不計入政治題材的淡化率比較 | Pan（Q34） | 建議另列 |
-| 複合事實的判定規則 | 寫 Judge 規格時定 | 建議：事實裡任一要點被淡化即算 Weakened（草稿中有 25 條事實含 3 個以上子句） |
 | 政治題材是否足夠 | Pan | 現有中國負面新聞組 30 篇（含香港政治 3 篇）；如需其他政治題材由 Pan 提供 |
 | OpenRouter 自身是否記錄 prompt；阿里雲新加坡的保留日數；Google 是否記錄被 block 的 prompt | Pan 向供應商查 | 公開文件查不到 |
 | 繁→英 Gold set 的抽查 | Pan | 如果沒有人能核對英文標註，這一半的校準只靠 AI，需要有人看 |
 | Judge 合格線（recall、驗證後 precision） | 看到第一批 Gold set 數字後再定 | |
-| 分數正規化方式（例如每千字罰分） | 實作時定 | 權重 1 / 5 / 25 可調 |
 | 阿里雲 whitelist 批出時間，以及它關到哪一層 | Pan | plan 已有 |
 
 ## 8. plan.md 需要同步修改
