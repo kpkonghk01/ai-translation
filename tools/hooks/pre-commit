@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# git pre-commit hook。啟用：git config core.hooksPath tools/hooks
+# 先掃描 staged 的變更（真實案件編號、key、真實文章標題、不該進 repo 的路徑），再跑全部檢查。
+# 任何一步失敗都會停止 commit。
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+python3 -I tools/precommit_scan.py
+tools/check.sh
