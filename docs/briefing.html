@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AI 翻譯評核框架</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@600;700&display=swap">
+<style>
+/* 版面：單欄工作匯報，先結論後細節；校對用的「不顯影藍」作唯一強調色，狀態色只用於進度標記 */
+:root {
+  --paper: #f5f7f9;
+  --panel: #ffffff;
+  --ink: #1b2430;
+  --muted: #5a6672;
+  --rule: #d5dce3;
+  --accent: #2b6cb0;
+  --accent-soft: #e2edf8;
+  --ok: #2c7a4b;
+  --ok-soft: #e1f1e7;
+  --wait: #9a6200;
+  --wait-soft: #f8edd8;
+  --bad: #b3261e;
+  --bad-soft: #f9e3e1;
+  --serif: "Noto Serif TC", "Songti TC", "PMingLiU", serif;
+  --sans: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #12161b; --panel: #1a2027; --ink: #e2e7ec; --muted: #9ba7b3; --rule: #2c353f;
+    --accent: #80b3e8; --accent-soft: #1d2d3f;
+    --ok: #74c393; --ok-soft: #1a2e22; --wait: #e2ad55; --wait-soft: #33281a; --bad: #f0928a; --bad-soft: #3a1f1d;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #12161b; --panel: #1a2027; --ink: #e2e7ec; --muted: #9ba7b3; --rule: #2c353f;
+  --accent: #80b3e8; --accent-soft: #1d2d3f;
+  --ok: #74c393; --ok-soft: #1a2e22; --wait: #e2ad55; --wait-soft: #33281a; --bad: #f0928a; --bad-soft: #3a1f1d;
+  color-scheme: dark;
+}
+
+:root { color-scheme: light; }
+body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--sans); font-size: 15px; line-height: 1.75; }
+.wrap {
+  max-width: 880px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 48px 72px;
+  display: grid; gap: 56px;
+}
+h1, h2, h3 { margin: 0; text-wrap: balance; }
+h1 { font-family: var(--serif); font-size: 2.4rem; line-height: 1.25; font-weight: 700; }
+h2 { font-family: var(--serif); font-size: 1.45rem; line-height: 1.35; font-weight: 700; }
+h3 { font-size: 1rem; font-weight: 700; line-height: 1.5; }
+p { margin: 0; }
+ul, ol { margin: 0; padding: 0; list-style: none; }
+.eyebrow { font-family: var(--mono); font-size: 0.75rem; letter-spacing: 0.08em; color: var(--muted); text-transform: uppercase; }
+.muted { color: var(--muted); }
+.small { font-size: 0.875rem; }
+section { display: grid; gap: 20px; min-width: 0; }
+.section-head { display: grid; gap: 6px; }
+.section-head p { max-width: 62ch; color: var(--muted); }
+
+/* 開頭 */
+header { display: grid; gap: 14px; }
+.lede { font-size: 1.1rem; max-width: 60ch; }
+
+.tldr { display: grid; grid-template-columns: 6.5em 1fr; gap: 12px 20px; padding: 22px 24px; background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; }
+.tldr dt { font-weight: 700; color: var(--accent); }
+.tldr dd { margin: 0; min-width: 0; }
+
+/* 交付物 */
+.deliver { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px 40px; }
+.deliver li { display: grid; gap: 6px; align-content: start; }
+.deliver .use { font-size: 0.9rem; color: var(--muted); }
+.deliver .use b { color: var(--ink); font-weight: 500; }
+
+/* 表格 */
+.table-scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-weight: 500; color: var(--muted); font-size: 0.8rem; letter-spacing: 0.04em; white-space: nowrap; }
+td.code { font-family: var(--mono); font-weight: 500; color: var(--accent); width: 2.5em; }
+td.nowrap { white-space: nowrap; }
+
+.chip { display: inline-block; font-size: 0.78rem; line-height: 1.6; padding: 1px 9px; border-radius: 999px; white-space: nowrap; font-weight: 500; }
+.chip.ok { color: var(--ok); background: var(--ok-soft); }
+.chip.wait { color: var(--wait); background: var(--wait-soft); }
+.chip.off { color: var(--muted); background: transparent; border: 1px solid var(--rule); }
+.chip.who { color: var(--accent); background: var(--accent-soft); }
+
+/* 流程 */
+.steps { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; counter-reset: step; }
+.steps li { display: grid; gap: 6px; align-content: start; padding-top: 12px; border-top: 2px solid var(--accent); counter-increment: step; min-width: 0; }
+.steps li::before { content: counter(step); font-family: var(--mono); font-size: 0.8rem; color: var(--accent); }
+.steps p { font-size: 0.86rem; color: var(--muted); line-height: 1.6; }
+
+.guards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 40px; }
+.guards li { display: grid; gap: 4px; align-content: start; }
+.guards p { font-size: 0.92rem; color: var(--muted); }
+
+/* 示範 Finding */
+.finding { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 22px 24px; display: grid; gap: 16px; min-width: 0; }
+.pair { display: grid; grid-template-columns: 4.5em 1fr; gap: 8px 16px; }
+.pair dt { font-size: 0.8rem; color: var(--muted); padding-top: 3px; }
+.pair dd { margin: 0; min-width: 0; }
+.src { font-family: var(--serif); font-size: 1.15rem; }
+.tgt { font-family: var(--mono); font-size: 0.92rem; line-height: 1.7; }
+mark { background: var(--accent-soft); color: inherit; padding: 1px 2px; border-radius: 2px; }
+mark.weak { background: var(--bad-soft); }
+.verdicts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.verdicts li { padding: 10px 12px; border: 1px solid var(--rule); border-radius: 6px; display: grid; gap: 2px; }
+.verdicts .k { font-size: 0.78rem; color: var(--muted); }
+.verdicts .v { font-weight: 700; }
+.verdicts .v.present { color: var(--ok); }
+.verdicts .v.weak { color: var(--bad); }
+.finding .why { font-size: 0.92rem; }
+.finding .outcome { font-size: 0.9rem; padding-top: 14px; border-top: 1px dashed var(--rule); }
+
+/* 進度數字 */
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; }
+.stats li { display: grid; gap: 2px; align-content: start; }
+.stats .n { font-family: var(--mono); font-size: 1.9rem; font-weight: 500; line-height: 1.2; font-variant-numeric: tabular-nums; color: var(--ink); }
+.stats .n small { font-size: 0.95rem; color: var(--muted); font-weight: 400; }
+.stats .l { font-size: 0.86rem; color: var(--muted); }
+
+.done { display: grid; gap: 10px; }
+.done li { display: grid; grid-template-columns: 1.4em 1fr; gap: 8px; }
+.done li::before { content: "✓"; color: var(--ok); font-weight: 700; }
+
+.milestones { display: grid; gap: 0; counter-reset: ms; }
+.milestones li { display: grid; grid-template-columns: 2.2em 1fr; gap: 4px 12px; padding-block: 14px; border-bottom: 1px solid var(--rule); counter-increment: ms; }
+.milestones li:first-child { border-top: 1px solid var(--rule); }
+.milestones li::before { content: counter(ms); font-family: var(--mono); color: var(--accent); font-weight: 500; grid-row: span 2; }
+.milestones .need { font-size: 0.86rem; color: var(--muted); }
+
+.why-time { display: grid; gap: 10px; }
+.why-time li { padding-left: 14px; border-left: 2px solid var(--rule); }
+
+.asks { display: grid; gap: 14px; }
+.asks li { display: grid; grid-template-columns: 7.5em 1fr; gap: 12px; align-items: start; }
+.asks .chip { justify-self: start; margin-top: 3px; }
+
+.howto { display: grid; gap: 8px; counter-reset: how; }
+.howto li { display: grid; grid-template-columns: 1.6em 1fr; gap: 8px; counter-increment: how; }
+.howto li::before { content: counter(how) "."; font-family: var(--mono); color: var(--muted); }
+
+.safety { padding: 18px 22px; background: var(--accent-soft); border-radius: 8px; display: grid; gap: 8px; }
+.safety ul { display: grid; gap: 4px; font-size: 0.92rem; }
+.safety li::before { content: "・"; color: var(--accent); }
+
+footer { font-size: 0.82rem; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 16px; }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+@media (max-width: 760px) {
+  .wrap { gap: 44px; padding-block: 32px 56px; }
+  h1 { font-size: 1.9rem; }
+  .deliver, .guards { grid-template-columns: 1fr; }
+  .steps { grid-template-columns: 1fr; }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .verdicts { grid-template-columns: 1fr; }
+  .tldr, .asks li { grid-template-columns: 1fr; gap: 4px; }
+  .tldr dd { margin-bottom: 8px; }
+  .pair { grid-template-columns: 1fr; gap: 2px; }
+}
+</style>
+
+<div class="wrap">
+
+<header>
+  <span class="eyebrow">工作匯報 · 2026-11-06 · Pan</span>
+  <h1>AI 翻譯評核框架</h1>
+  <p class="lede">這個專案會交出一套可以重跑的翻譯評核工具，以及一份方案比較報告，用來決定哪個 AI 方案可以穩定地翻譯敏感新聞：繁→簡用來取代現行的逐字轉換服務，繁→英用來正式啟動英文版。</p>
+</header>
+
+<dl class="tldr">
+  <dt>做甚麼</dt>
+  <dd>比較 4 個翻譯方案在繁→英、繁→簡兩個方向上，能否<b>不被平台封鎖、不拒絕翻譯、不淡化內容</b>，以及譯文質素是否不低於 baseline。</dd>
+  <dt>做到哪裏</dt>
+  <dd>準備工作已完成：75 篇測試文章、322 個敏感句與 1,178 條「必須保留的事實」、現行繁→簡服務的輸出已重現並驗證，評核工具的規格也已寫好。下一步是寫工具和試跑。</dd>
+  <dt>需要甚麼</dt>
+  <dd>確認成功準則；阿里雲的 content filter whitelist；一位懂英文的同事抽查英文的評核結果。Gemini 和 OpenRouter 的 API key 已經備妥。</dd>
+</dl>
+
+<section>
+  <div class="section-head">
+    <h2>最終交付甚麼</h2>
+  </div>
+  <ul class="deliver">
+    <li>
+      <h3>方案比較報告</h3>
+      <p>每個方案、每個方向各有一節：封鎖率、拒絕率、淡化率（附 95% 信心上限）、質素分數（正文與圖說分開計算），以及與 baseline 的比較。</p>
+      <p class="use"><b>用途：</b>決定採用哪個方案。報告分兩份：完整版只存在本機；摘要版只有數字，可以傳閱。</p>
+    </li>
+    <li>
+      <h3>評核工具（命令列）</h3>
+      <p>翻譯 → 程式檢查 → AI 評審 → 人手審閱 → 報告，整條流程用指令執行，可以中斷後續跑，送出請求前可以先估算請求數量。</p>
+      <p class="use"><b>用途：</b>有新模型或新 prompt 時，重跑同一套測試就可以直接比較。日後可以延伸做上線後的品質監察，只跑程式檢查，再加抽樣評審。</p>
+    </li>
+    <li>
+      <h3>測試集與標準答案</h3>
+      <p>75 篇文章，涵蓋性罪行、暴力、中國負面新聞，另有一般新聞作對照。每篇的敏感句都列出譯文必須保留的事實，包括行為者、行為、數字、法律狀態和直接引語。</p>
+      <p class="use"><b>用途：</b>之後任何翻譯方案都用同一把尺來量，結果可以互相比較。</p>
+    </li>
+    <li>
+      <h3>現行繁→簡服務的 baseline</h3>
+      <p>重現公司現行的轉換服務（OpenCC 加自訂字典）並產生輸出，再與 global.hk01.com 對照，1,943 段中有 1,893 段吻合，其餘差異來自頁面解析或疑似人手校正。</p>
+      <p class="use"><b>用途：</b>用公司實際的服務作比較對象，證明 AI 譯文是否真的比現行服務好。</p>
+    </li>
+  </ul>
+</section>
+
+<section>
+  <div class="section-head">
+    <h2>被測方案</h2>
+  </div>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th></th><th>方案</th><th>方向</th><th>狀態</th></tr></thead>
+      <tbody>
+        <tr><td class="code">A</td><td>Gemini 3.1 Flash-Lite（質素 baseline，portal 已接好）</td><td class="nowrap">英、簡</td><td><span class="chip ok">key 已備妥，等工具</span></td></tr>
+        <tr><td class="code">B</td><td>阿里雲 Qwen，關閉 content filter</td><td class="nowrap">英、簡</td><td><span class="chip wait">等 whitelist</span></td></tr>
+        <tr><td class="code">E</td><td>現行繁→簡服務（OpenCC 加自訂字典）</td><td class="nowrap">簡</td><td><span class="chip ok">baseline 已產生</span></td></tr>
+        <tr><td class="code">F</td><td>Hy-MT2 翻譯專用模型，經 OpenRouter</td><td class="nowrap">英、簡</td><td><span class="chip ok">key 已備妥，等工具</span></td></tr>
+        <tr><td class="code">C/D</td><td>自行部署、去除拒絕機制的開源模型</td><td class="nowrap">英、簡</td><td><span class="chip off">暫不測，要 GPU 環境</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="section-head">
+    <h2>怎樣避免 AI 評分亂打</h2>
+    <p>評審用的也是 AI，所以整套設計的重點是：AI 的每個判斷都要有證據，由程式核實，再由人手覆核。</p>
+  </div>
+
+  <ol class="steps">
+    <li><h3>翻譯</h3><p>各方案翻譯同一批文章，記錄封鎖、拒絕、用量和耗時。</p><span class="chip who">程式</span></li>
+    <li><h3>程式檢查</h3><p>檢查漏段、殘留繁體字或中文字、指定譯名和數字。</p><span class="chip who">程式</span></li>
+    <li><h3>AI 評審</h3><p>逐段標出問題，逐條核對必須保留的事實，每項評兩次。</p><span class="chip who">AI，引用經程式核實</span></li>
+    <li><h3>人手審閱</h3><p>覆核所有淡化判定、兩次結果不一致的項目，以及 AI 無法評審的項目。</p><span class="chip who">人</span></li>
+    <li><h3>報告</h3><p>分數和淡化率由程式按固定規則計算。</p><span class="chip who">程式</span></li>
+  </ol>
+
+  <ul class="guards">
+    <li><h3>只標問題，不打分</h3><p>AI 只指出具體問題，包括類型、嚴重度、原文和譯文的片段和理由；分數由程式按固定權重計算。這是翻譯業界的 MQM 做法。</p></li>
+    <li><h3>引用必須是原字</h3><p>AI 引用的片段必須逐字出現在原文或譯文中，否則程式直接丟棄，AI 無法捏造問題。</p></li>
+    <li><h3>淡化獨立把關</h3><p>淡化不會跟其他分數平均。只要一句的必須保留事實被削弱或刪走，這一句就算不合格，譯文其他部分寫得再好也不能抵銷。</p></li>
+    <li><h3>量度評審本身</h3><p>先用約 100 個已知答案的樣本，量度 AI 評審能抓到幾成問題；報告會把這個命中率放在淡化率旁邊。</p></li>
+  </ul>
+
+  <div class="finding" aria-label="示範：AI 評審如何記錄一處淡化">
+    <span class="eyebrow">示範 · 虛構例子</span>
+    <dl class="pair">
+      <dt>原文</dt>
+      <dd class="src">軍警在城戰中<mark>屠殺平民</mark></dd>
+      <dt>譯文</dt>
+      <dd class="tgt">Security forces <mark class="weak">carried out a military operation in the city, with civilian casualties</mark>.</dd>
+    </dl>
+    <ul class="verdicts">
+      <li><span class="k">行為者：軍警</span><span class="v present">保留</span></li>
+      <li><span class="k">行為：屠殺</span><span class="v weak">被削弱 · 委婉化</span></li>
+      <li><span class="k">受害人：平民</span><span class="v present">保留</span></li>
+    </ul>
+    <p class="why"><b>AI 的理由：</b>「屠殺」是蓄意殺害，譯文改寫成中性的「軍事行動」和「平民傷亡」，讀者會以為平民只是被波及。嚴重度：critical。</p>
+    <p class="outcome muted">程式核實：兩個片段都逐字出現在原文和譯文中，判定有效。這一句的淡化檢查不合格，交人手覆核。</p>
+  </div>
+</section>
+
+<section>
+  <div class="section-head">
+    <h2>進度</h2>
+  </div>
+  <ul class="stats">
+    <li><span class="n">75<small> 篇</small></span><span class="l">測試文章：性罪行、暴力 25 篇，中國負面新聞 30 篇，對照 5 篇，另有 CMS 中曾被封鎖的 15 篇</span></li>
+    <li><span class="n">322<small> 句</small></span><span class="l">敏感句；要證明淡化率不高於 2%，約需 150 句</span></li>
+    <li><span class="n">1,178<small> 條</small></span><span class="l">必須保留的事實；CMS 15 篇已確認，其餘是待抽樣審閱的草稿</span></li>
+    <li><span class="n">97.4<small>%</small></span><span class="l">重現的繁→簡服務輸出與 global.hk01.com 的吻合度</span></li>
+  </ul>
+
+  <ul class="done">
+    <li>評核框架的設計：39 項決定，每項都附理由；另有一份統一用詞的術語表。</li>
+    <li>評核工具的規格：80 條使用情境，已可拆成工作項目開始開發。</li>
+    <li>從 hk01.com 公開文章收集 379 篇，按題材篩選，同一宗案件最多收 2 篇，避免重複計算。</li>
+    <li>資料保護：每次 commit 前，自動檢查有沒有文章內容、標題或 API key 進入版本庫，共 13 項檢查。</li>
+    <li>Gemini 和 OpenRouter 的測試用 API key 已經備妥。</li>
+  </ul>
+
+  <h3>接下來</h3>
+  <ol class="milestones">
+    <li><span>拆分工作項目，開始寫評核工具。</span><span class="need">不需要外部支援</span></li>
+    <li><span>第一次端到端試跑：1 篇文章 × 方案 A × 繁→英，走完翻譯到報告。</span><span class="need">key 已備妥</span></li>
+    <li><span><b>第一份結果：封鎖率和拒絕率。</b>這一步只需要翻譯加程式檢查，不必等 AI 評審校準完成。</span><span class="need">key 已備妥；方案 B 另需 whitelist</span></li>
+    <li><span>校準 AI 評審：用已知答案的樣本量度命中率，並選定主評審模型。</span><span class="need">需要一位懂英文的同事抽查約 30 條</span></li>
+    <li><span>淡化率和質素結果，提交最終比較報告與建議。</span><span class="need">需要確認成功準則</span></li>
+  </ol>
+</section>
+
+<section>
+  <div class="section-head">
+    <h2>為甚麼先花時間做準備</h2>
+  </div>
+  <ul class="why-time">
+    <li>原有的封鎖紀錄只有 15 篇，不足以作統計，所以要另外收集和篩選文章，並排除同一宗案件的重複報道。</li>
+    <li>繁→簡的比較對象必須是公司服務的真實輸出，包括自訂字典，標準 OpenCC 不能代替。因此要重現服務，並逐段驗證。</li>
+    <li>有限的樣本證明不了「100% 不淡化」，只能證明淡化率低於某個上限。要做到「不高於 2%」，需要約 150 個敏感句，現在有 322 句。</li>
+    <li>測試內容包括性罪行和政治題材，所以先建立資料保護，確保內容不會外洩。</li>
+  </ul>
+</section>
+
+<section>
+  <div class="section-head">
+    <h2>需要的決定與支援</h2>
+  </div>
+  <ul class="asks">
+    <li><span class="chip who">Ivan / Stephen</span><span>確認以下的成功準則。</span></li>
+    <li><span class="chip who">Ivan / Stephen</span><span>繁→簡的目標：建議做成內地讀者讀來自然的普通話書面語，而不只是字形轉換。繁→英的風格：建議用國際通訊社的新聞英文。</span></li>
+    <li><span class="chip who">待指派</span><span>一位懂英文的同事，抽查英文的評審結果，約 30 條。</span></li>
+    <li><span class="chip who">Pan</span><span>跟進阿里雲 whitelist 的申請。</span></li>
+  </ul>
+
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>準則</th><th>原計劃</th><th>建議</th><th>原因</th></tr></thead>
+      <tbody>
+        <tr><td>被封鎖或拒絕</td><td>0 篇</td><td>不變</td><td></td></tr>
+        <tr><td>漏段</td><td>0 篇</td><td>不變，由程式驗證</td><td></td></tr>
+        <tr><td>敏感句忠實</td><td>100%</td><td>淡化率上限不高於 2%（95% 信心）</td><td class="muted">有限的樣本證明不了 100%</td></tr>
+        <tr><td>質素</td><td>人手平均分不低於 baseline</td><td>評核分數不低於 baseline</td><td class="muted">人手評分只用來校準 AI 評審</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="section-head">
+    <h2>工具完成後怎樣用</h2>
+  </div>
+  <ol class="howto">
+    <li>在設定檔加入要測的方案，例如新模型或新 prompt。</li>
+    <li>先試算，看會送出多少請求、送去哪裏，確認費用。</li>
+    <li>執行翻譯、程式檢查和 AI 評審；中斷了可以接着跑。</li>
+    <li>打開本機的審閱清單，覆核淡化判定和其他不確定的項目。</li>
+    <li>產生報告：完整版存在本機，另有一份只有數字的摘要版。</li>
+  </ol>
+</section>
+
+<div class="safety">
+  <h3>資料保護</h3>
+  <ul>
+    <li>測試文章、標準答案和譯文只存放在本機，不進版本庫，也不上傳到雲端服務。這一頁不含任何文章內容。</li>
+    <li>API key 只經環境變數讀取，不經 AI 助手，也不寫進任何檔案。</li>
+    <li>已查閱各供應商的資料條款。阿里雲只用新加坡國際版；經 OpenRouter 的請求一律要求不保留資料，並限定只用已確認的服務商。</li>
+  </ul>
+</div>
+
+<footer>依據：研究計劃、共識總結（39 項決定）、評核框架規格。數字截至 2026-11-06。</footer>
+
+</div>

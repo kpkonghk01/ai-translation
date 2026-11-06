@@ -15,9 +15,8 @@ Last updated: 2026-11-06。開了 ticket 之後改由 ticket 追蹤進度，本�
 
 - 審閱 `data/gt-drafts/review-sample.md`（14 篇、69 個 item、244 條事實）。
 - Q34：NOT-NEGATIVE? 的 2 篇怎樣計算（見 consensus-summary 第 7 節）。
-- 準備 Gemini 與 OpenRouter 的專用 key；申請阿里雲 whitelist。
+- 申請阿里雲 whitelist。Gemini 與 OpenRouter 的 key 已放進 `.env`（2026-11-06）。
 
 ## 下一步
 
-1. 評核框架 spec 已寫好（`.scratch/evaluation-framework/spec.md`，2026-11-06）→ `/to-tickets`。
-2. 預期的第一批 ticket：1 篇文章 × 方案 A × 繁→英的完整路徑（翻譯、Deterministic check、Judge Finding、報告）；Judge 試跑（約 10 個 component，量度逐字片段的可信度與 Unjudged 率）；Qwen 交叉檢驗（先列 OpenRouter provider 清單給 Pan 確認）；合成淡化變體與 Gold set；CMS 15 篇的載入與 baseline。
+評核框架的 spec 與 17 張 ticket 在 `.scratch/evaluation-framework/`，從 `issues/01` 開始，依每張的 `Blocked by` 進行。給上司的匯報頁 `docs/briefing.html` 是某一天的快照，數字取自本檔；改了本檔的進度，匯報頁也要一併重做。
