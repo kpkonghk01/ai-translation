@@ -3,9 +3,11 @@ import json
 import os
 import shutil
 import unittest
+from unittest import mock
 
 import gemini_samples
-from fake_transport import FakeTransport
+import openrouter_samples
+from fake_transport import FakeTransport, FunctionTransport
 from fixtures import FAKE_KEY, JUDGE, Workspace, ok_response, source_article
 from judge_helpers import NO_PROBLEMS, finding, judge_transport, system_text, user_payload
 
@@ -167,7 +169,7 @@ class VerbatimValidationTest(JudgeCase):
                 self.assertEqual((call["outcome"], call["findings"]), ("ok", []))
                 self.assertEqual(len(call["invalid"]), 1)
                 self.assertEqual(call["invalid"][0]["kind"], "finding")
-                self.assertEqual(call["invalid"][0]["raw"], item)   # 原文保留供審閱
+                self.assertEqual(json.loads(call["invalid"][0]["raw"]), item)   # 原文保留供審閱（存成 JSON 文字，不展開成巢狀結構）
 
     def test_an_empty_target_span_is_fine_when_the_source_span_is_verbatim_but_two_empty_spans_are_not(self):
         self.assertEqual(len(self.one_finding_call(finding(target_span="", subtype="omission"))["findings"]), 1)
@@ -207,6 +209,31 @@ class VerbatimValidationTest(JudgeCase):
                 call = self.calls_of("9000001-001")[0]
                 self.assertEqual(call["outcome"], "malformed")
                 self.assertEqual(call["findings"], [])
+
+    def test_a_finding_nested_hundreds_of_levels_deep_is_recorded_safely_and_does_not_break_later_runs(self):
+        deep = "[" * 400 + "]" * 400
+        raw = '{"findings": [' + deep + '], "source_defects": []}'
+        self.judge(judge_transport({("9000001-001", 1): gemini_samples.ok(raw)}))
+        call = self.calls_of("9000001-001")[0]
+        self.assertEqual((call["outcome"], call["findings"], len(call["invalid"])), ("ok", [], 1))
+        self.assertEqual(self.judge(judge_transport())[0], 0)   # 之後的 judge 讀得回紀錄
+        self.assertEqual(self.run_cli("check")[0], 0)
+        self.assertEqual(self.run_cli("report")[0], 0)
+
+    def test_a_long_invalid_item_is_kept_but_cut_to_a_bounded_size(self):
+        long_item = finding(reason="很長" * 5000, source_span="不存在")
+        self.judge(judge_transport({("9000001-001", 1): {"findings": [long_item], "source_defects": []}}))
+        raw = self.calls_of("9000001-001")[0]["invalid"][0]["raw"]
+        self.assertLessEqual(len(raw), 2100)
+        self.assertTrue(raw.endswith("（截斷）"))
+
+    def test_a_suspected_correction_of_a_source_error_must_be_an_accuracy_finding(self):
+        wrong = finding(dimension="Fidelity-of-force", subtype="suspected correction of a source error", severity="minor")
+        call = self.one_finding_call(wrong)
+        self.assertEqual((call["findings"], len(call["invalid"])), ([], 1))
+        self.forget_calls()
+        right = finding(subtype="Suspected Correction of a Source Error", severity="minor")
+        self.assertEqual(len(self.one_finding_call(right)["findings"]), 1)
 
     def test_a_missing_source_defects_list_is_fine(self):
         self.judge(judge_transport({("9000001-001", 1): {"findings": [finding()]}}))
@@ -285,6 +312,24 @@ class SameFamilyTest(JudgeCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(len(transport.requests), 10)
 
+    def test_the_family_is_compared_ignoring_case_and_surrounding_spaces(self):
+        for family in ("Gemini", "GEMINI", " gemini "):
+            with self.subTest(family):
+                self.use_judging(judges=({**JUDGE, "family": family},))
+                code, _, err = self.judge(judge_transport())
+                self.assertNotEqual(code, 0)
+                self.assertIn("同家族", err)
+
+    def test_runs_of_an_approach_that_is_no_longer_in_the_experiment_cannot_be_family_checked_and_are_refused(self):
+        with open(self.approach_path, encoding="utf-8") as f:
+            renamed = {**json.load(f), "id": "renamed"}
+        self.write_json(self.approach_path, renamed)
+        transport = judge_transport()
+        code, _, err = self.judge(transport)
+        self.assertNotEqual(code, 0)
+        self.assertIn("不在實驗設定內", err)
+        self.assertEqual(transport.requests, [])
+
     def test_an_exception_for_another_pair_does_not_help(self):
         self.use_judging(judges=({**JUDGE, "family": "gemini"}, {**JUDGE, "id": "j2", "family": "claude"}),
                          same_family_exceptions=[{"approach": "a", "judge": "j2", "reason": "不是這一對"}])
@@ -301,6 +346,33 @@ class SameFamilyTest(JudgeCase):
                 code, _, _ = self.run_cli("judge", transport=transport)
                 self.assertNotEqual(code, 0)
                 self.assertEqual(transport.requests, [])
+
+
+class ProviderViolationTest(JudgeCase):
+    """OpenRouter 的 Judge：回應來自不在允許清單內的 provider，資料已經送過去了，不可以再送下一個請求。"""
+
+    def setUp(self):
+        super().setUp()
+        env = mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": FAKE_KEY})
+        env.start()
+        self.addCleanup(env.stop)
+        self.use_judging(judges=({"id": "j1", "role": "primary", "family": "claude", "provider": "openrouter", "model": "anthropic/fake-judge",
+                                  "api_key_env": "OPENROUTER_API_KEY", "retry": {"max_attempts": 1, "base_delay_seconds": 0},
+                                  "routing": {"only": ["deepinfra"], "confirmed_on": "2026-11-09"}},))
+
+    def test_the_first_response_from_an_unlisted_provider_stops_the_command(self):
+        transport = FunctionTransport(lambda r: openrouter_samples.ok(json.dumps(NO_PROBLEMS), "SomewhereElse"))
+        code, _, err = self.judge(transport)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(len(transport.requests), 1)
+        self.assertIn("provider", err)
+        [call] = self.calls()
+        self.assertEqual((call["outcome"], call["reason"], call["served_provider"]), ("error", "provider 不在允許清單內", "SomewhereElse"))
+
+    def test_responses_from_a_listed_provider_run_normally(self):
+        transport = FunctionTransport(lambda r: openrouter_samples.ok(json.dumps(NO_PROBLEMS), "DeepInfra"))
+        code, _, err = self.judge(transport)
+        self.assertEqual((code, len(transport.requests)), (0, 10), err)
 
 
 class ConfigTest(JudgeCase):

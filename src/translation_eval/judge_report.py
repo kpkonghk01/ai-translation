@@ -2,19 +2,21 @@
 
 分數由程式按規則計算，Judge 只給 Finding（spec 第 7 節）：
   每個 Finding 的罰分 = 該 Severity 的權重；Fidelity-of-force 不計分（它由 Gate 處理，只在這裡列數量）。
-  Deterministic 的 Finding（check 產生）和 Judge 的 Finding 一起計，但只計「評完」的 Component：沒評完或 Unjudged 的
-  Component，它的罰分和原文字數都不進來，不然它們會被當成「沒有問題」。
-  Main 與 Peripheral 分開；兩個數字：只計一致的 Finding，以及連 uncertain 一起計。每千字原文的罰分的分母是這些 Component
-  的原文字數（不計空白）。
+  Deterministic 的 Finding（check 產生）一律計入，包括漏掉的 Component 的漏段 Finding 和多出的 Component：否則漏譯的譯文
+  會比完整的譯文分數更好。Judge 的 Finding 只有評完的 Component 才有；Judge 沒評完或 Unjudged 的 Component，沒有 Judge 的
+  Finding，這個缺口由「評完」和 Unjudged 率呈報。
+  Main 與 Peripheral 分開；兩個數字：只計一致的 Finding，以及連 uncertain 一起計。每千字原文的罰分的分母是這些 Run 的
+  原文總字數（不計空白），包括漏掉的 Component 的原文。
 """
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
-from .articles import apply_variant
+from .articles import apply_variant, is_main_type
 from .config import Experiment
-from .consistency import judge_component
+from .consistency import Status, judge_component
 from .pairs import ComponentPair, component_pairs
 from .schemas import ComponentResult, Dimension, InputVariant, JudgeCall, RunKey, RunRecord, Severity, Weights
+from .prompts import judge_template
 from .store import OutputDir
 from .textrules import nonspace_length, squash
 
@@ -45,6 +47,11 @@ class GroupScore:
     peripheral: RoleScore = field(default_factory=RoleScore)
 
 
+def _one_line(text: str) -> str:
+    """Judge 寫的文字放進報告前先壓成一行，才不會在報告裡開出新的行或標題。"""
+    return " ".join(text.split())
+
+
 def _number(value: float) -> str:
     return f"{value:g}"
 
@@ -62,7 +69,7 @@ def _add(role: RoleScore, dimension: Dimension, severity: Severity, weights: Wei
         role.consistent[(dimension, severity)] += 1
 
 
-def score_group(records: list[RunRecord], articles, translations, calls_by_run, rows_by_key, weights: Weights) -> GroupScore:
+def score_group(records: list[RunRecord], articles, translations, calls_by_run, rows_by_run, weights: Weights) -> GroupScore:
     score = GroupScore()
     for record in records:
         key = RunKey.of(record)
@@ -72,22 +79,24 @@ def score_group(records: list[RunRecord], articles, translations, calls_by_run, 
             calls[call.component_id].append(call)
             score.valid_findings += len(call.findings)
             score.invalid_findings += sum(1 for item in call.invalid if item.kind == "finding")
+        for row in rows_by_run.get(key, []):   # Deterministic 的 Finding 一律計入，包括漏段和多出的 Component
+            role = score.main if is_main_type(row.source_type) else score.peripheral
+            for finding in row.findings:
+                _add(role, finding.dimension, finding.severity, weights, consistent=True)
         for pair in pairs:
+            (score.main if pair.is_main else score.peripheral).chars += nonspace_length(pair.source_text)
             if pair.translated_text is None:
-                continue
+                continue   # 譯文沒有這個 Component：沒有東西可以給 Judge 評
             score.components += 1
             judgment = judge_component(calls.get(pair.id, []), pair)
-            if judgment.status == "incomplete":
+            if judgment.status is Status.INCOMPLETE:
                 score.incomplete += 1
                 continue
-            if judgment.status == "unjudged":
+            if judgment.status is Status.UNJUDGED:
                 score.unjudged += 1
                 score.unjudged_reasons.update(o.value for o in judgment.failed)
                 continue
             role = score.main if pair.is_main else score.peripheral
-            role.chars += nonspace_length(pair.source_text)
-            for finding in rows_by_key.get((key, pair.id), []):
-                _add(role, finding.dimension, finding.severity, weights, consistent=True)
             for merged in judgment.findings:
                 score.severity_mismatches += merged.severity_mismatch
                 if merged.finding.dimension is Dimension.FIDELITY_OF_FORCE:
@@ -132,9 +141,9 @@ def group_lines(heading: str, score: GroupScore, weights: Weights) -> list[str]:
 
 
 def header_lines(experiment: Experiment, calls: list[JudgeCall]) -> list[str]:
-    from .judging import judge_template   # 避免循環 import：judging 需要 translate，translate 不需要這裡
+    """Judge 的設定、同家族的例外、權重與正規化方式：放在報告開頭，看結果之前先看到。"""
     judging, template = experiment.config.judging, judge_template()
-    lines = ["## Judge 評核", ""]
+    lines = ["## Judge 設定", ""]
     for judge in experiment.judges:
         mine = [c for c in calls if c.judge == judge.id]
         stale = sum(1 for c in mine if (c.prompt_hash, c.config_hash) != (template.hash, judge.config_hash))
@@ -153,39 +162,46 @@ def header_lines(experiment: Experiment, calls: list[JudgeCall]) -> list[str]:
 def source_defect_lines(calls: list[JudgeCall]) -> list[str]:
     """所有 Judge 在所有請求裡列出的 Source defect，以「文章、Component、原文片段」去重，不按 Approach 重覆。"""
     found: dict[tuple, tuple[str, set]] = {}
+    spans: dict[tuple, str] = {}
     for call in calls:
         for defect in call.source_defects:
             key = (call.article_id, call.component_id, squash(defect.source_span))
-            issue, judges = found.setdefault(key, (defect.issue, set()))
+            issue, judges = found.setdefault(key, (_one_line(defect.issue), set()))
+            spans.setdefault(key, _one_line(defect.source_span))
             judges.add(call.judge)
     lines = ["## Source defect", ""]
-    lines += [f"- 文章 {article} ・ {component} ・「{span}」：{issue}（Judge {'、'.join(sorted(judges))}）"
-              for (article, component, span), (issue, judges) in sorted(found.items())] or ["沒有 Judge 發現原文的問題。"]
+    lines += [f"- 文章 {key[0]} ・ {key[1]} ・「{spans[key]}」：{issue}（Judge {'、'.join(sorted(judges))}）"
+              for key, (issue, judges) in sorted(found.items())] or ["沒有 Judge 發現原文的問題。"]
     return lines + [""]
 
 
+def judge_settings_lines(experiment: Experiment, out: OutputDir) -> list[str]:
+    return header_lines(experiment, out.read_judge_calls()) if experiment.judges else []
+
+
 def judge_lines(experiment: Experiment, out: OutputDir, records: list[RunRecord], rows: list[ComponentResult], articles) -> list[str]:
-    if not experiment.judges:
-        return []
+    """Judge 的結果：每個 Approach × Direction × 輸入版本 × Judge 一節，加上 Source defect 清單。"""
     calls = out.read_judge_calls()
-    lines = header_lines(experiment, calls)
-    if not calls:
-        return lines
-    ok_records = [r for r in records if r.outcome.value == "ok"]
+    if not experiment.judges or not calls:
+        return []
+    limits = experiment.config.judging.mqm_run_limit
+    # mqm_run_limit 刻意沒有評的 Run 不算「尚未評完」：不在這一節
+    ok_records = [r for r in records if r.outcome.value == "ok" and not (r.approach in limits and r.run_index > limits[r.approach])]
     translations = {RunKey.of(r): out.read_translation(r) for r in ok_records}
     calls_by_judge_run = defaultdict(lambda: defaultdict(list))
     for call in calls:
         calls_by_judge_run[call.judge][RunKey.of(call)].append(call)
-    rows_by_key = defaultdict(list)
+    rows_by_run = defaultdict(list)
     for row in rows:
-        rows_by_key[(RunKey.of(row), row.component_id)].extend(row.findings)
+        rows_by_run[RunKey.of(row)].append(row)
+    lines = ["## Judge 評核", ""]
     groups = sorted({(r.approach, r.direction, r.input_variant) for r in ok_records})
     for judge in experiment.judges:
         for approach, direction, variant in groups:
             members = [r for r in ok_records if (r.approach, r.direction, r.input_variant) == (approach, direction, variant)]
             if not any(RunKey.of(r) in calls_by_judge_run[judge.id] for r in members):
                 continue
-            score = score_group(members, articles, translations, calls_by_judge_run[judge.id], rows_by_key, experiment.config.weights)
+            score = score_group(members, articles, translations, calls_by_judge_run[judge.id], rows_by_run, experiment.config.weights)
             tag = "" if variant is InputVariant.FULL else f"（{variant}）"
             lines += group_lines(f"### {approach} × {direction}{tag} × Judge {judge.id}（{judge.config.role}）", score, experiment.config.weights)
     return lines + source_defect_lines(calls)

@@ -5,7 +5,7 @@ title 與 tags 用保留的 Component id；gallery 的說明、related-article �
 """
 from dataclasses import dataclass
 
-from .articles import MAIN_TYPES, TAGS_ID, TAGS_TYPE, TITLE_ID, TITLE_TYPE, source_texts, text_of
+from .articles import TAGS_ID, TAGS_TYPE, TITLE_ID, TITLE_TYPE, is_main_type, source_texts, text_of
 from .schemas import Article, Translation
 
 
@@ -19,7 +19,7 @@ class ComponentPair:
     @property
     def is_main(self) -> bool:
         """Main component：title、highlight、heading、paragraph、quote；其餘（圖說、related-article 標題、tags）是 Peripheral。"""
-        return self.type == TITLE_TYPE or self.type in MAIN_TYPES
+        return is_main_type(self.type)
 
 
 def component_pairs(article: Article, translation: Translation) -> list[ComponentPair]:

@@ -5,7 +5,7 @@
 import re
 from datetime import date
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -409,7 +409,7 @@ class InvalidItem(StrictModel):
     """Judge 的輸出裡不合格的一條：片段不是逐字子字串、Dimension 或 Severity 不在清單內、結構不符。原文保留供審閱。"""
     kind: Literal["finding", "source_defect"]
     why: str
-    raw: Any
+    raw: str   # 模型輸出的那一條，存成 JSON 文字（有長度上限）。不存成巢狀結構：太深的結構會讓紀錄寫不進去或讀不回來
 
 
 class JudgeCall(RunKey):

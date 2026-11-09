@@ -24,8 +24,13 @@ def run_stem(key: RunKey) -> str:
     return f"{key.article_id}.{key.approach}.{key.direction}.{key.input_variant}.r{key.run_index}"
 
 
+def judge_call_id(run: RunKey, component_id: str, judge: str, call_index: int) -> tuple:
+    """Judge 請求的身分：續跑靠它判斷哪些請求已經有紀錄。"""
+    return (*run.model_dump().values(), component_id, judge, "mqm", call_index)
+
+
 def judge_call_key(call: JudgeCall) -> tuple:
-    return (*RunKey.of(call).model_dump().values(), call.component_id, call.judge, call.task, call.call_index)
+    return judge_call_id(RunKey.of(call), call.component_id, call.judge, call.call_index)
 
 
 def _scrub(text: str, secrets: tuple[str, ...]) -> str:

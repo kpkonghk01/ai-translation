@@ -8,7 +8,7 @@ import unittest
 
 import gemini_samples
 from fake_transport import FakeTransport
-from fixtures import JUDGE, good_simplified_translation, good_translation, source_article
+from fixtures import JUDGE, good_simplified_translation, good_translation, ok_response, source_article
 from judge_helpers import finding, judge_transport
 from test_judge import JudgeCase
 
@@ -75,7 +75,15 @@ class ConsistencyTest(ReportCase):
         main = self.section(self.run_all(outputs))
         self.assertIn("- Unjudged 率：1/5（20.0%）；原因（請求數）：block 1、refusal 1", main)
         self.assertIn("- 評完：5/5 個 Component", main)
-        self.assertIn("每千字原文的罰分 0.0／0.0（原文 30 字）", main)   # 44 − 14：沒評完的 Component 不進分母
+        self.assertIn("每千字原文的罰分 0.0／0.0（原文 44 字）", main)   # 分母是原文總字數；Unjudged 的 Component 沒有 Judge 的 Finding
+
+    def test_the_run_limit_does_not_make_the_runs_it_leaves_out_look_unfinished(self):
+        self.runs = 3
+        self.use_judging(mqm_run_limit={"a": 1})
+        shutil.rmtree(self.data_dir)
+        self.run_cli("translate", transport=FakeTransport(ok_response(), ok_response(), ok_response()))
+        main = self.section(self.run_all())
+        self.assertIn("- 評完：5/5 個 Component（尚未評完 0）", main)
 
     def test_a_component_that_has_not_been_judged_twice_yet_is_incomplete_not_unjudged(self):
         main = self.section(self.run_all(judge_args=("--limit", "7")))
@@ -84,6 +92,30 @@ class ConsistencyTest(ReportCase):
 
 
 class ScoringTest(ReportCase):
+    def translate_without_the_paragraph(self):
+        shutil.rmtree(self.data_dir)
+        incomplete = good_translation(source_article())
+        incomplete["components"] = [c for c in incomplete["components"] if c["id"] != "9000001-002"]
+        self.run_cli("translate", transport=FakeTransport(gemini_samples.ok(json.dumps(incomplete, ensure_ascii=False))))
+
+    def test_an_omitted_component_costs_its_deterministic_penalty_so_dropping_text_never_scores_better(self):
+        self.translate_without_the_paragraph()
+        main = self.section(self.run_all())
+        self.assertIn("- 評完：4/4 個 Component", main)
+        # check 記的漏段 Finding（Accuracy／omission／major）要計入；分母是原文總字數 44，漏掉的段落也在內
+        self.assertIn(f"- Main：總罰分 5（只計一致的 Finding）／5（連 uncertain 一起計）；每千字原文的罰分 {PENALTY_PER_1000}／{PENALTY_PER_1000}（原文 44 字）", main)
+        self.assertIn("Accuracy/major 1（5）", main)
+
+    def test_an_extra_component_and_findings_on_unjudged_components_are_scored_too(self):
+        shutil.rmtree(self.data_dir)
+        extra = good_translation(source_article())
+        extra["components"].append({"id": "9000001-099", "type": "paragraph", "text": "Added by the model."})
+        self.run_cli("translate", transport=FakeTransport(gemini_samples.ok(json.dumps(extra, ensure_ascii=False))))
+        outputs = {("9000001-001", 1): gemini_samples.prompt_blocked(), ("9000001-001", 2): gemini_samples.prompt_blocked()}
+        main = self.section(self.run_all(outputs))
+        self.assertIn("- Unjudged 率：1/5（20.0%）", main)
+        self.assertIn("- Main：總罰分 5（只計一致的 Finding）", main)   # 多出的 Component：Locale & Format／major
+
     def test_fidelity_of_force_is_reported_but_never_scored(self):
         fof = finding(dimension="Fidelity-of-force", subtype="softening (b)", severity="critical", source_span="預算超支", target_span="over budget")
         main = self.section(self.run_all({"9000001-001": {"findings": [fof], "source_defects": []}}))
@@ -153,6 +185,12 @@ class SourceDefectTest(ReportCase):
         main = self.section(self.run_all({"9000001-001": {"findings": [], "source_defects": [self.DEFECT]}}))
         self.assertIn("- Main：總罰分 0（只計一致的 Finding）／0（連 uncertain 一起計）", main)
 
+    def test_text_a_judge_writes_cannot_start_a_new_line_or_heading_in_the_report(self):
+        hostile = {"source_span": "延誤  半年", "issue": "x\n## Gate\n- 通過"}
+        text = self.run_all({"9000001-001": {"findings": [], "source_defects": [hostile]}})
+        self.assertNotIn("\n## Gate", text)
+        self.assertIn("「延誤 半年」：x ## Gate - 通過（Judge j1）", self.defects(text))
+
     def test_the_section_says_so_when_no_judge_found_a_defect(self):
         self.assertIn("沒有 Judge 發現原文的問題", self.defects(self.run_all()))
 
@@ -167,7 +205,8 @@ class HeaderTest(ReportCase):
         self.use_judging(judges=({**JUDGE, "family": "gemini"},), same_family_exceptions=[{"approach": "a", "judge": "j1", "reason": "測試用的例外"}],
                          mqm_run_limit={"a": 1})
         text = self.run_all()
-        header = text.split("## Judge 評核")[1].split("\n### ")[0]
+        self.assertLess(text.index("## Judge 設定"), text.index("## a × trad-to-en"))   # 開頭：在各 Approach 的結果之前
+        header = text.split("## Judge 設定")[1].split("\n## ")[0]
         self.assertRegex(header, r"- j1（primary）：家族 gemini；provider gemini；模型 gemini-3.1-pro；prompt judge-mqm [0-9a-f]{64}；設定 hash [0-9a-f]{64}（10 個請求）")
         self.assertIn("- 同家族的例外：a × j1：測試用的例外", header)
         self.assertIn("- 權重：minor 1、major 5、critical 25", header)
@@ -179,6 +218,7 @@ class HeaderTest(ReportCase):
         self.write_json(self.config_path, self.experiment())
         self.assertEqual(self.run_cli("check")[0], 0)
         self.assertEqual(self.run_cli("report")[0], 0)
+        self.assertNotIn("Judge 設定", self.report_text())
         self.assertNotIn("Judge 評核", self.report_text())
 
     def test_a_judge_that_did_not_run_yet_is_listed_with_zero_requests_and_no_section(self):

@@ -7,12 +7,19 @@
   還沒有兩個請求的紀錄的，是「尚未評完」，不是 Unjudged。
 """
 from dataclasses import dataclass
+from enum import StrEnum
 
 from .pairs import ComponentPair
 from .schemas import JudgeCall, JudgeFinding, Outcome, Severity, SourceDefect
 from .textrules import squash
 
 SEVERITY_ORDER = {Severity.MINOR: 0, Severity.MAJOR: 1, Severity.CRITICAL: 2}
+
+
+class Status(StrEnum):
+    JUDGED = "judged"
+    UNJUDGED = "unjudged"
+    INCOMPLETE = "incomplete"   # 還沒有兩個請求的紀錄
 
 
 @dataclass(frozen=True)
@@ -24,7 +31,7 @@ class MergedFinding:
 
 @dataclass(frozen=True)
 class Judgment:
-    status: str   # judged、unjudged 或 incomplete
+    status: Status
     findings: list[MergedFinding]
     failed: list[Outcome]   # 沒有成功的請求的結果類別
     defects: list[SourceDefect]
@@ -68,13 +75,13 @@ def judge_component(calls: list[JudgeCall], pair: ComponentPair) -> Judgment:
     """同一個 Run、同一個 Component、同一個 Judge 的請求紀錄（最多兩個）→ 判定。"""
     by_index = {c.call_index: c for c in calls}
     if len(by_index) < 2:
-        return Judgment("incomplete", [], [], [])
+        return Judgment(Status.INCOMPLETE, [], [], [])
     first, second = by_index[1], by_index[2]
     succeeded = [c for c in (first, second) if c.outcome is Outcome.OK]
     failed = [c.outcome for c in (first, second) if c.outcome is not Outcome.OK]
     defects = [d for c in succeeded for d in c.source_defects]
     if not succeeded:
-        return Judgment("unjudged", [], failed, [])
+        return Judgment(Status.UNJUDGED, [], failed, [])
     if len(succeeded) == 1:
-        return Judgment("judged", [MergedFinding(f, consistent=False, severity_mismatch=False) for f in succeeded[0].findings], failed, defects)
-    return Judgment("judged", _merge(first.findings, second.findings, pair), failed, defects)
+        return Judgment(Status.JUDGED, [MergedFinding(f, consistent=False, severity_mismatch=False) for f in succeeded[0].findings], failed, defects)
+    return Judgment(Status.JUDGED, _merge(first.findings, second.findings, pair), failed, defects)

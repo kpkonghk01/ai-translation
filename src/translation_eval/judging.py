@@ -10,13 +10,11 @@ Judge 只輸出 Finding 和 Source defect，不輸出分數。輸出裡的每個
 report 計算，不在這裡：改了權重只要重算報告，不用重跑 Judge。
 Judge 與被評的 Approach 同家族時拒絕執行，除非實驗設定針對這個組合寫了例外和理由。
 """
-import hashlib
 import json
 import os
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -26,16 +24,18 @@ from .errors import InputError
 from .exchange import send_with_retries
 from .outcome import Interpretation, classify_text
 from .pairs import ComponentPair, component_pairs
+from .prompts import PromptTemplate, judge_template
 from .providers import adapter_for
-from .schemas import Direction, InvalidItem, JudgeCall, JudgeFinding, Outcome, RunKey, RunRecord, SourceDefect
-from .store import OutputDir, judge_call_key
+from .schemas import Dimension, Direction, InvalidItem, JudgeCall, JudgeFinding, Outcome, RunKey, RunRecord, SourceDefect
+from .store import OutputDir, judge_call_id, judge_call_key
 from .terms import LoadedTermList, entries_in
 from .textrules import squash
 from .translate import select_articles
 from .transport import Transport
 
-TEMPLATE_ID = "judge-mqm"
 CALLS_PER_COMPONENT = 2
+SOURCE_ERROR_CORRECTION = "suspected correction of a source error"
+MAX_RAW_CHARS = 2000   # 無效的條目保留原文供審閱，但不能無限長
 DIRECTION_REQUIREMENTS = {
     Direction.TRAD_TO_EN: "Register: international news English (AP / Reuters style). Criminal charges use the wording of the English "
                           "version of Hong Kong legislation. Amounts keep their original currency; a converted amount given in the "
@@ -43,17 +43,6 @@ DIRECTION_REQUIREMENTS = {
     Direction.TRAD_TO_SIMPLIFIED: "Register: natural written Mandarin for mainland readers, not a character-by-character conversion. "
                                   "Cantonese quotes keep the strength of the original, including profanity.",
 }
-
-
-@dataclass(frozen=True)
-class Template:
-    text: str
-    hash: str
-
-
-def judge_template() -> Template:
-    raw = (Path(__file__).parent / "prompt_templates" / f"{TEMPLATE_ID}.txt").read_bytes()
-    return Template(raw.decode("utf-8"), hashlib.sha256(raw).hexdigest())
 
 
 @dataclass(frozen=True)
@@ -66,8 +55,7 @@ class PlannedCall:
 
     @property
     def key(self) -> tuple:
-        pair = self.pairs[self.index]
-        return (*RunKey.of(self.record).model_dump().values(), pair.id, self.judge.id, "mqm", self.call_index)
+        return judge_call_id(RunKey.of(self.record), self.pairs[self.index].id, self.judge.id, self.call_index)
 
 
 def _context(pair: ComponentPair | None) -> dict | None:
@@ -93,32 +81,45 @@ def _is_verbatim(span: str, text: str) -> bool:
     return squash(span) in squash(text)
 
 
-def _check_finding(item, pair: ComponentPair) -> tuple[JudgeFinding | None, str]:
+def _raw_text(item) -> str:
+    """無效的條目保留供審閱：存成 JSON 文字，超過上限就截斷；序列化不了（例如巢狀太深）就說明。"""
+    try:
+        text = json.dumps(item, ensure_ascii=False)
+    except (RecursionError, TypeError, ValueError):
+        return "（無法序列化）"
+    return text if len(text) <= MAX_RAW_CHARS else text[:MAX_RAW_CHARS] + "（截斷）"
+
+
+def _build(model, item):
+    """模型多給的欄位（例如 confidence）不算結構不符，只看需要的欄位。回傳 (物件, 原因)。"""
     if not isinstance(item, dict):
         return None, "不是物件"
-    try:   # 模型多給的欄位（例如 confidence）不算結構不符，只看要的欄位
-        finding = JudgeFinding.model_validate({k: item[k] for k in JudgeFinding.model_fields if k in item})
+    try:
+        return model.model_validate({k: item[k] for k in model.model_fields if k in item}), ""
     except ValidationError as e:
         return None, "結構不符：" + "、".join(str(err["loc"][0]) if err["loc"] else "(根)" for err in e.errors())
+
+
+def _check_finding(item, pair: ComponentPair) -> tuple[JudgeFinding | None, str]:
+    finding, why = _build(JudgeFinding, item)
+    if finding is None:
+        return None, why
     if not finding.source_span.strip() and not finding.target_span.strip():
         return None, "兩個片段都是空的"
     if finding.source_span.strip() and not _is_verbatim(finding.source_span, pair.source_text):
         return None, "原文片段不是逐字子字串"
     if finding.target_span.strip() and not _is_verbatim(finding.target_span, pair.translated_text or ""):
         return None, "譯文片段不是逐字子字串"
+    if finding.subtype.strip().casefold() == SOURCE_ERROR_CORRECTION and finding.dimension is not Dimension.ACCURACY:
+        return None, "疑似修正原文錯誤必須是 Accuracy"   # spec：只靠 prompt 不夠，程式要擋
     return finding, ""
 
 
 def _check_defect(item, pair: ComponentPair) -> tuple[SourceDefect | None, str]:
-    if not isinstance(item, dict):
-        return None, "不是物件"
-    try:
-        defect = SourceDefect.model_validate({k: item[k] for k in SourceDefect.model_fields if k in item})
-    except ValidationError as e:
-        return None, "結構不符：" + "、".join(str(err["loc"][0]) if err["loc"] else "(根)" for err in e.errors())
-    if not _is_verbatim(defect.source_span, pair.source_text):
+    defect, why = _build(SourceDefect, item)
+    if defect is not None and not _is_verbatim(defect.source_span, pair.source_text):
         return None, "原文片段不是逐字子字串"
-    return defect, ""
+    return defect, why
 
 
 def interpret_output(result: Interpretation, pair: ComponentPair):
@@ -136,13 +137,13 @@ def interpret_output(result: Interpretation, pair: ComponentPair):
         if finding:
             findings.append(finding)
         else:
-            invalid.append(InvalidItem(kind="finding", why=why, raw=item))
+            invalid.append(InvalidItem(kind="finding", why=why, raw=_raw_text(item)))
     for item in defects_raw:
         defect, why = _check_defect(item, pair)
         if defect:
             defects.append(defect)
         else:
-            invalid.append(InvalidItem(kind="source_defect", why=why, raw=item))
+            invalid.append(InvalidItem(kind="source_defect", why=why, raw=_raw_text(item)))
     return Outcome.OK, None, findings, defects, invalid
 
 
@@ -167,14 +168,23 @@ def plan_calls(experiment, records: list[RunRecord], articles, out: OutputDir) -
 def require_allowed_families(experiment, plan: list[PlannedCall]) -> None:
     """Judge 與被評的 Approach 同家族時拒絕執行，除非實驗設定針對這個組合寫了例外和理由。baseline 不是 LLM，沒有家族。"""
     excepted = {(e.approach, e.judge) for e in experiment.config.judging.same_family_exceptions}
-    clashes = set()
+    clashes, unknown = set(), set()
     for call in plan:
         approach = experiment.approach_config(call.record.approach)
-        if approach is not None and approach.family == call.judge.config.family and (approach.id, call.judge.id) not in excepted:
+        if approach is None:
+            if not call.record.is_baseline:   # baseline 不是 LLM，沒有家族；其他的沒辦法確認家族，不能放行
+                unknown.add(call.record.approach)
+        elif _family(approach.family) == _family(call.judge.config.family) and (approach.id, call.judge.id) not in excepted:
             clashes.add((approach.id, call.judge.id, approach.family))
-    if clashes:
-        raise InputError([f"Judge {j} 與 Approach {a} 同家族（{f}）：要在 judging.same_family_exceptions 針對這個組合寫明例外和理由"
-                          for a, j, f in sorted(clashes)])
+    problems = [f"Judge {j} 與 Approach {a} 同家族（{f}）：要在 judging.same_family_exceptions 針對這個組合寫明例外和理由"
+                for a, j, f in sorted(clashes)]
+    problems += [f"Run 的 Approach {a} 不在實驗設定內，沒辦法檢查它與 Judge 是不是同家族" for a in sorted(unknown)]
+    if problems:
+        raise InputError(problems)
+
+
+def _family(name: str) -> str:
+    return name.strip().casefold()
 
 
 def handle(args, transport: Transport) -> int:
@@ -213,7 +223,10 @@ def handle(args, transport: Transport) -> int:
 
     template, outcomes = judge_template(), Counter()
     for call in pending:
-        outcomes[run_call(transport, call, template, experiment.term_list, out, replaces_existing=call.key in existing).outcome] += 1
+        record, violation = run_call(transport, call, template, experiment.term_list, out, replaces_existing=call.key in existing)
+        outcomes[record.outcome] += 1
+        if violation:   # 資料已經送到不在允許清單內的 provider：不能再送下一個請求
+            raise InputError(f"Judge {call.judge.id} 的回應來自不在允許清單內的 provider：已停止，沒有再送出請求（已記錄 {sum(outcomes.values())} 個）")
     summary = "、".join(f"{o} {n}" for o, n in sorted(outcomes.items())) or "沒有要執行的請求"
     print(f"完成 {len(pending)} 個請求（已有紀錄而略過：{skipped}）：{summary}")
     return 0
@@ -238,8 +251,9 @@ def dry_run(pending: list[PlannedCall], skipped: int) -> int:
     return 0
 
 
-def run_call(transport: Transport, call: PlannedCall, template: Template, term_list: LoadedTermList, out: OutputDir, *,
-             replaces_existing: bool) -> JudgeCall:
+def run_call(transport: Transport, call: PlannedCall, template: PromptTemplate, term_list: LoadedTermList, out: OutputDir, *,
+             replaces_existing: bool) -> tuple[JudgeCall, bool]:
+    """送出一個請求並記錄。第二個回傳值是：回應是不是來自不在允許清單內的 provider。"""
     judge = call.judge.config
     adapter = adapter_for(judge)
     api_key = os.environ[judge.api_key_env]
@@ -256,4 +270,5 @@ def run_call(transport: Transport, call: PlannedCall, template: Template, term_l
         findings=findings, source_defects=defects, invalid=invalid,
         created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
     )
-    return out.write_judge_call(record, exchange.raw_body, secrets=(api_key,), replaces_existing=replaces_existing)
+    written = out.write_judge_call(record, exchange.raw_body, secrets=(api_key,), replaces_existing=replaces_existing)
+    return written, result.provider_violation

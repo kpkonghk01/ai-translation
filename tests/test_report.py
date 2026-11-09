@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import shutil
 import unittest
 from pathlib import Path
 
@@ -84,6 +85,11 @@ class ReportTest(Workspace):
         self.assertIn("check", err)
         self.assertIn(ARTICLE_ID, err)
         self.assertFalse(os.path.exists(os.path.join(self.out_dir, "report.md")))
+
+    def test_a_report_without_a_judge_does_not_need_the_article_files(self):
+        self.run_pipeline(*[gemini_samples.refusal()] * 5)
+        shutil.rmtree(self.articles_dir)
+        self.assertEqual(self.run_cli("report")[0], 0)
 
     def test_fails_when_there_are_no_runs(self):
         code, _, err = self.run_cli("report")

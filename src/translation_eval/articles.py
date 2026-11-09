@@ -66,6 +66,12 @@ def check_article(article: Article, article_id: str) -> Article:
     return article
 
 
+def is_main_type(component_type: str | None) -> bool:
+    """title 和 Main component（highlight、heading、paragraph、quote）是 Main；圖說、related-article 標題、tags 是 Peripheral。
+    譯文多出來的 Component 沒有原文的 type（None），算在 Main。"""
+    return component_type is None or component_type == TITLE_TYPE or component_type in MAIN_TYPES
+
+
 def text_field_names(component_type: str) -> tuple[str, ...]:
     """這個 type 的 Component 要翻譯的文字欄位。title 與 tags 另外處理；不翻譯的 type 沒有。"""
     return () if component_type in (TITLE_TYPE, TAGS_TYPE) else _TEXT_FIELDS.get(component_type, ())
