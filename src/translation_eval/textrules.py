@@ -12,6 +12,19 @@ def squash(text: str) -> str:
     return re.sub(r"\s+", "", text)
 
 
+_QUOTE_SPAN = re.compile(r"[「『“]([^」』”]{2,})[」』”]")
+
+
+def digit_strings(text: str) -> set[str]:
+    """文字裡的阿拉伯數字（去掉千分位的逗號）。中文數字（三名、十年）不在內。"""
+    return {token.replace(",", "") for token in _DIGIT_TOKEN.findall(text)}
+
+
+def quoted_phrases(text: str) -> set[str]:
+    """引號（「」『』“”）裡的文字，忽略空白。"""
+    return {squash(m) for m in _QUOTE_SPAN.findall(text)}
+
+
 def quoted(text: str) -> str:
     """Markdown 的引用區塊（接在「- 標籤：」後面）：每一行都加 >，原文與譯文放進清單用。"""
     return "\n  > " + text.replace("\n", "\n  > ")

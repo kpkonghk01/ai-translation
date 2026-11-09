@@ -54,5 +54,9 @@ def screen_template() -> PromptTemplate:
     return _template("judge-screen")
 
 
+def crosscheck_template() -> PromptTemplate:
+    return _template("crosscheck")
+
+
 def translation_template(direction: Direction, request_mode: RequestMode) -> PromptTemplate:
     return _template(_TEMPLATE_IDS[(direction, request_mode)])

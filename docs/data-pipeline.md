@@ -160,6 +160,18 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
 
   `calibrate --dry-run` 另印估計的輸入字數。`calibrate --judge` 對每個項目的 MQM 任務、每個有 `facts` 的項目的 fact 任務，各送兩個獨立的請求，格式與正式評核完全相同（項目自己的前後文、ground truth 那句的全部事實）。已有新紀錄的請求略過；prompt、Judge 設定或項目送給 Judge 的內容（Direction、原文、譯文、前後文，和它指向的 ground truth 句子與事實）改了，舊紀錄過期，會重送；預期答案與備註沒有送給 Judge，改了不用重送，指標由程式重算。結果寫在 `gold-calls.jsonl`，並重寫 `calibration.md`（各 Judge 的指標，只有數字）和 `calibration-disagreements.md`（Judge 對標註、Judge 對 Judge 的分歧，含原文與譯文）。每個 Judge（不分 primary 或 experiment）都可以校準；選主 Judge 要先把候選的都跑過。指標（全部、按 Direction、按 domain、Direction × domain，另有 variant 按 domain，各一組，分子分母都列）：預期 Finding 的 recall（只計一致的／連 uncertain 一起計）與 Severity 一致率；驗證後 precision（只看 annotated 項目）；clean 項目上的誤報；無效 Finding 率；兩次一致率（Finding、事實 verdict）；uncertain 與一致兩組 Finding 的錯誤率（檢驗「跑兩次」：uncertain 的錯誤率若沒有比較高，不一致就沒有提供資訊）；事實 verdict 的準確率、Weakened 與 Absent 各自的 recall、失敗的事實（Weakened 或 Absent）的 recall（uncertain 與 Unjudged 算沒有抓到：Judge 被擋的項目，預期的 Finding 與事實留在分母，不能因為被擋讓 recall 好看）、預期 Present 被判成失敗的誤報率；Unjudged 率與「尚未評完」（還沒有兩個請求，不在分母）分開列。合格線（recall、precision）要等第一批數字出來才訂，程式不判合格與否。Q31 比較 1（Gemini 與 Qwen 在 political 與 general 變體上的 recall）就是 `calibration.md` 裡兩個 Judge 的「variant × domain」分組。分歧清單另列 Severity 不同的 Finding 與類型不同的事實 verdict。
   `report` 讀最新的校準結果：Gate 每個分組旁邊列主 Judge 的 recall（Gold set 上預期失敗的事實，按該 Gate 的 Direction 與 domain 取，在 `calibration.md` 找「Direction × domain」那一組；Q34 這類覆寫分組不分 domain）；沒有校準、校準的請求都過期、Gold set 在這一格沒有預期失敗的事實、或這一格的項目還沒有請求結果，就明確寫「Judge recall 未量度」並寫明是哪一種原因。報告另有「Judge 校準摘要」一節（只有數字，摘要版也有）。Gold set 驗證不合時 `report` 也停止。
+- **Ground truth 交叉檢驗**：模型在沒看過 ground truth 的情況下，盲選每篇最敏感的句子、盲抽 Must-retain fact，再與 ground truth 對照。實驗設定寫 `crosscheck`（兩個都是 `judging.judges` 裡的 Judge 設定，所以 OpenRouter 的允許清單、資料保護欄位和 key 的讀法都沿用；要有 `ground_truth`）：
+
+  ```json
+  "crosscheck": {"judge": "<Qwen 的 Judge id>", "reference_judge": "<Gemini 的 Judge id>"}
+  ```
+
+  ```bash
+  # 會呼叫 API、需要 key：只由 Pan 在自己的終端機執行。--dry-run 先看請求數
+  uv run --locked --env-file .env python -I -m translation_eval crosscheck --config <實驗設定> [--dry-run] [--article <id>]... [--limit <N>] [--redo-errors]
+  ```
+
+  有 ground truth 的文章（含沒有敏感句的對照文章）各用 `judge` 跑一次；`domain` 是 `china-political` 的文章另外用 `reference_judge` 跑一次（沒設就不跑）。每篇每個模型一個請求，不跑兩次（這是找分歧給 Pan 看，不是判定）。模型收到的只有標題和各 Component 的原文（`code` 等不翻譯的 Component 不給），沒有 ground truth 的任何東西。模型選的句子必須逐字取自它指的那個 Component 的原文（連續空白忽略），否則那一條丟掉並計數、保留原文供審閱；沒有任何有效事實的句子、kind 不在清單內的事實也一樣；輸出結構不符則該請求是 `malformed`。結果記在 `crosscheck-calls.jsonl`（原始回應在 `crosscheck-raw/`），已有新紀錄的請求略過，文章、prompt 或 Judge 設定改了才重送，`--redo-errors` 重做 `error`。分歧清單 `crosscheck.md`（含原文與事實文字，只在本機看；終端只印數量）按文章列：兩邊都有的句子（同一個 Component、位置重疊；ground truth 的 anchor 可以只是模型選的整句的一段）把兩邊的事實並排，阿拉伯數字和引號內文字的差異由程式標出（中文數字不比）；只有模型選了的句子；只有 ground truth 有的句子。`china-political` 的文章另列「Gemini 抽到、Qwen 沒抽到的事實」：整句沒選到的列出那一句的全部事實；兩邊都選了的句子，列出盲抽的模型沒有「同一種 kind、數字與引語都涵蓋」的事實（粗略的啟發式）。這一節只作參考，不用來改 ground truth。**`crosscheck` 從不寫 ground truth 檔**：要不要改由 Pan 決定（有測試）。
 - **全文篩查**：`judge` 預設連全文篩查一起跑（`--task screen` 只跑它；`judging.screening: false` 可以關掉預設，`--task screen` 仍可明講要跑）。每個 ok 的 Run、每個 Judge 發兩個獨立請求，輸入是整篇的原文與譯文（逐 Component，譯文缺少的 Component 是 null），Judge 先列出關鍵事實再逐條核對，只輸出 Weakened、Absent 或 Amplification 的條目（附類型）。原文片段必須是某一個 Component 原文的逐字子字串（也決定條目屬於哪個 Component），譯文片段必須是譯文某處的逐字子字串；Weakened 與 Amplification 要有譯文片段，Absent 可以沒有。不合格的條目丟掉，記為無效並保留原文。兩次的條目若 verdict 相同而且譯文片段重疊（Absent 看原文片段），就是同一處、一致，否則 uncertain；只有一次成功時全部是 uncertain；兩次都失敗是 Unjudged。結果寫在 `judge-calls.jsonl`（Component 欄是 `*`）。篩查的結果**不決定 Gate，也不計分**，全部進審閱清單的必看（和 MQM 產生的 Fidelity-of-force Finding 是同一組必看，分兩個小節）。報告的 Judge 評核一節列出篩查評完幾個 Run、Unjudged 率和條目數；Judge 設定一節列出各任務的 prompt hash。Fidelity-of-force Finding 不計分，審閱決定只表示看過了，不改變報告裡的數量。
 - **人手審閱**：`review` 產生審閱清單 `data/experiments/<實驗 id>/review.md`（含原文和譯文，只在本機；終端只印數量），要先有最新的 `check` 結果：
 

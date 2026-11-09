@@ -281,6 +281,13 @@ class CalibrationConfig(StrictModel):
     gold_set: str
 
 
+class CrosscheckConfig(StrictModel):
+    """Ground truth 交叉檢驗：judge 是盲抽的模型（Qwen，經 OpenRouter），reference_judge 是只在 china-political 的文章另外跑的對照（Gemini）。
+    兩個都是 judging.judges 裡的 Judge 設定（provider、模型、允許清單和資料保護欄位都在那裡）。"""
+    judge: Slug
+    reference_judge: Slug | None = None
+
+
 class ComparisonConfig(StrictModel):
     """分數與 baseline 的比較。baseline：質素的 baseline（方案 A）的 id，所有 Approach 與它比；also_against：某個 Direction 另外要比的
     baseline（繁→簡另外與方案 E 比）。id 可以是 Approach 或 baseline（import-baseline）的 id。"""
@@ -312,6 +319,7 @@ class ExperimentConfig(StrictModel):
     review: ReviewConfig = ReviewConfig()
     comparison: ComparisonConfig | None = None
     calibration: CalibrationConfig | None = None
+    crosscheck: CrosscheckConfig | None = None
     weights: Weights = Weights()
     term_list: str | None = None   # Term List 檔的路徑；不設就不注入、也不做 Terminology 檢查
     length_ratio: dict[Direction, LengthRatioRange] = {}   # 覆寫預設的長度比例範圍（見 config.py）
@@ -488,7 +496,7 @@ class SourceDefect(StrictModel):
 
 class InvalidItem(StrictModel):
     """Judge 的輸出裡不合格的一條：片段不是逐字子字串、Dimension 或 Severity 不在清單內、結構不符。原文保留供審閱。"""
-    kind: Literal["finding", "source_defect", "verdict", "screening"]
+    kind: Literal["finding", "source_defect", "verdict", "screening", "crosscheck"]
     why: str
     raw: str   # 模型輸出的那一條，存成 JSON 文字（有長度上限）。不存成巢狀結構：太深的結構會讓紀錄寫不進去或讀不回來
     fact: str | None = None   # kind 是 verdict 時：作廢的是哪一條事實（事實 key 的最後一段）；模型回了不認識的 id 時沒有
@@ -522,10 +530,9 @@ class FactVerdict(StrictModel):
 WHOLE_RUN = "*"   # 全文篩查是整個 Run 一個請求：紀錄的 Component 寫這個保留值
 
 
-class JudgeRecord(StrictModel):
-    """Judge 一次請求的結果：正式評核（JudgeCall）與校準（GoldCall）共用，所以一致性判定可以直接用在兩者上。call_index 是 1 或 2（每個任務評兩次）。"""
+class RequestRecord(StrictModel):
+    """送給 Judge（或交叉檢驗的模型）的一個請求的紀錄：結果類別、每次嘗試、tokens、實際回應的模型版本、prompt 與設定的 hash。"""
     judge: Slug
-    call_index: int = Field(ge=1, le=2)
     outcome: Outcome
     reason: str | None = None
     attempts: list[Attempt]
@@ -536,13 +543,18 @@ class JudgeRecord(StrictModel):
     served_provider: str | None = None
     prompt_hash: str
     config_hash: str
+    raw_response: str | None = None
+    created_at: str
+
+
+class JudgeRecord(RequestRecord):
+    """Judge 一次評核請求的結果：正式評核（JudgeCall）與校準（GoldCall）共用，所以一致性判定可以直接用在兩者上。call_index 是 1 或 2（每個任務評兩次）。"""
+    call_index: int = Field(ge=1, le=2)
     findings: list[JudgeFinding] = []
     source_defects: list[SourceDefect] = []
     verdicts: list[FactVerdict] = []
     invalid: list[InvalidItem] = []
     input_hash: str | None = None   # fact 任務：送出的事實與 anchor 的 hash；ground truth 改了，這筆紀錄就過期
-    raw_response: str | None = None
-    created_at: str
 
 
 class JudgeCall(RunKey, JudgeRecord):
@@ -717,6 +729,29 @@ class GoldCall(JudgeRecord):
     item_id: Slug
     task: Literal["mqm", "fact"]
     item_hash: str
+
+
+# ───────────── 交叉檢驗 ─────────────
+
+class CrosscheckFact(StrictModel):
+    kind: FactKind
+    fact: NonBlank
+
+
+class CrosscheckSentence(StrictModel):
+    """模型盲選的一個最敏感的句子，連同它抽的事實。sentence 已通過逐字驗證（連續空白忽略後是 component_id 那個 Component 的子字串）。"""
+    component_id: NonBlank
+    sentence: NonBlank
+    why: str = ""
+    facts: list[CrosscheckFact] = Field(min_length=1)
+
+
+class CrosscheckCall(RequestRecord):
+    """交叉檢驗的一個請求：一個模型對一篇文章的盲抽（只看到原文）。input_hash 是送出的原文的 hash，文章改了舊的就過期。"""
+    article_id: Slug
+    input_hash: str
+    sentences: list[CrosscheckSentence] = []
+    invalid: list[InvalidItem] = []
 
 
 # ───────────── Component 結果 ─────────────

@@ -87,6 +87,7 @@ def load_experiment(path: str) -> Experiment:
     judges = load_judges(config, seen, problems)
     problems += gate_config_problems(config, judges)
     problems += comparison_problems(config, approaches)
+    problems += crosscheck_problems(config, judges)
     if problems:
         raise InputError(problems)
     term_list = load_term_list(config.term_list) if config.term_list else LoadedTermList.unused()
@@ -162,4 +163,21 @@ def comparison_problems(config: ExperimentConfig, approaches: list[PlannedApproa
                 problems.append(f"comparison.also_against.{direction} 指向不存在的 Approach 或 baseline：{who}")
             elif not covers(who, direction):
                 problems.append(f"comparison.also_against.{direction} 的 {who} 在這個 Direction 沒有 full 的 Run")
+    return problems
+
+
+def crosscheck_problems(config: ExperimentConfig, judges: list[PlannedJudge]) -> list[str]:
+    """交叉檢驗用的 id 要是 judging.judges 裡的 Judge；要有 ground truth 才有東西對照；盲抽的模型與對照的不是同一個。"""
+    crosscheck = config.crosscheck
+    if crosscheck is None:
+        return []
+    known = {j.id for j in judges}
+    problems = []
+    if config.ground_truth is None:
+        problems.append("crosscheck 要有 ground_truth：交叉檢驗是拿模型選的句子與 ground truth 對照")
+    for where, who in (("judge", crosscheck.judge), ("reference_judge", crosscheck.reference_judge)):
+        if who is not None and who not in known:
+            problems.append(f"crosscheck.{where} 不在 judging.judges 裡：{who}")
+    if crosscheck.judge == crosscheck.reference_judge:
+        problems.append("crosscheck.reference_judge 不可以與 judge 是同一個：對照要用另一個模型")
     return problems

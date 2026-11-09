@@ -69,6 +69,9 @@ class GroundTruth:
             grouped.setdefault((s.article_id, s.component_id), []).append(s)
         return grouped
 
+    def sentences_for(self, article_id: str) -> list[Sentence]:
+        return [s for s in self.sentences if s.article_id == article_id]
+
     def sentences_in(self, article_id: str, component_id: str) -> list[Sentence]:
         return self._by_component.get((article_id, component_id), [])
 

@@ -15,7 +15,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from .errors import InputError
-from .schemas import CheckMeta, ComponentResult, GoldCall, JudgeCall, RunKey, RunRecord, Translation
+from .schemas import CheckMeta, ComponentResult, CrosscheckCall, GoldCall, JudgeCall, RunKey, RunRecord, Translation
 
 REDACTED = "[REDACTED]"
 
@@ -36,6 +36,11 @@ def judge_call_key(call: JudgeCall) -> tuple:
 def gold_call_key(call: GoldCall) -> tuple:
     """校準請求的身分：續跑靠它判斷哪些請求已經有紀錄。"""
     return (call.item_id, call.judge, call.task, call.call_index)
+
+
+def crosscheck_call_key(call: CrosscheckCall) -> tuple:
+    """交叉檢驗請求的身分：一個模型對一篇文章一個請求。"""
+    return (call.article_id, call.judge)
 
 
 def _scrub(text: str, secrets: tuple[str, ...]) -> str:
@@ -73,6 +78,14 @@ class OutputDir:
     @property
     def gold_calls_path(self) -> Path:
         return self.root / "gold-calls.jsonl"
+
+    @property
+    def crosscheck_calls_path(self) -> Path:
+        return self.root / "crosscheck-calls.jsonl"
+
+    @property
+    def crosscheck_path(self) -> Path:
+        return self.root / "crosscheck.md"
 
     @property
     def gold_sample_path(self) -> Path:
@@ -232,6 +245,42 @@ class OutputDir:
             with open(self.gold_calls_path, "a", encoding="utf-8") as f:
                 f.write(text)
         return call
+
+    def read_crosscheck_calls(self) -> list[CrosscheckCall]:
+        if not self.crosscheck_calls_path.exists():
+            return []
+        calls = []
+        with open(self.crosscheck_calls_path, encoding="utf-8") as f:
+            for n, line in enumerate(f, 1):
+                if not line.strip():
+                    continue
+                try:
+                    calls.append(CrosscheckCall.model_validate_json(line))
+                except ValidationError as e:
+                    raise InputError(f"{self.crosscheck_calls_path}：第 {n} 行不是合法的交叉檢驗紀錄（{e.error_count()} 個錯誤）") from e
+        return calls
+
+    def write_crosscheck_call(self, call: CrosscheckCall, raw: bytes | None, *, secrets: tuple[str, ...] = (), replaces_existing: bool = False) -> CrosscheckCall:
+        """原始回應按模型存成 jsonl（每個請求一行，重做的不蓋掉舊的），最後才寫紀錄。"""
+        if raw is not None:
+            line = json.dumps({"article": call.article_id, "body": raw.decode("utf-8", errors="replace")}, ensure_ascii=False)
+            path = self.root / "crosscheck-raw" / f"{call.judge}.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(_scrub(line, secrets) + "\n")
+            call = call.model_copy(update={"raw_response": f"crosscheck-raw/{call.judge}.jsonl"})
+        text = _scrub(call.model_dump_json(), secrets) + "\n"
+        if replaces_existing:
+            kept = "".join(c.model_dump_json() + "\n" for c in self.read_crosscheck_calls() if crosscheck_call_key(c) != crosscheck_call_key(call))
+            self._replace(self.crosscheck_calls_path, kept + text)
+        else:
+            self.root.mkdir(parents=True, exist_ok=True)
+            with open(self.crosscheck_calls_path, "a", encoding="utf-8") as f:
+                f.write(text)
+        return call
+
+    def write_crosscheck(self, text: str) -> None:
+        self._replace(self.crosscheck_path, text)
 
     def write_gold_sample(self, text: str) -> None:
         self._replace(self.gold_sample_path, text)

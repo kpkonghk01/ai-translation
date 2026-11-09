@@ -102,6 +102,9 @@ _Avoid_: flag；把 Warning 叫作 Finding
 **Gold item category**:
 Gold set 項目的三類：annotated（真實候選譯文的人手標註，標註要完整）、variant（人手寫的 Softening 變體，指向 ground truth 的事實）、clean（無錯樣本）。中文寫作「標註」、「變體」、「無錯樣本」。這裡的「變體」與 Input variant（輸入版本）無關。
 
+**Crosscheck**:
+讓模型在沒看過 ground truth 的情況下，盲選最敏感的句子、盲抽 Must-retain fact，再與 ground truth 對照，找出 ground truth 可能漏了或寫錯的地方。產生分歧清單，由人決定要不要改 ground truth；指令本身從不改它。中文寫作「交叉檢驗」。
+
 **Calibration**:
 對 Gold set 跑一個 Judge，量度它的 recall、precision、誤報等，用來選主 Judge，並把主 Judge 的 recall 列在 Gate 旁邊。prompt、Judge 設定或 Gold set 項目改了，舊的結果就過期。中文寫作「校準」。
 

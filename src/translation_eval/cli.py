@@ -10,13 +10,14 @@
   uv run --locked python -I -m translation_eval report --config <實驗設定>
   uv run --locked python -I -m translation_eval review --config <實驗設定>
   uv run --locked python -I -m translation_eval calibrate --config <實驗設定> [--judge <id>] [--dry-run] [--limit <N>] [--redo-errors]
+  uv run --locked python -I -m translation_eval crosscheck --config <實驗設定> [--dry-run] [--article <id>]... [--limit <N>] [--redo-errors]
   uv run --locked python -I -m translation_eval gold check|sample --config <實驗設定> [--count 30] [--seed 1]
 各子命令都有 --data-dir（預設 data）。需要 key 的只有 translate，真跑的指令見 docs/data-pipeline.md。
 """
 import argparse
 import sys
 
-from . import baselines, calibrate, check, cms, gold, judging, provider_listing, report, review, translate
+from . import baselines, calibrate, check, cms, crosscheck, gold, judging, provider_listing, report, review, translate
 from .errors import InputError
 from .transport import Transport, TransportForbidden, UrllibTransport
 
@@ -40,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
     cal.add_argument("--dry-run", action="store_true", help="不送出請求，只印出請求數和 endpoint")
     cal.add_argument("--limit", type=_positive_int, help="最多執行幾個請求")
     cal.add_argument("--redo-errors", action="store_true", help="重做結果為 error 的請求")
+    x = sub.add_parser("crosscheck", help="模型盲選最敏感的句子、盲抽事實，與 ground truth 對照（要 key）")
+    x.add_argument("--dry-run", action="store_true", help="不送出請求，只印出請求數和 endpoint")
+    x.add_argument("--article", action="append", default=[], help="只跑這篇文章（可重覆）")
+    x.add_argument("--limit", type=_positive_int, help="最多執行幾個請求")
+    x.add_argument("--redo-errors", action="store_true", help="重做結果為 error 的請求")
     g = sub.add_parser("gold", help="Gold set：驗證並列出數量，或抽樣給 Pan 審閱")
     g_sub = g.add_subparsers(dest="gold_command", required=True)
     g_check = g_sub.add_parser("check", help="驗證 Gold set，列出各類別、Direction、domain 的數量")
@@ -52,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     m = sub.add_parser("import-cms", help="把 CMS 匯出（CSV）轉成文章檔")
     m.add_argument("--csv", required=True, help="CMS 匯出的 CSV")
     m.add_argument("--out", default="data/cms-articles", help="文章檔的輸出目錄（預設 data/cms-articles）")
-    for p in (t, j, b, c, r, v, cal, g_sample):
+    for p in (t, j, b, c, r, v, cal, x, g_sample):
         p.add_argument("--config", required=True, help="實驗設定（JSON）")
         p.add_argument("--data-dir", default="data", help="輸出目錄（預設 data）")
     g_check.add_argument("--config", required=True, help="實驗設定（JSON）")   # 只驗證，不寫任何東西
@@ -89,6 +95,8 @@ def main(argv=None, transport: Transport | None = None) -> int:
             return report.handle(args)
         if args.command == "review":
             return review.handle(args)
+        if args.command == "crosscheck":
+            return crosscheck.handle(args, transport or UrllibTransport())
         if args.command == "calibrate":
             return calibrate.handle(args, transport or UrllibTransport())
         if args.command == "gold":
