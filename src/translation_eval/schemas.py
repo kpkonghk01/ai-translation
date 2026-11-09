@@ -265,6 +265,13 @@ class GroundTruthRef(StrictModel):
     group_overrides: dict[Slug, Slug] = {}
 
 
+class ComparisonConfig(StrictModel):
+    """分數與 baseline 的比較。baseline：質素的 baseline（方案 A）的 id，所有 Approach 與它比；also_against：某個 Direction 另外要比的
+    baseline（繁→簡另外與方案 E 比）。id 可以是 Approach 或 baseline（import-baseline）的 id。"""
+    baseline: Slug
+    also_against: dict[Direction, list[Slug]] = {}
+
+
 class ReviewConfig(StrictModel):
     """審閱清單的抽查：從不是必看的項目中，以固定種子抽出這個比例。"""
     sample_rate: float = Field(default=0.1, ge=0, le=1)
@@ -287,6 +294,7 @@ class ExperimentConfig(StrictModel):
     judging: JudgingConfig | None = None
     ground_truth: GroundTruthRef | None = None
     review: ReviewConfig = ReviewConfig()
+    comparison: ComparisonConfig | None = None
     weights: Weights = Weights()
     term_list: str | None = None   # Term List 檔的路徑；不設就不注入、也不做 Terminology 檢查
     length_ratio: dict[Direction, LengthRatioRange] = {}   # 覆寫預設的長度比例範圍（見 config.py）

@@ -66,6 +66,10 @@ class OutputDir:
         return self.root / "check-meta.json"
 
     @property
+    def summary_path(self) -> Path:
+        return self.root / "summary.md"
+
+    @property
     def decisions_path(self) -> Path:
         return self.root / "review-decisions.json"
 
@@ -174,6 +178,9 @@ class OutputDir:
 
     def write_report(self, text: str) -> None:
         self._replace(self.report_path, text)
+
+    def write_summary(self, text: str) -> None:
+        self._replace(self.summary_path, text)
 
     def write_review(self, text: str) -> None:
         self._replace(self.review_path, text)

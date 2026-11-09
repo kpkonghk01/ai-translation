@@ -153,7 +153,7 @@ def group_lines(heading: str, score: GroupScore, weights: Weights) -> list[str]:
 TASK_TEMPLATES = (("fact", "Must-retain fact 核對", fact_template), ("screen", "全文篩查", screen_template))
 
 
-def header_lines(experiment: Experiment, calls: list[JudgeCall]) -> list[str]:
+def header_lines(experiment: Experiment, calls: list[JudgeCall], *, summary: bool = False) -> list[str]:
     """Judge 的設定、同家族的例外、權重與正規化方式：放在報告開頭，看結果之前先看到。calls 是所有任務的請求紀錄。"""
     judging, template = experiment.config.judging, judge_template()
     lines = ["## Judge 設定", ""]
@@ -169,7 +169,7 @@ def header_lines(experiment: Experiment, calls: list[JudgeCall]) -> list[str]:
                 other, other_stale = load(), sum(1 for c in ran if (c.prompt_hash, c.config_hash) != (load().hash, judge.config_hash))
                 lines.append(f"  - {c.id} 的{label}：prompt {other.id} {other.hash}（{len(ran)} 個請求）"
                              + (f"；⚠ 有 {other_stale} 個請求是用不同的設定或 prompt 跑的" if other_stale else ""))
-    lines += [f"- 同家族的例外：{e.approach} × {e.judge}：{e.reason}" for e in judging.same_family_exceptions]
+    lines += [f"- 同家族的例外：{e.approach} × {e.judge}" + ("" if summary else f"：{e.reason}") for e in judging.same_family_exceptions]   # 理由是自由文字，摘要版不放
     weights = experiment.config.weights
     lines.append(f"- 權重：minor {_number(weights.minor)}、major {_number(weights.major)}、critical {_number(weights.critical)}")
     lines.append("- 正規化：每千字原文的罰分，分母是評完的 Component 的原文字數（不計空白）")
@@ -178,7 +178,7 @@ def header_lines(experiment: Experiment, calls: list[JudgeCall]) -> list[str]:
     return lines + [""]
 
 
-def source_defect_lines(calls: list[JudgeCall]) -> list[str]:
+def source_defect_lines(calls: list[JudgeCall], *, summary: bool = False) -> list[str]:
     """所有 Judge 在所有請求裡列出的 Source defect，以「文章、Component、原文片段」去重，不按 Approach 重覆。"""
     found: dict[tuple, tuple[str, set]] = {}
     spans: dict[tuple, str] = {}
@@ -189,9 +189,11 @@ def source_defect_lines(calls: list[JudgeCall]) -> list[str]:
             spans.setdefault(key, _one_line(defect.source_span))
             judges.add(call.judge)
     lines = ["## Source defect", ""]
-    lines += [f"- 文章 {key[0]} ・ {key[1]} ・「{spans[key]}」：{issue}（Judge {'、'.join(sorted(judges))}）"
-              for key, (issue, judges) in sorted(found.items())] or ["沒有 Judge 發現原文的問題。"]
-    return lines + [""]
+    if summary:   # 摘要版沒有原文：只列在哪一篇的哪個 Component、哪些 Judge 發現的
+        lines += [f"- 文章 {key[0]} ・ {key[1]}（Judge {'、'.join(sorted(judges))}）" for key, (_, judges) in sorted(found.items())]
+    else:
+        lines += [f"- 文章 {key[0]} ・ {key[1]} ・「{spans[key]}」：{issue}（Judge {'、'.join(sorted(judges))}）" for key, (issue, judges) in sorted(found.items())]
+    return lines + ([] if found else ["沒有 Judge 發現原文的問題。"]) + [""]
 
 
 def screening_stats_lines(records: list[RunRecord], articles, translations, calls_by_run) -> list[str]:
@@ -215,38 +217,61 @@ def screening_stats_lines(records: list[RunRecord], articles, translations, call
             "（交審閱清單，不計分、不決定 Gate）"]
 
 
-def judge_settings_lines(experiment: Experiment, out: OutputDir) -> list[str]:
-    return header_lines(experiment, out.read_judge_calls(None)) if experiment.judges else []
+def judge_settings_lines(experiment: Experiment, out: OutputDir, *, summary: bool = False) -> list[str]:
+    return header_lines(experiment, out.read_judge_calls(None), summary=summary) if experiment.judges else []
 
 
-def judge_lines(experiment: Experiment, out: OutputDir, records: list[RunRecord], rows: list[ComponentResult], articles, decisions: Decisions) -> list[str]:
-    """Judge 的結果：每個 Approach × Direction × 輸入版本 × Judge 一節，加上 Source defect 清單。"""
+@dataclass
+class JudgeContext:
+    """算 MQM 分數需要的資料：報告的 Judge 評核與 baseline 比較共用。records 是 MQM 要評的 ok 的 Run（mqm_run_limit 刻意沒評的不在內，
+    它們不算「尚未評完」）。"""
+    records: list[RunRecord]
+    articles: dict
+    translations: dict
+    calls_by_judge_run: dict
+    rows_by_run: dict
+    weights: Weights
+    decisions: Decisions
+
+    def score(self, records: list[RunRecord], judge_id: str) -> GroupScore:
+        return score_group(records, self.articles, self.translations, self.calls_by_judge_run[judge_id], self.rows_by_run, self.weights, judge_id,
+                           self.decisions)
+
+
+def judge_context(experiment: Experiment, out: OutputDir, records: list[RunRecord], rows: list[ComponentResult], articles,
+                  decisions: Decisions) -> JudgeContext | None:
+    """沒有 Judge 或還沒有 MQM 紀錄時是 None。"""
     calls = out.read_judge_calls()
     if not experiment.judges or not calls:
-        return []
+        return None
     limits = experiment.config.judging.mqm_run_limit
-    # mqm_run_limit 刻意沒有評的 Run 不算「尚未評完」：不在這一節
     ok_records = [r for r in records if r.outcome.value == "ok" and not (r.approach in limits and r.run_index > limits[r.approach])]
-    translations = {RunKey.of(r): out.read_translation(r) for r in ok_records}
     calls_by_judge_run = defaultdict(lambda: defaultdict(list))
     for call in calls:
         calls_by_judge_run[call.judge][RunKey.of(call)].append(call)
     rows_by_run = defaultdict(list)
     for row in rows:
         rows_by_run[RunKey.of(row)].append(row)
+    return JudgeContext(ok_records, articles, {RunKey.of(r): out.read_translation(r) for r in ok_records}, calls_by_judge_run, rows_by_run,
+                        experiment.config.weights, decisions)
+
+
+def judge_lines(experiment: Experiment, out: OutputDir, ctx: JudgeContext | None, *, summary: bool = False) -> list[str]:
+    """Judge 的結果：每個 Approach × Direction × 輸入版本 × Judge 一節，加上 Source defect 清單。summary：摘要版，Source defect 只列位置。"""
+    if ctx is None:
+        return []
     screen_by_judge_run = defaultdict(lambda: defaultdict(list))
     for call in out.read_judge_calls("screen"):
         screen_by_judge_run[call.judge][RunKey.of(call)].append(call)
     lines = ["## Judge 評核", ""]
-    groups = sorted({(r.approach, r.direction, r.input_variant) for r in ok_records})
+    groups = sorted({(r.approach, r.direction, r.input_variant) for r in ctx.records})
     for judge in experiment.judges:
         for approach, direction, variant in groups:
-            members = [r for r in ok_records if (r.approach, r.direction, r.input_variant) == (approach, direction, variant)]
-            if not any(RunKey.of(r) in calls_by_judge_run[judge.id] for r in members):
+            members = [r for r in ctx.records if (r.approach, r.direction, r.input_variant) == (approach, direction, variant)]
+            if not any(RunKey.of(r) in ctx.calls_by_judge_run[judge.id] for r in members):
                 continue
-            score = score_group(members, articles, translations, calls_by_judge_run[judge.id], rows_by_run, experiment.config.weights, judge.id, decisions)
             tag = "" if variant is InputVariant.FULL else f"（{variant}）"
-            block = group_lines(f"### {approach} × {direction}{tag} × Judge {judge.id}（{judge.config.role}）", score, experiment.config.weights)
-            screened = screening_stats_lines(members, articles, translations, screen_by_judge_run[judge.id])
+            block = group_lines(f"### {approach} × {direction}{tag} × Judge {judge.id}（{judge.config.role}）", ctx.score(members, judge.id), ctx.weights)
+            screened = screening_stats_lines(members, ctx.articles, ctx.translations, screen_by_judge_run[judge.id])
             lines += block[:-1] + screened + block[-1:]   # block 的最後一項是空行
-    return lines + source_defect_lines(calls)
+    return lines + source_defect_lines(out.read_judge_calls(), summary=summary)

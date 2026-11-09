@@ -52,6 +52,9 @@ _Avoid_: OpenCC baseline（容易被誤解為標準設定）
 用來比較的既有譯文：不經本框架呼叫 API，由目錄匯入成 Run，並記下標籤（來源的版本）。目前只有方案 E，即 Current service 的輸出。
 _Avoid_: 基線
 
+**Quality baseline**:
+分數比較時，其他 Approach 與 baseline 都拿來對照的那一個：方案 A（用 API 跑的 Approach，不是匯入的 Baseline）。繁→簡另外與 Baseline 方案 E 比。中文寫作「質素 baseline」。
+
 **Run**:
 一個 Approach 對一篇 Article 在一個 Direction 上的一次執行。
 _Avoid_: trial；attempt（見 Attempt，那是 Run 之內的一次送出）
@@ -95,6 +98,9 @@ Judge 或人手對一條 Must-retain fact 的判定：Present（保留）、Weak
 **Warning**:
 Deterministic check 標出、交人手看但不計分的提示，例如長度比例異常、數字或引語疑似遺失、疑似 Refusal。Finding 計分，Warning 不計分。中文寫作「警示」。
 _Avoid_: flag；把 Warning 叫作 Finding
+
+**Summary report**:
+`report` 同時寫出的、只含數字、文章 id 和 Component id 的報告，沒有原文、譯文和事實文字，可以交給 Ivan／Stephen。中文寫作「摘要版」。
 
 **Screening**:
 Judge 對一個 Run 的全文做的一次篩查：列出疑似淡化、缺失或比原文更聳動的地方，包括 ground truth 沒寫到的。結果只進審閱清單，不決定 Gate，也不計分。中文寫作「全文篩查」。

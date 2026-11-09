@@ -5,8 +5,12 @@
 用法：
   uv run --locked python -I -m translation_eval report --config <實驗設定> [--data-dir data]
 
+同時寫兩份：report.md（完整版）和 summary.md（摘要版：只含數字、文章 id、Component id 和固定的代碼，沒有原文、譯文、事實文字、Judge 寫的理由和
+審閱備註，可以交給 Ivan／Stephen）。兩份用同一批數字產生。
+
 每個比率都附分子和分母。還有 ok 的 Run 沒有 check 結果時不產生報告：否則漏段數會靜默地少算。
 """
+import re
 from collections import Counter, defaultdict
 
 from .check import require_checked
@@ -14,7 +18,8 @@ from .config import Experiment, PlannedApproach, length_ranges, load_experiment
 from .articles import load_article
 from .gate_report import gate_lines, ground_truth_settings_lines
 from .ground_truth import GroundTruth, load_ground_truth
-from .judge_report import judge_lines, judge_settings_lines
+from .comparison import comparison_lines
+from .judge_report import judge_context, judge_lines, judge_settings_lines
 from .review import completion_lines
 from .review_decisions import apply_check_decisions, check_decisions, load_decisions
 from .review_items import build_items
@@ -42,28 +47,40 @@ def format_ratio(numerator: int, denominator: int) -> str:
     return f"{numerator}/{denominator}（{100 * numerator / denominator:.1f}%）"
 
 
-def _counts(values, none_label: str = "未回報") -> str:
-    return "、".join(f"{v if v is not None else none_label}（{n} 個 Run）" for v, n in sorted(Counter(values).items(), key=lambda kv: str(kv[0])))
+_SAFE_LABEL = re.compile(r"[A-Za-z0-9_:. \-]{1,60}")
+
+
+def shown(value, summary: bool):
+    """摘要版只放得出是固定代碼的字串（Block 原因、模型版本、baseline 標籤等）：provider 或檔案裡的其他文字不外傳。"""
+    if not summary or value is None or _SAFE_LABEL.fullmatch(str(value)):
+        return value
+    return "（其他）"
+
+
+def _counts(values, none_label: str = "未回報", summary: bool = False) -> str:
+    counted = Counter(shown(v, summary) for v in values)
+    return "、".join(f"{v if v is not None else none_label}（{n} 個 Run）" for v, n in sorted(counted.items(), key=lambda kv: str(kv[0])))
 
 
 def render(experiment: Experiment, out: OutputDir, records: list[RunRecord], rows: list[ComponentResult], extra_lines: list[str] = (),
-           truth: GroundTruth | None = None, review_lines: list[str] = ()) -> str:
+           truth: GroundTruth | None = None, review_lines: list[str] = (), summary: bool = False) -> str:
     cfg = experiment.config
     lines = [
-        f"# 評核報告：{cfg.id}", "",
+        f"# 評核報告摘要：{cfg.id}" if summary else f"# 評核報告：{cfg.id}", "",
+        *(["只含數字、文章 id 和 Component id，沒有原文、譯文和事實文字；完整版在 report.md。", ""] if summary else []),
         "## 實驗設定", "",
         f"- 實驗 id：{cfg.id}",
         f"- 文章：{len(cfg.articles.ids)} 篇（{'、'.join(cfg.articles.ids)}）",
         f"- Direction：{'、'.join(cfg.directions)}",
         f"- 輸入版本：{'、'.join(sorted({r.input_variant for r in records}))}",
         f"- Term List：{term_list_text(experiment)}",
-        f"- Run 紀錄裡的 Term List hash：{_counts((r.term_list_hash for r in records if not r.is_baseline), none_label='未使用')}",
+        f"- Run 紀錄裡的 Term List hash：{_counts((r.term_list_hash for r in records if not r.is_baseline), none_label='未使用', summary=summary)}",
         "- 長度比例範圍（警示用）：" + "；".join(f"{d} {r.min}–{r.max}" for d, r in length_ranges(cfg).items() if d in cfg.directions),
         "", "## Approach 設定", "",
     ]
     for planned in experiment.approaches:
-        lines += approach_lines(planned, [r for r in records if r.approach == planned.config.id])
-    lines += judge_settings_lines(experiment, out)
+        lines += approach_lines(planned, [r for r in records if r.approach == planned.config.id], summary)
+    lines += judge_settings_lines(experiment, out, summary=summary)
     lines += ground_truth_settings_lines(experiment, truth)
     lines += review_lines
     lines += ["## Prompt", ""]
@@ -73,7 +90,7 @@ def render(experiment: Experiment, out: OutputDir, records: list[RunRecord], row
     baseline_ids = sorted({b.id for b in cfg.baselines} | {r.approach for r in records if r.is_baseline})   # 已匯入的也列出，不看現在的設定
     if baseline_ids:
         lines += ["## Baseline", ""]
-        lines += [f"- {i}：{_counts(r.baseline_label for r in records if r.approach == i) or '尚未匯入'}" for i in baseline_ids]
+        lines += [f"- {i}：{_counts((r.baseline_label for r in records if r.approach == i), summary=summary) or '尚未匯入'}" for i in baseline_ids]
         lines.append("")
 
     planned_runs = {(p.id, d, v): len(cfg.articles.ids) * p.runs
@@ -86,7 +103,7 @@ def render(experiment: Experiment, out: OutputDir, records: list[RunRecord], row
         rows_by_section[section_key(r)].append(r)
     sections = list(planned_runs) + sorted(set(records_by_section) - set(planned_runs))   # 紀錄裡有、設定裡沒有的也列出
     for key in sections:
-        lines += section_lines(*key, planned_runs.get(key), records_by_section[key], rows_by_section[key])
+        lines += section_lines(*key, planned_runs.get(key), records_by_section[key], rows_by_section[key], summary)
     lines += block_incentive_lines(records)
     lines += extra_lines
     return "\n".join(lines).rstrip("\n") + "\n"
@@ -146,7 +163,7 @@ def term_list_text(experiment: Experiment) -> str:
     return f"目前 {term_list.prompt_hash}（{len(term_list.entries)} 條）"
 
 
-def approach_lines(planned: PlannedApproach, records: list[RunRecord]) -> list[str]:
+def approach_lines(planned: PlannedApproach, records: list[RunRecord], summary: bool = False) -> list[str]:
     approach = planned.config
     hashes = Counter(r.config_hash for r in records)
     hash_text = "、".join(
@@ -161,16 +178,16 @@ def approach_lines(planned: PlannedApproach, records: list[RunRecord]) -> list[s
         f"- 重試：最多 {approach.retry.max_attempts} 次嘗試，退避起點 {approach.retry.base_delay_seconds} 秒",
         f"- 每篇每個 Direction 每個輸入版本的 Run 次數：{planned.runs}（輸入版本：{'、'.join(planned.input_variants)}）",
         f"- 設定 hash：{hash_text}",
-        f"- 實際回應的模型版本：{_counts(r.model_version for r in records) or '無'}",
-    ] + ([f"- 實際服務的 provider：{_counts((r.served_provider for r in records), none_label='回應沒有寫') or '無'}"]
+        f"- 實際回應的模型版本：{_counts((r.model_version for r in records), summary=summary) or '無'}",
+    ] + ([f"- 實際服務的 provider：{_counts((r.served_provider for r in records), none_label='回應沒有寫', summary=summary) or '無'}"]
          if approach.provider == "openrouter" else []) + [""]
 
 
 def section_lines(approach_id: str, direction: str, variant: InputVariant, planned: int | None,
-                  records: list[RunRecord], rows: list[ComponentResult]) -> list[str]:
+                  records: list[RunRecord], rows: list[ComponentResult], summary: bool = False) -> list[str]:
     n = len(records)
     by_outcome = Counter(r.outcome for r in records)
-    reasons = Counter(r.reason for r in records if r.outcome is Outcome.BLOCK)
+    reasons = Counter(shown(r.reason, summary) for r in records if r.outcome is Outcome.BLOCK)
     reason_text = "、".join(f"{reason} {count}" for reason, count in sorted(reasons.items(), key=lambda kv: str(kv[0]))) or "無"
     if planned is None:
         recorded = f"不在目前的實驗設定內，已有紀錄 {n}"
@@ -214,7 +231,14 @@ def handle(args) -> int:
     items = build_items(experiment, out, records, rows, articles, truth)
     check_decisions(decisions, items)   # 決定過期或指向不存在的項目：停止，不產生報告
     rows = apply_check_decisions(rows, decisions)
-    extra = judge_lines(experiment, out, records, rows, articles, decisions) + gate_lines(experiment, out, records, articles, truth, decisions)
-    out.write_report(render(experiment, out, records, rows, extra, truth, completion_lines(items, decisions)))
-    print(f"已寫入 {out.report_path}（{len(records)} 個 Run）")
+    ctx = judge_context(experiment, out, records, rows, articles, decisions)
+
+    def build(summary: bool) -> str:
+        extra = (judge_lines(experiment, out, ctx, summary=summary) + comparison_lines(experiment, ctx, records)
+                 + gate_lines(experiment, out, records, articles, truth, decisions))
+        return render(experiment, out, records, rows, extra, truth, completion_lines(items, decisions), summary=summary)
+
+    out.write_report(build(False))
+    out.write_summary(build(True))
+    print(f"已寫入 {out.report_path} 和 {out.summary_path}（{len(records)} 個 Run）")
     return 0

@@ -86,6 +86,7 @@ def load_experiment(path: str) -> Experiment:
     problems += [f"baseline 的 id 與 Approach 的 id 重覆：{i}" for i in clashes]
     judges = load_judges(config, seen, problems)
     problems += gate_config_problems(config, judges)
+    problems += comparison_problems(config, seen)
     if problems:
         raise InputError(problems)
     term_list = load_term_list(config.term_list) if config.term_list else LoadedTermList.unused()
@@ -130,4 +131,16 @@ def gate_config_problems(config: ExperimentConfig, judges: list[PlannedJudge]) -
             problems.append(f"judging.primary_judges 的分組不存在：{group}（有：{'、'.join(sorted(groups))}）")
         if by_id.get(judge_id) is not JudgeRole.PRIMARY:
             problems.append(f"judging.primary_judges 的 Judge {judge_id}（分組 {group}）不存在，或角色不是 primary")
+    return problems
+
+
+def comparison_problems(config: ExperimentConfig, approach_ids: set[str]) -> list[str]:
+    """比較用的 id 要是實驗內的 Approach 或 baseline；also_against 的 Direction 要在實驗內。"""
+    if config.comparison is None:
+        return []
+    known = approach_ids | {b.id for b in config.baselines}
+    wanted = [("comparison.baseline", config.comparison.baseline)]
+    wanted += [(f"comparison.also_against.{d}", i) for d, ids in config.comparison.also_against.items() for i in ids]
+    problems = [f"{where} 指向不存在的 Approach 或 baseline：{i}" for where, i in wanted if i not in known]
+    problems += [f"comparison.also_against 的 Direction 不在實驗內：{d}" for d in config.comparison.also_against if d not in config.directions]
     return problems
