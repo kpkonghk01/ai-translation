@@ -9,7 +9,6 @@ import gemini_samples
 import openrouter_samples
 from fake_transport import FunctionTransport
 from fixtures import APPROACH, FAKE_KEY, Workspace
-from translation_eval.transport import TransportTimeout
 
 ID = "9000001"
 PARAGRAPH_TEXTS = [f"第{n}段虛構的內容，" + "文字" * 30 for n in range(1, 7)]

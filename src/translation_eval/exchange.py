@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from .outcome import Interpretation, classify_text
 from .providers import Adapter
-from .schemas import ApproachConfig, Attempt, Outcome, RetryConfig
+from .schemas import ApproachConfig, Attempt, Outcome
 from .transport import Request, Transport, TransportFailure
 
 

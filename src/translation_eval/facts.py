@@ -15,6 +15,9 @@ from .ground_truth import Sentence, input_hash
 from .schemas import JudgeCall, Outcome, Verdict, WeakeningType
 
 
+FAILING_VERDICTS = (Verdict.WEAKENED, Verdict.ABSENT)   # 事實最終判成這兩個，所在的句子就失敗
+
+
 class FactStatus(StrEnum):
     FINAL = "final"
     UNCERTAIN = "uncertain"
@@ -54,9 +57,10 @@ def judge_facts(calls: list[JudgeCall], sentences: list[Sentence]) -> FactJudgme
     fresh = {c.call_index: c for c in calls if c.input_hash == current}
     if len(fresh) < 2:
         return FactJudgment(Status.INCOMPLETE, {}, [], stale=len(fresh) < len(calls))
+    ordered = tuple(sorted(fresh.values(), key=lambda c: c.call_index))
     succeeded = [c for c in fresh.values() if c.outcome is Outcome.OK]
     failed = [c.outcome for c in fresh.values() if c.outcome is not Outcome.OK]
     if not succeeded:
-        return FactJudgment(Status.UNJUDGED, {}, failed, calls=tuple(sorted(fresh.values(), key=lambda c: c.call_index)))
+        return FactJudgment(Status.UNJUDGED, {}, failed, calls=ordered)
     facts = {f.key: _result([v for c in succeeded for v in c.verdicts if v.fact == f.key]) for s in sentences for f in s.facts}
-    return FactJudgment(Status.JUDGED, facts, failed, calls=tuple(sorted(fresh.values(), key=lambda c: c.call_index)))
+    return FactJudgment(Status.JUDGED, facts, failed, calls=ordered)

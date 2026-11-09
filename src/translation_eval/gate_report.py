@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from .articles import apply_variant
 from .config import Experiment
 from .consistency import Status
-from .facts import FactResult, FactStatus, judge_facts
+from .facts import FAILING_VERDICTS, FactResult, FactStatus, judge_facts
 from .ground_truth import GroundTruth, Sentence
 from .judge_report import ratio
 from .pairs import component_pairs
@@ -27,7 +27,6 @@ from .schemas import Domain, InputVariant, Outcome, ReviewAction, RunKey, RunRec
 from .stats import clopper_pearson_upper
 from .store import OutputDir
 
-FAILING = (Verdict.WEAKENED, Verdict.ABSENT)
 LETTERS = (WeakeningType.A, WeakeningType.B, WeakeningType.C, WeakeningType.D, WeakeningType.E, WeakeningType.F)
 PENDING_LABELS = (("uncertain", "uncertain"), ("invalid", "無效"), ("unjudged", "Unjudged"), ("incomplete", "尚未評完"), ("stale", "過期"))
 
@@ -48,7 +47,7 @@ class GroupGate:
 
 def _record_sentence(gate: GroupGate, sentence_id: tuple, run_index: int, states: list) -> None:
     """states：這一句每條事實的 (事實, 結果)；結果是 None 表示這條事實還沒有最終 verdict。"""
-    failed = any(r is not None and r.verdict in FAILING for _, r in states)
+    failed = any(r is not None and r.verdict in FAILING_VERDICTS for _, r in states)
     passed = all(r is not None and r.verdict is Verdict.PRESENT for _, r in states)
     if failed or passed:
         gate.sentence_runs[sentence_id][run_index] = "failed" if failed else "passed"
@@ -58,7 +57,7 @@ def _record_sentence(gate: GroupGate, sentence_id: tuple, run_index: int, states
         if result is None:
             continue
         gate.fact_final.add(slot)
-        if result.verdict in FAILING:
+        if result.verdict in FAILING_VERDICTS:
             gate.fact_failed[slot].add(result.weakening_type)
             if result.verdict is Verdict.ABSENT:
                 gate.fact_absent.add(slot)

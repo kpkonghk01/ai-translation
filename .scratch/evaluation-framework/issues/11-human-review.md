@@ -30,3 +30,15 @@
 - **報告需要讀文章檔**的條件多了一個：有決定檔時（要重算項目的 hash）。沒有 Judge、沒有 ground truth、沒有決定檔時還是不讀。
 - 還沒有的：全文篩查結果（ticket 12 產生之後才有項目）、Source defect 的審閱（現在只在報告裡列出）。
 
+### 2026-11-09 review 之後的修正
+
+- **審閱完成度一定出現在報告開頭**（spec 第 10 節）：原本沒有 Judge、ground truth、決定檔時不讀文章，報告沒有「審閱」一節。現在 `report` 一律讀有 ok 的 Run 的文章（`translate` 本來就要這些文章檔）。
+- **過期或不存在的決定在 `report` 不能被略過**：原本所有 Run 都不是 ok（例如重翻後被 Block）時，決定沒有被檢查，`report` 成功而 `review` 失敗。
+- **Deterministic Finding 的 `override severity` 原本只通過驗證、從來沒套用**。現在會套用（改了罰分的權重）。
+- **兩個項目共用同一個 key**：同一個 Component 內身分一樣的項目（兩處一樣的殘留漢字；Judge 的兩個一樣的 Finding，一個一致一個 uncertain）原本 key 相同，駁回一個會連另一個一起駁回。現在 key 帶序號。
+- **警示項目的原文與譯文顯示錯誤，決定也不會過期**：「不翻譯的 Component 被改動」和多出的 Component 沒有文字可顯示，原本顯示「（沒有）」，改了內容 hash 也不變。現在顯示整個 Component（有長度上限），hash 涵蓋它。
+- **漏段與 Gate 不能互相矛盾**：駁回漏段 Finding 會讓報告的漏段數變 0，但 Gate 還是把那個 Component 的事實判 Absent。現在程式證明的結果（缺 Component 的事實、漏段／多出／重覆／type 被改的 Finding）只能 `accept`。
+- **無效的 fact 輸出**（回了不認識的 fact_id、或不是物件）原本不在清單裡。現在列在「無效的 Judge 輸出」。
+- **`mqm_run_limit` 刻意沒評的 Run** 不再有 MQM 項目（原本之前評過的 Run 會有項目，但不計分，決定沒有作用）。
+- 其他：把 `require_checked` 移進 `check.py`，`review` 與 `report` 不再互相 import；清掉未用的 import；GLOSSARY 加「審閱清單」。
+

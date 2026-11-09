@@ -14,11 +14,11 @@ from dataclasses import dataclass, field
 from .articles import apply_variant, is_main_type
 from .config import Experiment
 from .consistency import Status, judge_component
-from .pairs import ComponentPair, component_pairs
+from .pairs import component_pairs
 from .schemas import ComponentResult, Dimension, InputVariant, JudgeCall, ReviewAction, RunKey, RunRecord, Severity, Weights
 from .prompts import judge_template
 from .review_decisions import Decisions
-from .review_items import finding_item_key
+from .review_items import finding_item_keys
 from .store import OutputDir
 from .textrules import nonspace_length, squash
 
@@ -99,18 +99,19 @@ def score_group(records: list[RunRecord], articles, translations, calls_by_run, 
                 score.unjudged_reasons.update(o.value for o in judgment.failed)
                 continue
             role = score.main if pair.is_main else score.peripheral
-            for merged in judgment.findings:
-                decision = decisions.get(finding_item_key(key, pair.id, judge_id, merged.finding))
+            keys = finding_item_keys(key, pair.id, judge_id, [m.finding for m in judgment.findings])
+            for item_key, merged in zip(keys, judgment.findings):
+                decision = decisions.get(item_key)
                 if decision is not None and decision.action is ReviewAction.REJECT:   # 審閱駁回：不計分，也不計數
                     continue
-                reviewed = decision is not None   # accept 或 override：審閱者確認了，算作一致
-                severity = decision.severity if decision is not None and decision.severity else merged.finding.severity
+                consistent = merged.consistent or decision is not None   # accept 或 override：審閱者確認了，算作一致
+                severity = (decision.severity if decision else None) or merged.finding.severity
                 score.severity_mismatches += merged.severity_mismatch
                 if merged.finding.dimension is Dimension.FIDELITY_OF_FORCE:
-                    score.fof_consistent += merged.consistent or reviewed
-                    score.fof_uncertain += not (merged.consistent or reviewed)
+                    score.fof_consistent += consistent
+                    score.fof_uncertain += not consistent
                 else:
-                    _add(role, merged.finding.dimension, severity, weights, merged.consistent or reviewed)
+                    _add(role, merged.finding.dimension, severity, weights, consistent)
     return score
 
 

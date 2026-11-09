@@ -96,6 +96,9 @@ Judge 或人手對一條 Must-retain fact 的判定：Present（保留）、Weak
 Deterministic check 標出、交人手看但不計分的提示，例如長度比例異常、數字或引語疑似遺失、疑似 Refusal。Finding 計分，Warning 不計分。中文寫作「警示」。
 _Avoid_: flag；把 Warning 叫作 Finding
 
+**Review list**:
+`review` 產生的本機清單，列出審閱者要看的項目：必看（Gate 失敗、uncertain、無效、Unjudged、警示等，全部列出）與抽查（從其餘項目以固定種子抽出）。每個項目有 key 和輸入的 hash，審閱決定靠它們對上項目。中文寫作「審閱清單」、「必看」、「抽查」。
+
 **Review decision**:
 人手對一個審閱項目的決定：接受、駁回、改判 Verdict 或改判 Severity。報告重算時套用，不改動 Judge 的原始輸出。中文寫作「審閱決定」。
 

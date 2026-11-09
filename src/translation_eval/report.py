@@ -9,21 +9,18 @@
 """
 from collections import Counter, defaultdict
 
-from .check import current_check_meta
+from .check import require_checked
 from .config import Experiment, PlannedApproach, length_ranges, load_experiment
 from .articles import load_article
-from .errors import InputError
 from .gate_report import gate_lines, ground_truth_settings_lines
 from .ground_truth import GroundTruth, load_ground_truth
 from .judge_report import judge_lines, judge_settings_lines
 from .review import completion_lines
-from .review_decisions import Decisions, check_decisions, load_decisions, without_rejected_check_findings
-from .review_items import ReviewItem, build_items
+from .review_decisions import apply_check_decisions, check_decisions, load_decisions
+from .review_items import build_items
 from .schemas import ComponentResult, Dimension, Direction, InputVariant, Outcome, RunKey, RunRecord, WarningKind
 from .store import OutputDir
 
-MAX_LISTED = 20
-CHECK_META_LABELS = {"rules_version": "規則版本", "term_list_hash": "Term List", "length_ratio": "長度比例範圍"}
 WARNING_LABELS = {
     WarningKind.LENGTH_RATIO: "長度比例",
     WarningKind.NUMBER_MISSING: "數字遺失",
@@ -200,34 +197,6 @@ def section_lines(approach_id: str, direction: str, variant: InputVariant, plann
     ]
 
 
-def require_fresh_check(experiment: Experiment, out: OutputDir, records: list[RunRecord]) -> None:
-    """check 的結果取決於規則、Term List 和長度比例範圍。它們變了而沒有重跑 check，報告就會用舊結果，
-    而且看不出來，所以不產生報告。沒有任何 ok 的 Run（例如全部被 Block）就沒有東西要檢查，不需要 check。"""
-    if not any(r.outcome is Outcome.OK for r in records):
-        return
-    meta, current = out.read_check_meta(), current_check_meta(experiment)
-    if meta == current:
-        return
-    if meta is None:
-        reasons = ["沒有 check 紀錄，可能是舊版 check 跑的"]
-    else:
-        reasons = [CHECK_META_LABELS.get(name, name) for name in meta.differing_fields(current)]
-    raise InputError(f"check 的結果已過期（{'、'.join(reasons)}），請重新執行 check")
-
-
-def require_checked(experiment: Experiment, out: OutputDir, records: list[RunRecord], rows: list[ComponentResult]) -> None:
-    """ok 的 Run 都要有 check 結果，而且結果沒有過期：report 與 review 都以這些結果為準。"""
-    checked = {RunKey.of(r) for r in rows}
-    unchecked = [r for r in records if r.outcome is Outcome.OK and RunKey.of(r) not in checked]
-    if unchecked:
-        problems = [f"ok 的 Run 還沒有 check 結果，先執行 check：{r.label}"
-                    for r in unchecked[:MAX_LISTED]]
-        if len(unchecked) > MAX_LISTED:
-            problems.append(f"…另有 {len(unchecked) - MAX_LISTED} 個")
-        raise InputError(problems)
-    require_fresh_check(experiment, out, records)   # 先列出沒檢查過的 Run（較具體）；都檢查過了，才看結果是不是過期
-
-
 def handle(args) -> int:
     experiment = load_experiment(args.config)
     cfg = experiment.config
@@ -236,17 +205,16 @@ def handle(args) -> int:
     rows = out.read_components()
     require_checked(experiment, out, records, rows)
     decisions = load_decisions(out)
-    articles, truth, items = {}, None, None
-    if cfg.ground_truth:   # ground truth 對實驗內所有文章驗證，不只有 ok 的 Run 的文章
-        articles = {i: load_article(cfg.articles.dir, i) for i in cfg.articles.ids}
+    truth = None
+    # 審閱項目、Judge 的分數和 Gate 都要原文：ground truth 對實驗內所有文章驗證，其餘只要有 ok 的 Run 的文章
+    ids = cfg.articles.ids if cfg.ground_truth else sorted({r.article_id for r in records if r.outcome is Outcome.OK})
+    articles = {i: load_article(cfg.articles.dir, i) for i in ids}
+    if cfg.ground_truth:
         truth = load_ground_truth(cfg.ground_truth, articles)
-    elif experiment.judges or decisions.by_key:   # 只有 Judge 的分數和審閱決定需要讀文章；都沒有時不讀，文章檔不在也能出報告
-        articles = {r.article_id: load_article(cfg.articles.dir, r.article_id) for r in records if r.outcome is Outcome.OK}
-    if articles:
-        items = build_items(experiment, out, records, rows, articles, truth)
-        check_decisions(decisions, items)   # 決定過期或指向不存在的項目：停止，不產生報告
-    rows = without_rejected_check_findings(rows, decisions)
+    items = build_items(experiment, out, records, rows, articles, truth)
+    check_decisions(decisions, items)   # 決定過期或指向不存在的項目：停止，不產生報告
+    rows = apply_check_decisions(rows, decisions)
     extra = judge_lines(experiment, out, records, rows, articles, decisions) + gate_lines(experiment, out, records, articles, truth, decisions)
-    out.write_report(render(experiment, out, records, rows, extra, truth, completion_lines(items, decisions) if items is not None else []))
+    out.write_report(render(experiment, out, records, rows, extra, truth, completion_lines(items, decisions)))
     print(f"已寫入 {out.report_path}（{len(records)} 個 Run）")
     return 0

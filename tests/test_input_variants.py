@@ -1,7 +1,6 @@
 """輸入版本（full／main-only）：Run key、只送 Main component、check 的預期 Component、Block 誘因實驗的報告。"""
 import json
 import os
-import shutil
 import unittest
 
 import gemini_samples

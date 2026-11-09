@@ -5,19 +5,19 @@ key 不存在（輸入改變、重新判過，或抄錯），或 hash 已經改�
 各種項目能寫的決定：
   事實：accept（確認，只用於已有最終 verdict 的：Gate 失敗或通過的）、override 並寫 verdict（uncertain、無效、Unjudged 的要這樣解決）；
   Finding（Judge 的與 Deterministic 的）：accept（uncertain 的因此算作確認）、reject（不計分）、override 並寫 severity；
-  其他（無效的輸出、Unjudged 的 Component、警示）：accept 或 reject，只表示看過了。
+  其他（無效的輸出、Unjudged 的 Component、警示）：accept 或 reject，只表示看過了；
+  程式證明的結果（譯文缺少 Component 的事實、結構性的 Deterministic Finding）：只能 accept。
 原始的 Judge 輸出不會被改動：決定只在 report 計算時套用。
 """
 from dataclasses import dataclass, field
 
 from .errors import InputError
 from .loading import read_model
-from .review_items import ItemKind, ItemStatus, ReviewItem, check_finding_item_key
+from .review_items import FINAL_FACT_STATUSES, ItemKind, ReviewItem, check_finding_keys
 from .schemas import ComponentResult, ReviewAction, ReviewDecision, ReviewDecisionFile, RunKey
 from .store import OutputDir
 
 FINDING_KINDS = (ItemKind.FINDING, ItemKind.CHECK_FINDING)
-FINAL_FACT = (ItemStatus.FAILED, ItemStatus.PASSED)
 
 
 @dataclass(frozen=True)
@@ -26,6 +26,15 @@ class Decisions:
 
     def get(self, key: str) -> ReviewDecision | None:
         return self.by_key.get(key)
+
+    def __len__(self) -> int:
+        return len(self.by_key)
+
+    def action_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for decision in self.by_key.values():
+            counts[decision.action.value] = counts.get(decision.action.value, 0) + 1
+        return counts
 
 
 def load_decisions(out: OutputDir) -> Decisions:
@@ -41,10 +50,12 @@ def load_decisions(out: OutputDir) -> Decisions:
 
 def _rule_problem(decision: ReviewDecision, item: ReviewItem) -> str | None:
     action = decision.action
+    if item.locked and action is not ReviewAction.ACCEPT:
+        return "這是程式證明的結果（譯文缺少 Component，或結構性的 Finding），只能 accept（表示看過了）"
     if item.kind is ItemKind.FACT:
         if action is ReviewAction.REJECT:
             return "事實不能駁回：要改判就寫 override 並指定 verdict"
-        if action is ReviewAction.ACCEPT and item.status not in FINAL_FACT:
+        if action is ReviewAction.ACCEPT and item.status not in FINAL_FACT_STATUSES:
             return f"這個事實的狀態是 {item.status.value}，沒有最終 verdict 可以接受：要寫 override 並指定 verdict"
         if action is ReviewAction.OVERRIDE and decision.verdict is None:
             return "改判事實要寫 verdict"
@@ -72,11 +83,18 @@ def check_decisions(decisions: Decisions, items: list[ReviewItem]) -> None:
         raise InputError(problems)
 
 
-def without_rejected_check_findings(rows: list[ComponentResult], decisions: Decisions) -> list[ComponentResult]:
-    """Deterministic Finding 除非被審閱駁回，否則一律計入：駁回的從結果拿掉，之後的計數與分數都不含它。"""
+def apply_check_decisions(rows: list[ComponentResult], decisions: Decisions) -> list[ComponentResult]:
+    """Deterministic Finding 除非被審閱駁回，否則一律計入：駁回的從結果拿掉，改判 Severity 的換成審閱者判的，
+    之後的計數與分數都以這份結果為準。"""
     out = []
     for row in rows:
-        kept = [f for f in row.findings
-                if not ((d := decisions.get(check_finding_item_key(RunKey.of(row), row.component_id, f))) and d.action is ReviewAction.REJECT)]
-        out.append(row if len(kept) == len(row.findings) else row.model_copy(update={"findings": kept}))
+        findings = []
+        for key, finding in zip(check_finding_keys(RunKey.of(row), row.component_id, row.findings), row.findings):
+            decision = decisions.get(key)
+            if decision is not None and decision.action is ReviewAction.REJECT:
+                continue
+            if decision is not None and decision.severity is not None:
+                finding = finding.model_copy(update={"severity": decision.severity})
+            findings.append(finding)
+        out.append(row if findings == row.findings else row.model_copy(update={"findings": findings}))
     return out
