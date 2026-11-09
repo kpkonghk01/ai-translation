@@ -22,6 +22,15 @@ def paragraph(source_text, translated_text):
     return ("paragraph", {"text": source_text}, {"text": translated_text})
 
 
+SOURCE_26_CHARS = "虛構市政廳翻新工程嚴重延誤" * 2
+SOURCE_78_CHARS = "虛構市政廳翻新工程嚴重延誤" * 6
+
+
+def clean_pair():
+    """沒有任何 Finding 或警示的一對原文與譯文。"""
+    return build([paragraph("甲乙丙丁戊己庚辛壬癸。", "Ten letters worth of clean English.")])
+
+
 class ContentCheckCase(Workspace):
     def check_pair(self, source, translation, term_list=None):
         """翻譯（假 transport 回傳 translation）再 check；回傳 {component_id: 結果列}。"""

@@ -15,14 +15,14 @@ from datetime import datetime, timezone
 
 from pydantic import ValidationError
 
-from .articles import article_text, load_article, request_payload
+from .articles import article_text, field_problems, load_article, request_payload
 from .config import PlannedApproach, load_experiment
 from .errors import InputError
 from .exchange import send_with_retries
 from .outcome import Interpretation, refusal_or_malformed
 from .prompts import PromptTemplate, translation_template
 from .providers import adapter_for
-from .schemas import Article, InputVariant, Outcome, RunKey, RunRecord, Translation
+from .schemas import Article, Direction, InputVariant, Outcome, RunKey, RunRecord, Translation
 from .store import OutputDir
 from .terms import LoadedTermList, entries_in
 from .transport import Transport
@@ -50,10 +50,9 @@ def user_text(article: Article) -> str:
     return json.dumps(request_payload(article), ensure_ascii=False)
 
 
-def system_prompt(template: PromptTemplate, article: Article, term_list: LoadedTermList | None, direction) -> str:
+def system_prompt(template: PromptTemplate, article: Article, term_list: LoadedTermList, direction: Direction) -> str:
     """範本加上這篇文章原文出現過的 Term List 條目：沒出現的條目不注入。"""
-    entries = entries_in(term_list.terms if term_list else None, article_text(article), direction)
-    return template.render(entries, direction)
+    return template.render(entries_in(term_list.entries, article_text(article), direction), direction)
 
 
 def handle(args, transport: Transport) -> int:
@@ -93,7 +92,7 @@ def handle(args, transport: Transport) -> int:
     return 0
 
 
-def dry_run(pending, skipped: int, articles, term_list: LoadedTermList | None) -> int:
+def dry_run(pending, skipped: int, articles, term_list: LoadedTermList) -> int:
     chars = 0
     destinations = {}
     for key, planned in pending:
@@ -111,21 +110,23 @@ def dry_run(pending, skipped: int, articles, term_list: LoadedTermList | None) -
 
 
 def require_translation_shape(result: Interpretation) -> Interpretation:
-    """ok 的 JSON 還要有譯文的結構（components 是物件清單、每個有 id 與 type），否則不是預期的 JSON：
+    """ok 的 JSON 還要有譯文的結構（components 是物件清單、每個有 id 與 type，文字欄位的型別對），否則不是預期的 JSON：
     符合拒絕語的樣式是 refusal，否則是 malformed。
     Component 缺少、多出或 type 被改不在這裡判：那是 check 的工作，Run 本身仍是 ok。"""
     if result.outcome is not Outcome.OK:
         return result
     try:
-        Translation.model_validate(result.payload)
+        translation = Translation.model_validate(result.payload)
     except ValidationError:
         outcome, reason, _ = refusal_or_malformed(json.dumps(result.payload, ensure_ascii=False), "JSON 不是譯文的結構")
         return replace(result, outcome=outcome, reason=reason, payload=None)
+    if any(field_problems(c.type, c.model_dump()) for c in translation.components):
+        return replace(result, outcome=Outcome.MALFORMED, reason="譯文的文字欄位型別不符", payload=None)
     return result
 
 
 def translate_one(transport: Transport, key: RunKey, planned: PlannedApproach, article: Article, out: OutputDir,
-                  term_list: LoadedTermList | None, *, replaces_existing: bool) -> RunRecord:
+                  term_list: LoadedTermList, *, replaces_existing: bool) -> RunRecord:
     approach = planned.config
     adapter = adapter_for(approach)
     template = translation_template(key.direction)
@@ -149,7 +150,7 @@ def translate_one(transport: Transport, key: RunKey, planned: PlannedApproach, a
         model_version=result.model_version,
         prompt_id=template.id,
         prompt_hash=template.hash,
-        term_list_hash=term_list.hash if term_list else None,
+        term_list_hash=term_list.prompt_hash,
         config_hash=planned.config_hash,
         created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
     )

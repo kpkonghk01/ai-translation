@@ -3,8 +3,18 @@ import math
 import re
 from dataclasses import dataclass
 
-# 漢字：CJK 統一表意文字（含擴展 A 及以後）與相容表意文字。全形標點不是漢字，不在內。
-_HAN_RUN = re.compile("[㐀-䶿一-鿿豈-﫿\U00020000-\U0002fa1f]+")
+
+def squash(text: str) -> str:
+    """去掉所有空白。原文偶有多餘的空白，比對和計長度時都忽略。"""
+    return re.sub(r"\s+", "", text)
+
+
+def nonspace_length(text: str) -> int:
+    return len(squash(text))
+
+
+# 漢字：〇（數字零，二〇二四年的一部分）、CJK 統一表意文字（含擴展 A 到 I）與相容表意文字。全形標點不是漢字，不在內。
+_HAN_RUN = re.compile("[〇㐀-䶿一-鿿豈-﫿\U00020000-\U0002fa1f\U00030000-\U000323af]+")
 
 
 def han_runs(text: str) -> list[str]:
@@ -16,15 +26,13 @@ def contains_han(text: str) -> bool:
     return bool(_HAN_RUN.search(text))
 
 
-def nonspace_length(text: str) -> int:
-    return len("".join(text.split()))
-
-
 # ───────────── 數字 ─────────────
 
-_SOURCE_NUMBER = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(萬|万|億|亿)?(月)?")
-_CHINESE_MAGNITUDE = {"萬": 1e4, "万": 1e4, "億": 1e8, "亿": 1e8}
-_TRANSLATED_TOKEN = re.compile(r"\d[\d,]*(?:\.\d+)?|[a-z]+(?:-[a-z]+)?")
+# 原文的數字：數字加上可選的 千／百 和 萬／億；後面接「月」的是月份
+_SOURCE_GROUP = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*([千仟百佰])?\s*([萬万億亿])?(月)?")
+_SMALL_UNIT = {"千": 1e3, "仟": 1e3, "百": 1e2, "佰": 1e2}
+_BIG_UNIT = {"萬": 1e4, "万": 1e4, "億": 1e8, "亿": 1e8}
+_TRANSLATED_TOKEN = re.compile(r"\d[\d,]*(?:\.\d+)?|[a-z]+")
 # 新聞英文（AP 式）會把小的數字寫成文字、把「5月」寫成月份名，所以這些都算找到了
 _ONES = {w: n for n, w in enumerate(
     "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split())}
@@ -39,35 +47,64 @@ _MONTHS = {name: n for n, names in enumerate(
 @dataclass(frozen=True)
 class SourceNumber:
     token: str          # 原文的寫法，警示用它說明是哪個數字
-    value: float        # 已把 萬、億 換算
+    value: float        # 已把 千、百、萬、億 換算
     month: int | None   # 「5月」這樣的寫法：譯文寫月份名也算找到
 
 
+@dataclass
+class _Group:
+    start: int
+    end: int
+    value: float
+    big_unit: str | None
+    month: int | None
+
+
+def _continues(previous_unit: str | None, unit: str | None) -> bool:
+    """緊接著的兩段數字是同一個數：1億2000萬、3萬5000。億 後面只接 萬；萬 後面接沒有單位的數。
+    億 後面直接接沒有單位的數（1億5000）有歧義，不合併。"""
+    if previous_unit is None:
+        return False
+    return (previous_unit in "億亿" and unit is not None and unit in "萬万") or (previous_unit in "萬万" and unit is None)
+
+
 def source_numbers(text: str) -> list[SourceNumber]:
-    """原文的數字：去掉千位分隔號，萬、億 換算成數值。"""
-    out = []
-    for m in _SOURCE_NUMBER.finditer(text):
-        digits, magnitude, month_mark = m.groups()
+    """原文的數字：去掉千位分隔號，千、百、萬、億 換算成數值；1億2000萬 這樣緊接的寫法合成一個數。"""
+    groups: list[_Group] = []
+    for m in _SOURCE_GROUP.finditer(text):
+        digits, small, big, month_mark = m.groups()
         try:
-            value = float(digits.replace(",", ""))
+            plain = float(digits.replace(",", ""))
         except ValueError:
             continue
-        is_month = bool(month_mark) and not magnitude and value.is_integer() and 1 <= value <= 12
-        out.append(SourceNumber(m.group(0).strip(), value * _CHINESE_MAGNITUDE.get(magnitude, 1), int(value) if is_month else None))
-    return out
+        is_month = bool(month_mark) and not small and not big and plain.is_integer() and 1 <= plain <= 12
+        group = _Group(m.start(), m.end(), plain * _SMALL_UNIT.get(small, 1) * _BIG_UNIT.get(big, 1), big, int(plain) if is_month else None)
+        previous = groups[-1] if groups else None
+        if previous and group.start == previous.end and group.month is None and not month_mark and _continues(previous.big_unit, big):
+            previous.value += group.value
+            previous.end = group.end
+            previous.big_unit = big or previous.big_unit
+        else:
+            groups.append(group)
+    return [SourceNumber(text[g.start:g.end].strip(), g.value, g.month) for g in groups]
 
 
-def _word_value(token: str) -> int | None:
-    if token in _ONES:
-        return _ONES[token]
-    if token in _ORDINALS:   # 第3名 → third
-        return _ORDINALS[token]
+def _read_number(tokens: list[str], i: int) -> tuple[float | None, int]:
+    """從 tokens[i] 起讀一個數：數字、12、twenty five、third、a（後面接 hundred 之類）。回傳 (數值, 用掉幾個 token)。"""
+    token = tokens[i]
+    if token[0].isdigit():
+        return float(token.replace(",", "")), 1
     if token in _TENS:
-        return _TENS[token]
-    head, _, tail = token.partition("-")
-    if head in _TENS and _ONES.get(tail, 0) >= 1 and _ONES[tail] <= 9:   # twenty-five
-        return _TENS[head] + _ONES[tail]
-    return None
+        if i + 1 < len(tokens) and 1 <= _ONES.get(tokens[i + 1], 0) <= 9:   # twenty-five 拆成 twenty、five
+            return float(_TENS[token] + _ONES[tokens[i + 1]]), 2
+        return float(_TENS[token]), 1
+    if token in _ONES:
+        return float(_ONES[token]), 1
+    if token in _ORDINALS:   # 第3名 → third
+        return float(_ORDINALS[token]), 1
+    if token in ("a", "an") and i + 1 < len(tokens) and tokens[i + 1] in _MAGNITUDE:
+        return 1.0, 1
+    return None, 0
 
 
 def _translated_values(tokens: list[str]) -> set[float]:
@@ -75,27 +112,24 @@ def _translated_values(tokens: list[str]) -> set[float]:
     values: set[float] = set()
     i = 0
     while i < len(tokens):
-        token = tokens[i]
-        if token[0].isdigit():
-            base, used = float(token.replace(",", "")), 1
-        elif _word_value(token) is not None:
-            base, used = float(_word_value(token)), 1
-        elif token in ("a", "an") and i + 1 < len(tokens) and tokens[i + 1] in _MAGNITUDE:
-            base, used = 1.0, 1
-        else:
+        base, used = _read_number(tokens, i)
+        if base is None:
             i += 1
             continue
         values.add(base)
         j = i + used
-        if j < len(tokens) and tokens[j] in _MAGNITUDE:
-            scaled = base * _MAGNITUDE[tokens[j]]
+        scaled, last_magnitude = base, None
+        while j < len(tokens) and tokens[j] in _MAGNITUDE:
+            last_magnitude = tokens[j]
+            scaled *= _MAGNITUDE[last_magnitude]
             values.add(scaled)
             j += 1
-            if tokens[j - 1] == "hundred":
-                k = j + 1 if j < len(tokens) and tokens[j] == "and" else j
-                if k < len(tokens) and _word_value(tokens[k]) is not None:
-                    values.add(scaled + _word_value(tokens[k]))
-                    j = k + 1
+        if last_magnitude == "hundred":   # two hundred (and) fifty
+            k = j + 1 if j < len(tokens) and tokens[j] == "and" else j
+            tail, tail_used = _read_number(tokens, k) if k < len(tokens) else (None, 0)
+            if tail is not None and tail < 100:
+                values.add(scaled + tail)
+                j = k + tail_used
         i = max(j, i + 1)
     return values
 

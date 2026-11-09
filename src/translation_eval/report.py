@@ -9,12 +9,13 @@
 from collections import Counter
 
 from .check import current_check_meta
-from .config import Experiment, PlannedApproach, load_experiment
+from .config import Experiment, PlannedApproach, length_ranges, load_experiment
 from .errors import InputError
-from .schemas import ComponentResult, Dimension, Outcome, RunKey, RunRecord, WarningKind, length_ranges
+from .schemas import ComponentResult, Dimension, Outcome, RunKey, RunRecord, WarningKind
 from .store import OutputDir
 
 MAX_LISTED = 20
+CHECK_META_LABELS = {"rules_version": "規則版本", "term_list_hash": "Term List", "length_ratio": "長度比例範圍"}
 WARNING_LABELS = {
     WarningKind.LENGTH_RATIO: "長度比例",
     WarningKind.NUMBER_MISSING: "數字遺失",
@@ -66,9 +67,10 @@ def render(experiment: Experiment, records: list[RunRecord], rows: list[Componen
 
 
 def term_list_text(experiment: Experiment) -> str:
-    if experiment.term_list is None:
+    term_list = experiment.term_list
+    if not term_list.is_used:
         return "未使用"
-    return f"目前 {experiment.term_list.hash}（{len(experiment.term_list.terms.terms)} 條）"
+    return f"目前 {term_list.prompt_hash}（{len(term_list.entries)} 條）"
 
 
 def approach_lines(planned: PlannedApproach, records: list[RunRecord]) -> list[str]:
@@ -122,19 +124,18 @@ def section_lines(approach_id: str, direction: str, planned: int | None, records
     ]
 
 
-def require_fresh_check(experiment: Experiment, out: OutputDir) -> None:
+def require_fresh_check(experiment: Experiment, out: OutputDir, records: list[RunRecord]) -> None:
     """check 的結果取決於規則、Term List 和長度比例範圍。它們變了而沒有重跑 check，報告就會用舊結果，
-    而且看不出來，所以不產生報告。"""
+    而且看不出來，所以不產生報告。沒有任何 ok 的 Run（例如全部被 Block）就沒有東西要檢查，不需要 check。"""
+    if not any(r.outcome is Outcome.OK for r in records):
+        return
     meta, current = out.read_check_meta(), current_check_meta(experiment)
     if meta == current:
         return
     if meta is None:
         reasons = ["沒有 check 紀錄，可能是舊版 check 跑的"]
     else:
-        reasons = [name for name, differs in (
-            ("規則版本", meta.rules_version != current.rules_version),
-            ("Term List", meta.term_list_hash != current.term_list_hash),
-            ("長度比例範圍", meta.length_ratio != current.length_ratio)) if differs]
+        reasons = [CHECK_META_LABELS.get(name, name) for name in meta.differing_fields(current)]
     raise InputError(f"check 的結果已過期（{'、'.join(reasons)}），請重新執行 check")
 
 
@@ -151,7 +152,7 @@ def handle(args) -> int:
         if len(unchecked) > MAX_LISTED:
             problems.append(f"…另有 {len(unchecked) - MAX_LISTED} 個")
         raise InputError(problems)
-    require_fresh_check(experiment, out)   # 先列出沒檢查過的 Run（較具體）；都檢查過了，才看結果是不是過期
+    require_fresh_check(experiment, out, records)   # 先列出沒檢查過的 Run（較具體）；都檢查過了，才看結果是不是過期
     out.write_report(render(experiment, records, rows))
     print(f"已寫入 {out.report_path}（{len(records)} 個 Run）")
     return 0

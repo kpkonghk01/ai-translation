@@ -57,6 +57,25 @@ class InvalidInputTest(Workspace):
         self.write_json(os.path.join(self.articles_dir, "9000001.json"), flagged)
         self.assert_fails_cleanly("meta.unknown")
 
+    def test_an_unknown_component_type_is_rejected_instead_of_being_skipped_by_the_rules(self):
+        article = source_article()
+        article["components"].append({"id": "9000001-099", "type": "poll", "text": "x"})
+        self.write_json(os.path.join(self.articles_dir, "9000001.json"), article)
+        self.assert_fails_cleanly("poll")
+
+    def test_a_text_field_with_the_wrong_shape_is_rejected_instead_of_being_ignored(self):
+        for name, mutate, needle in (
+            ("paragraph text is a number", lambda a: a["components"][1].update(text=123), "9000001-002"),
+            ("caption is a list", lambda a: a["components"][2].update(caption=["圖說"]), "9000001-003"),
+            ("gallery caption entry is not a string", lambda a: a["components"].append(
+                {"id": "9000001-005", "type": "gallery", "captions": ["圖一", 5]}), "9000001-005"),
+        ):
+            with self.subTest(name):
+                article = source_article()
+                mutate(article)
+                self.write_json(os.path.join(self.articles_dir, "9000001.json"), article)
+                self.assert_fails_cleanly(needle)
+
     def test_missing_or_broken_article_file(self):
         os.remove(os.path.join(self.articles_dir, "9000001.json"))
         self.assert_fails_cleanly("9000001")

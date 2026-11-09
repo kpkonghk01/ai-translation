@@ -10,26 +10,37 @@
         長度比例、數字、直接引語、疑似 Refusal、沒翻譯、不翻譯的 Component 被改動，程式判斷不夠可靠，
         只產生警示（Warning）：交人手看，不計分。
 """
+import functools
+import hashlib
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
-from .articles import TAGS_ID, TITLE_ID, expected_components, load_article, source_texts, text_of
-from .config import Experiment, load_experiment
+from .articles import TAGS_ID, TAGS_TYPE, TITLE_ID, TITLE_TYPE, expected_components, load_article, source_texts, text_of
+from .config import Experiment, length_ranges, load_experiment
+from .errors import InputError
 from .outcome import looks_like_refusal
-from .schemas import (DEFAULT_LENGTH_RATIO, DUPLICATE_COMPONENT, EXTRA_COMPONENT, OMISSION, RESIDUAL_HAN, TERM_MISMATCH, TYPE_CHANGED,
-                      Article, CheckMeta, CheckWarning, ComponentResult, Dimension, Direction, Finding, LengthRatioRange, Outcome,
-                      RunKey, Severity, TermList, Translation, WarningKind, length_ranges)
+from .schemas import (DUPLICATE_COMPONENT, EXTRA_COMPONENT, OMISSION, RESIDUAL_HAN, TERM_MISMATCH, TYPE_CHANGED, Article, CheckMeta,
+                      CheckWarning, ComponentResult, Dimension, Direction, Finding, LengthRatioRange, Outcome, RunKey, Severity,
+                      TermEntry, Translation, WarningKind)
 from .store import OutputDir
-from .terms import entries_in, has_allowed_rendering
+from .terms import entries_in, has_allowed_rendering, matched_text
 from .textrules import contains_han, han_runs, missing_numbers, nonspace_length, quote_count
 
-# check 的規則有改（新增、刪除或改動任何一條）就要改這個版本：report 靠它發現 check 的結果已經過期
-RULES_VERSION = "deterministic.v2"
-
-# 譯文短於原文的這個比例、又像拒絕語，才列為疑似 Refusal：正常的英文譯文比中文原文長，這樣短幾乎一定不是譯文
-REFUSAL_MAX_LENGTH_RATIO = 0.5
 MAX_LISTED_NUMBERS = 10
+# 實作這些規則的原始碼：它們的內容決定 rules_version
+_RULE_SOURCES = ("check.py", "textrules.py", "terms.py", "articles.py", "outcome.py")
+
+
+@functools.cache
+def rules_version() -> str:
+    """check 規則的版本，由實作這些規則的原始碼的 hash 決定：改了任何一個檔案，舊的 check 結果就視為過期，
+    不靠人記得手動改版本號。不影響規則的改動也會令結果過期；重跑 check 只要幾秒，不呼叫 API。"""
+    digest = hashlib.sha256()
+    for name in _RULE_SOURCES:
+        digest.update((Path(__file__).parent / name).read_bytes())
+    return f"deterministic-{digest.hexdigest()[:12]}"
 
 
 @dataclass(frozen=True)
@@ -44,6 +55,10 @@ def _finding(dimension: Dimension, subtype: str, severity: Severity, reason: str
                    source_span=source_span, target_span=target_span)
 
 
+def _warning(kind: WarningKind, detail: str) -> CheckWarning:
+    return CheckWarning(kind=kind, detail=detail)
+
+
 def _omission() -> Finding:
     return _finding(Dimension.ACCURACY, OMISSION, Severity.MAJOR, "譯文缺少這個 Component")
 
@@ -52,19 +67,19 @@ def _reserved_translations(translation: Translation) -> dict[str, _Translated]:
     """title 與 tags 沒有 id：空白的 title、空的 tags 視同缺少。"""
     found = {}
     if translation.title and translation.title.strip():
-        found[TITLE_ID] = _Translated("title", {"title": translation.title})
+        found[TITLE_ID] = _Translated(TITLE_TYPE, {"title": translation.title})
     if translation.tags:
-        found[TAGS_ID] = _Translated("tags", {"tags": translation.tags})
+        found[TAGS_ID] = _Translated(TAGS_TYPE, {"tags": translation.tags})
     return found
 
 
-def _content_findings(key: RunKey, source_text: str, translated_text: str, term_list: TermList | None) -> list[Finding]:
+def _content_findings(direction: Direction, source_text: str, translated_text: str, entries: Sequence[TermEntry]) -> list[Finding]:
     findings = []
-    for entry in entries_in(term_list, source_text, key.direction):
-        if not has_allowed_rendering(translated_text, entry.translations[key.direction]):
+    for entry in entries_in(entries, source_text, direction):
+        if not has_allowed_rendering(translated_text, entry.renderings(direction)):
             findings.append(_finding(Dimension.TERMINOLOGY, TERM_MISMATCH, entry.severity, "譯文沒有用 Term List 指定的譯法",
-                                     source_span=entry.source))
-    if key.direction is Direction.TRAD_TO_EN:
+                                     source_span=matched_text(source_text, entry.source)))
+    if direction is Direction.TRAD_TO_EN:
         findings += [_finding(Dimension.LOCALE_FORMAT, RESIDUAL_HAN, Severity.MINOR, "譯文殘留漢字", target_span=run)
                      for run in han_runs(translated_text)]
     return findings
@@ -76,25 +91,26 @@ def _content_warnings(source_text: str, translated_text: str, length_range: Leng
     if source_length:
         ratio = translated_length / source_length
         if not length_range.min <= ratio <= length_range.max:
-            warnings.append(CheckWarning(kind=WarningKind.LENGTH_RATIO,
-                                         detail=f"譯文與原文的長度比是 {ratio:.2f}，範圍 {length_range.min}–{length_range.max}"))
-        if ratio < REFUSAL_MAX_LENGTH_RATIO and looks_like_refusal(translated_text):
-            warnings.append(CheckWarning(kind=WarningKind.SUSPECTED_REFUSAL, detail="譯文像拒絕語，而且遠短於原文"))
+            warnings.append(_warning(WarningKind.LENGTH_RATIO,
+                                     f"譯文與原文的長度比是 {ratio:.2f}，範圍 {length_range.min}–{length_range.max}"))
+        # 「遠短於原文」以這個 Direction 正常範圍的下限為準：低於它，又像拒絕語，才列為疑似 Refusal
+        if ratio < length_range.min and looks_like_refusal(translated_text):
+            warnings.append(_warning(WarningKind.SUSPECTED_REFUSAL, "譯文像拒絕語，而且遠短於原文"))
     missing = missing_numbers(source_text, translated_text)
     if missing:
-        warnings.append(CheckWarning(kind=WarningKind.NUMBER_MISSING,
-                                     detail=f"原文的 {len(missing)} 個數字在譯文找不到：{'、'.join(missing[:MAX_LISTED_NUMBERS])}"))
+        warnings.append(_warning(WarningKind.NUMBER_MISSING,
+                                 f"原文的 {len(missing)} 個數字在譯文找不到：{'、'.join(missing[:MAX_LISTED_NUMBERS])}"))
     source_quotes, translated_quotes = quote_count(source_text), quote_count(translated_text)
     if source_quotes != translated_quotes:
-        warnings.append(CheckWarning(kind=WarningKind.QUOTE_COUNT, detail=f"原文有 {source_quotes} 段直接引語，譯文有 {translated_quotes} 段"))
+        warnings.append(_warning(WarningKind.QUOTE_COUNT, f"原文有 {source_quotes} 段直接引語，譯文有 {translated_quotes} 段"))
     # 原文沒有漢字的（例如只有英文或數字）本來就不用翻譯，相同不算沒翻譯
     if translated_text == source_text and contains_han(source_text):
-        warnings.append(CheckWarning(kind=WarningKind.UNCHANGED_TRANSLATABLE, detail="譯文與原文完全相同"))
+        warnings.append(_warning(WarningKind.UNCHANGED_TRANSLATABLE, "譯文與原文完全相同"))
     return warnings
 
 
-def check_run(key: RunKey, article: Article, translation: Translation, term_list: TermList | None = None,
-              ranges: Mapping[Direction, LengthRatioRange] = DEFAULT_LENGTH_RATIO) -> list[ComponentResult]:
+def check_run(key: RunKey, article: Article, translation: Translation, entries: Sequence[TermEntry],
+              ranges: Mapping[Direction, LengthRatioRange]) -> list[ComponentResult]:
     reserved = _reserved_translations(translation)
     counts = Counter(c.id for c in translation.components)
     real: dict[str, _Translated] = {}
@@ -126,11 +142,11 @@ def check_run(key: RunKey, article: Article, translation: Translation, term_list
             source_text = texts[expected.id]
             if source_text is not None:
                 translated_text = text_of(expected.type, found.fields) or ""
-                findings += _content_findings(key, source_text, translated_text, term_list)
+                findings += _content_findings(key.direction, source_text, translated_text, entries)
                 warnings += _content_warnings(source_text, translated_text, ranges[key.direction])
             elif found.type == expected.type and found.fields != source_fields[expected.id]:
                 # 不翻譯的 Component 要原樣保留；type 被改的已經記為 Finding，不重覆列警示
-                warnings.append(CheckWarning(kind=WarningKind.UNTRANSLATABLE_CHANGED, detail="不翻譯的 Component 內容被改動"))
+                warnings.append(_warning(WarningKind.UNTRANSLATABLE_CHANGED, "不翻譯的 Component 內容被改動"))
         rows.append(row(expected.id, expected.type, findings, warnings))
 
     source_ids = {c.id for c in article.components}
@@ -143,28 +159,36 @@ def check_run(key: RunKey, article: Article, translation: Translation, term_list
 
 def current_check_meta(experiment: Experiment) -> CheckMeta:
     """這個實驗現在的設定下，check 應該用的規則版本與外部輸入。"""
-    return CheckMeta(rules_version=RULES_VERSION, term_list_hash=experiment.term_list.hash if experiment.term_list else None,
+    return CheckMeta(rules_version=rules_version(), term_list_hash=experiment.term_list.check_hash,
                      length_ratio=length_ranges(experiment.config))
+
+
+def require_same_term_list(experiment: Experiment, ok_records) -> None:
+    """check 用的 Term List 要與翻譯時注入 prompt 的是同一份。不同的話，check 會拿模型沒看過的條目去扣分，
+    或漏掉模型被要求用的譯法，所以停止。只改嚴重度、類別或備註不影響 prompt，不在此限。"""
+    mismatched = [r for r in ok_records if r.term_list_hash != experiment.term_list.prompt_hash]
+    if mismatched:
+        raise InputError(f"{len(mismatched)} 個 ok 的 Run 翻譯時用的 Term List 與現在的不同（原文詞或譯法有改，或加了、拿掉了 Term List）。"
+                         "請把 Term List 改回去，或用新的實驗 id 重新翻譯")
 
 
 def handle(args) -> int:
     experiment = load_experiment(args.config)
     out = OutputDir(args.data_dir, experiment.config.id)
     records = out.require_runs()
-    term_list = experiment.term_list.terms if experiment.term_list else None
+    ok_records = [r for r in records if r.outcome is Outcome.OK]
+    require_same_term_list(experiment, ok_records)
     ranges = length_ranges(experiment.config)
 
-    articles, rows, n_checked = {}, [], 0
-    for record in records:
-        if record.outcome is not Outcome.OK:
-            continue
+    articles, rows = {}, []
+    for record in ok_records:
         if record.article_id not in articles:
             articles[record.article_id] = load_article(experiment.config.articles.dir, record.article_id)
-        rows += check_run(RunKey.of(record), articles[record.article_id], out.read_translation(record), term_list, ranges)
-        n_checked += 1
+        rows += check_run(RunKey.of(record), articles[record.article_id], out.read_translation(record),
+                          experiment.term_list.entries, ranges)
 
     out.write_components(rows)
     out.write_check_meta(current_check_meta(experiment))   # 結果寫好之後才寫：中途中斷時 report 會發現它不齊
     omissions = sum(r.n_omissions for r in rows)
-    print(f"已檢查 {n_checked} 個 ok 的 Run（共 {len(records)} 個 Run），{len(rows)} 個 Component；漏段 {omissions}")
+    print(f"已檢查 {len(ok_records)} 個 ok 的 Run（共 {len(records)} 個 Run），{len(rows)} 個 Component；漏段 {omissions}")
     return 0

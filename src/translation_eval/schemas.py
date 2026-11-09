@@ -7,6 +7,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
+from .textrules import squash
+
 # 會用在檔名和網址路徑裡的 id：只允許安全字元，避免設定檔把輸出寫到別的目錄
 Slug = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$", max_length=64)]
 ModelName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$", max_length=100)]
@@ -14,7 +16,12 @@ NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)
 
 
 class Direction(StrEnum):
-    TRAD_TO_EN = "trad-to-en"   # 繁→簡隨 ticket 05 加入
+    TRAD_TO_EN = "trad-to-en"
+    TRAD_TO_SIMPLIFIED = "trad-to-simplified"
+
+
+# 已有翻譯 prompt、可以拿來跑實驗的 Direction（繁→簡隨 ticket 05 加入）。Term List 這類資料檔可以先寫其他 Direction 的條目。
+SUPPORTED_DIRECTIONS = frozenset({Direction.TRAD_TO_EN})
 
 
 class InputVariant(StrEnum):
@@ -109,28 +116,22 @@ class LengthRatioRange(StrictModel):
         return self
 
 
-# 暫定的預設值，等有繁→英的實際分佈再定；各 Direction 都可以在實驗設定的 length_ratio 覆寫
-DEFAULT_LENGTH_RATIO = {Direction.TRAD_TO_EN: LengthRatioRange(min=1.5, max=8.0)}
-
-
 class ExperimentConfig(StrictModel):
     id: Slug
     articles: ArticleSet
     directions: list[Direction] = Field(min_length=1)
     approaches: list[ApproachEntry] = Field(min_length=1)
     term_list: str | None = None   # Term List 檔的路徑；不設就不注入、也不做 Terminology 檢查
-    length_ratio: dict[Direction, LengthRatioRange] = {}   # 覆寫 DEFAULT_LENGTH_RATIO
+    length_ratio: dict[Direction, LengthRatioRange] = {}   # 覆寫預設的長度比例範圍（見 config.py）
 
     @model_validator(mode="after")
-    def _unique(self):
+    def _directions_are_unique_and_supported(self):
         if len(set(self.directions)) != len(self.directions):
             raise ValueError("directions 有重覆")
+        unsupported = [d for d in self.directions if d not in SUPPORTED_DIRECTIONS]
+        if unsupported:
+            raise ValueError("directions 含有尚未支援的 Direction：" + "、".join(unsupported))
         return self
-
-
-def length_ranges(config: ExperimentConfig) -> dict[Direction, LengthRatioRange]:
-    """實際使用的長度比例範圍：預設值加上實驗設定的覆寫。"""
-    return {**DEFAULT_LENGTH_RATIO, **config.length_ratio}
 
 
 # ───────────── Term List ─────────────
@@ -157,6 +158,13 @@ class TermEntry(StrictModel):
             raise ValueError("translations 至少要有一個 Direction")
         return self
 
+    def applies_to(self, direction: Direction) -> bool:
+        return direction in self.translations
+
+    def renderings(self, direction: Direction) -> list[str]:
+        """這個 Direction 允許的譯法；只能對 applies_to 的 Direction 取。"""
+        return self.translations[direction]
+
 
 class TermList(StrictModel):
     terms: list[TermEntry]
@@ -167,7 +175,7 @@ class TermList(StrictModel):
         first_seen: dict[str, int] = {}
         duplicates = []
         for n, entry in enumerate(self.terms):
-            squashed = "".join(entry.source.split())
+            squashed = squash(entry.source)
             if squashed in first_seen:
                 duplicates.append(f"terms[{n}] 與 terms[{first_seen[squashed]}] 的原文詞重覆")
             first_seen.setdefault(squashed, n)
@@ -243,7 +251,7 @@ class RunRecord(RunKey):
     model_version: str | None = None   # 實際回應的模型版本
     prompt_id: str
     prompt_hash: str
-    term_list_hash: str | None = None   # 沒有設 Term List 時為 None
+    term_list_hash: str | None = None   # 模型看到的 Term List（原文詞與譯法）的 hash；沒有設 Term List 時為 None
     config_hash: str
     raw_response: str | None = None   # 相對於輸出目錄
     translation: str | None = None
@@ -290,8 +298,11 @@ class CheckWarning(StrictModel):
 class CheckMeta(StrictModel):
     """check 當時用的規則版本與外部輸入。report 用它判斷 check 的結果是不是已經過期。"""
     rules_version: str
-    term_list_hash: str | None
+    term_list_hash: str | None   # check 用到的 Term List 內容（備註除外）的 hash
     length_ratio: dict[Direction, LengthRatioRange]
+
+    def differing_fields(self, other: "CheckMeta") -> list[str]:
+        return [name for name in type(self).model_fields if getattr(self, name) != getattr(other, name)]
 
 
 class ComponentResult(RunKey):

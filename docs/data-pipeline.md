@@ -92,8 +92,8 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
 ```
 
 - `translate` 可以中斷後重跑同一條指令：已有紀錄的 Run 會略過；`--redo-errors` 重做結果為 `error` 的 Run（`block`、`refusal`、`malformed`、`truncated` 是結果，不會重做）。`--article <id>`（可重覆）只跑指定文章，`--limit <N>` 最多執行 N 個 Run。
-- `check` 與 `report` 每次都從 `runs.jsonl` 整份重算。`report` 發現有 `ok` 的 Run 還沒有 `check` 結果，或 `check` 之後規則、Term List、長度比例範圍改了，會停止，不產生報告；先重新執行 `check`。`check` 另寫 `components.jsonl`（每個 Component 的 Finding 與警示）和 `check-meta.json`（check 當時用的規則版本與輸入，report 靠它判斷結果有沒有過期）。
-- **Term List**：實驗設定的 `term_list` 指向 Term List 檔（放在 `data/`，格式由程式驗證，重覆條目會令指令失敗）。翻譯 prompt 只注入原文出現過的條目；`check` 在原文出現條目、譯文卻找不到任何允許的譯法時，記一個 Terminology Finding。沒有設 `term_list` 就不注入，也不做 Terminology 檢查。每個 Run 記下 Term List 的 hash（內容的 hash，只換排版不會變）。格式（以虛構條目為例）：
+- `check` 與 `report` 每次都從 `runs.jsonl` 整份重算。`report` 發現有 `ok` 的 Run 還沒有 `check` 結果，或 `check` 之後規則、Term List、長度比例範圍改了，會停止，不產生報告；先重新執行 `check`。`check` 另寫 `components.jsonl`（每個 Component 的 Finding 與警示）和 `check-meta.json`（check 當時用的規則版本與輸入，report 靠它判斷結果有沒有過期）。規則版本由實作規則的原始碼的 hash 決定：程式的規則有任何改動，舊的 check 結果就視為過期，重跑 `check` 即可（只要幾秒，不呼叫 API）。所有 Run 都沒有譯文（例如全被 Block）時不需要 `check`。
+- **Term List**：實驗設定的 `term_list` 指向 Term List 檔（放在 `data/`，格式由程式驗證，重覆條目會令指令失敗）。翻譯 prompt 只注入原文出現過的條目；`check` 在原文出現條目、譯文卻找不到任何允許的譯法時，記一個 Terminology Finding。沒有設 `term_list` 就不注入，也不做 Terminology 檢查。每個 Run 記下模型看到的那部分 Term List（原文詞與譯法）的 hash，只換排版不會變。`check` 用的 Term List 必須與翻譯時的同一份：改了原文詞或譯法，`check` 會拒絕執行（模型沒看過新的譯法），要用新的實驗 id 重新翻譯；只改嚴重度、類別或備註不影響 prompt，只需重跑 `check`（嚴重度、類別會令舊的 check 結果過期，備註不會）。格式（以虛構條目為例）：
 
   ```json
   {"terms": [{"source": "虛構市政廳", "category": "organization",
@@ -101,11 +101,11 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
               "severity": "minor", "simplified_exceptions": [], "note": ""}]}
   ```
 
-  `category` 是 `person`、`place`、`organization`、`legal`、`news-idiom` 之一；`severity` 預設 `minor`；允許的譯法可以多於一個，比對時不分大小寫。
-- **警示**（不計分，交人手看）：長度比例超出範圍、原文的數字在譯文找不到、直接引語數量不同、疑似 Refusal、要翻譯的 Component 譯文與原文相同、不翻譯的 Component 被改動。長度比例的範圍預設是繁→英 1.5–8.0（暫定；一篇真實譯文實測約 2.8–5.2），可以在實驗設定用 `length_ratio` 覆寫：`"length_ratio": {"trad-to-en": {"min": 2, "max": 6.5}}`。
+  `category` 是 `person`、`place`、`organization`、`legal`、`news-idiom` 之一；`severity` 預設 `minor`；允許的譯法可以多於一個，比對時不分大小寫。條目可以先寫 `trad-to-simplified` 的譯法（繁→簡還不能跑實驗，所以現在不會被用到）。
+- **警示**（不計分，交人手看）：長度比例超出範圍、原文的數字在譯文找不到、直接引語數量不同、疑似 Refusal（譯文像拒絕語，而且長度比低於該 Direction 範圍的下限）、要翻譯的 Component 譯文與原文相同、不翻譯的 Component 被改動。數字的比對接受英文的寫法（`three`、`third`、`May`、`15 million`）。長度比例的範圍預設是繁→英 1.5–8.0（暫定；一篇真實譯文實測約 2.8–5.2），可以在實驗設定用 `length_ratio` 覆寫：`"length_ratio": {"trad-to-en": {"min": 2, "max": 6.5}}`。
 - 終端只印 id、結果類別和數量；原始回應只存 response body，不存 request headers，也不含 key。
 - 測試與離線：`tools/check.sh` 設了 `AI_TRANSLATION_OFFLINE` 並清掉所有 key，真 transport 見到這個變數就拒絕送出任何請求；測試一律注入假 transport。
-- 煙霧測試（Pan）：對 1 篇文章跑一次後，回報結果類別和數量，不貼內容。若每個 Run 都是 `error` 且原因是 `HTTP 400 INVALID_ARGUMENT`，先看 `raw/` 裡的回應：最可能是 safety settings 的 category 或 key 的 header 名稱與 Google 現行的不符（見 `src/translation_eval/providers/gemini.py`）。
+- 煙霧測試（Pan，2026-11-09 已通過）：對 1 篇文章跑一次後，回報結果類別和數量，不貼內容。若每個 Run 都是 `error` 且原因是 `HTTP 400 INVALID_ARGUMENT`，先看 `raw/` 裡的回應：最可能是 safety settings 的 category 或 key 的 header 名稱與 Google 現行的不符（見 `src/translation_eval/providers/gemini.py`）。
 
 ## Ground truth
 

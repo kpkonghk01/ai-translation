@@ -2,9 +2,7 @@
 import shutil
 import unittest
 
-from content_cases import ContentCheckCase, build, paragraph
-
-SOURCE_26_CHARS = "虛構市政廳翻新工程嚴重延誤" * 2
+from content_cases import SOURCE_26_CHARS, SOURCE_78_CHARS, ContentCheckCase, build, paragraph
 
 
 class WarningsDoNotScoreTest(ContentCheckCase):
@@ -56,7 +54,7 @@ class LengthRatioConfigTest(ContentCheckCase):
         cases = {
             "min not below max": {"trad-to-en": {"min": 4, "max": 3}},
             "min not positive": {"trad-to-en": {"min": 0, "max": 3}},
-            "direction not supported yet": {"trad-to-simplified": {"min": 1, "max": 2}},
+            "direction that does not exist": {"trad-to-klingon": {"min": 1, "max": 2}},
             "unknown field": {"trad-to-en": {"min": 1, "max": 2, "mean": 1.5}},
         }
         for name, ratio in cases.items():
@@ -94,6 +92,13 @@ class NumberTest(ContentCheckCase):
             ("第3名，足足一段說明文字。", "He came third in a long note."),
             ("第2名，足足一段說明文字。", "He came second in a long note."),
             ("1名男子，足足一段說明文字。", "A man was arrested in a long note."),   # 1 常寫成冠詞 a／an，沒辦法判斷，不警示
+            ("涉款1億2000萬元，足足一段說明文字。", "He is accused of HK$120 million over a long note."),   # 億 加 萬 是一個數
+            ("涉款3萬5000元，足足一段說明文字。", "He is accused of 35,000 dollars over a long note."),
+            ("涉款3千萬元，足足一段說明文字。", "He is accused of 30 million dollars over a long note."),
+            ("涉款5百萬元，足足一段說明文字。", "He is accused of 5 million dollars over a long note."),
+            ("判囚3年，足足一段說明文字。", "He received a three-year sentence in a long note."),   # 連字號
+            ("判囚25年，足足一段說明文字。", "He received a twenty five year sentence in a long note."),
+            ("涉款三百萬元，數字2030年，足足一段說明文字。", "Three million dollars in 2030 over a long note."),
         ]
         for source_text, translated_text in cases:
             with self.subTest(source_text):
@@ -106,6 +111,7 @@ class NumberTest(ContentCheckCase):
             ("5月發生，足足一段說明文字。", "It happened in June in a long note.", "5月"),
             ("判囚3年，足足一段說明文字。", "He was jailed for four years in a long note.", "3"),
             ("1月發生，足足一段說明文字。", "It happened in June in a long note.", "1月"),   # 月份的 1 照樣核對
+            ("涉款1億2000萬元，足足一段說明文字。", "He is accused of HK$100 million over a long note.", "1億2000萬"),   # 整個數一個警示
         ]
         for source_text, translated_text, token in cases:
             with self.subTest(source_text):
@@ -143,14 +149,17 @@ class QuoteCountTest(ContentCheckCase):
 
 
 class SuspectedRefusalTest(ContentCheckCase):
-    LONG_SOURCE = "虛構市政廳翻新工程嚴重延誤" * 6
-
     def warnings_for(self, translated_text):
-        source, translation = build([paragraph(self.LONG_SOURCE, translated_text)])
+        source, translation = build([paragraph(SOURCE_78_CHARS, translated_text)])
         return self.warnings(self.check_pair(source, translation)["9000001-001"])
 
     def test_refusal_wording_and_far_shorter_than_the_source_is_a_warning(self):
         self.assertIn("suspected-refusal", self.warnings_for("I'm sorry, but I can't help with that."))
+
+    def test_shorter_than_the_normal_range_but_not_tiny_is_still_suspected(self):
+        # 譯文 38 字、原文 52 字（比例 0.7）：不到正常範圍的下限 1.5，又是拒絕語
+        source, translation = build([paragraph("虛構市政廳翻新工程嚴重延誤" * 4, "I'm sorry, but I can't help with that.")])
+        self.assertIn("suspected-refusal", self.warnings(self.check_pair(source, translation)["9000001-001"]))
 
     def test_refusal_wording_in_a_translation_of_normal_length_is_not(self):
         text = "I'm sorry, he shouted, and I can't help it. " + "word " * 40   # 有拒絕語，但長度正常
@@ -170,7 +179,7 @@ class UnchangedTranslatableTest(ContentCheckCase):
         source, translation = build([("heading", {"text": "COVID-19 and ABC"}, {"text": "COVID-19 and ABC"})])
         self.assertNotIn("unchanged-translatable", self.warnings(self.check_pair(source, translation)["9000001-001"]))
 
-    def test_translated_text_is_not_flagged(self):
+    def test_translated_text_gets_no_unchanged_warning(self):
         source, translation = build([paragraph("虛構市政廳翻新工程延誤", "The renovation of the fictional hall is late")])
         self.assertNotIn("unchanged-translatable", self.warnings(self.check_pair(source, translation)["9000001-001"]))
 

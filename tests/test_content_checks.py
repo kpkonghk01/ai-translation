@@ -5,8 +5,6 @@ import unittest
 from content_cases import ContentCheckCase, build, paragraph
 from fixtures import TERM_LIST
 
-CITY_HALL = "Fictional City Hall"
-
 
 class TerminologyTest(ContentCheckCase):
     def terminology(self, rows, component_id):
@@ -54,6 +52,20 @@ class TerminologyTest(ContentCheckCase):
         rows = self.check_pair(source, translation, TERM_LIST)
         self.assertEqual(self.findings(rows["9000001-001"]), [("Accuracy", "omission", "major")])
 
+    def test_a_term_is_not_matched_across_the_boundary_of_two_list_items(self):
+        # 兩個 tag 各是「陳」和「虛構」，接起來不是那個詞
+        source, translation = build([paragraph("沒有詞。", "Nothing.")], tags=("陳", "虛構"), translated_tags=("A", "B"))
+        rows = self.check_pair(source, translation, TERM_LIST)
+        self.assertEqual(self.terminology(rows, "tags"), [])
+
+    def test_the_source_span_is_the_text_as_it_appears_in_the_source(self):
+        source_text = "市民陳 虛構表示。"   # 原文有多餘的空白
+        source, translation = build([paragraph(source_text, "A resident said so.")])
+        rows = self.check_pair(source, translation, TERM_LIST)
+        [finding] = self.terminology(rows, "9000001-001")
+        self.assertEqual(finding["source_span"], "陳 虛構")
+        self.assertIn(finding["source_span"], source_text)   # 逐字子字串
+
     def test_there_are_no_terminology_findings_without_a_term_list(self):
         source, translation = build([paragraph("市民陳虛構表示。", "Resident Chen Fictitious.")])
         rows = self.check_pair(source, translation)
@@ -78,7 +90,11 @@ class ResidualChineseTest(ContentCheckCase):
         self.assertEqual(self.residue(row), ["虛構市政", "陳", "虛構市政"])   # 連續的漢字記一次；同一段出現兩次是兩段
         self.assertEqual({(f["dimension"], f["severity"], f["source"]) for f in row["findings"]}, {("Locale & Format", "minor", "deterministic")})
 
-    def test_chinese_punctuation_is_not_a_character_to_flag(self):
+    def test_the_ideographic_zero_and_rare_characters_belong_to_the_run(self):
+        source, translation = build([paragraph("甲乙丙。", "In 二〇二四年 he wrote 𠀀 and 𰀀 here.")])   # 〇、擴展 B、擴展 G
+        self.assertEqual(self.residue(self.check_pair(source, translation)["9000001-001"]), ["二〇二四年", "𠀀", "𰀀"])
+
+    def test_chinese_punctuation_is_not_a_chinese_character_to_report(self):
         source, translation = build([paragraph("甲乙丙。", "He said，then left。「Quote」")])
         self.assertEqual(self.residue(self.check_pair(source, translation)["9000001-001"]), [])
 

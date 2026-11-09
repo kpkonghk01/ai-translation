@@ -10,7 +10,8 @@ from pathlib import Path
 import gemini_samples
 import translation_eval
 from fake_transport import FakeTransport
-from fixtures import APPROACH, FAKE_KEY, KEY_ENV, Workspace, good_translation, ok_response, source_article
+from fixtures import (APPROACH, FAKE_KEY, KEY_ENV, Workspace, component, good_translation, ok_response, source_article,
+                      translation_with)
 from translation_eval.transport import TransportForbidden, TransportTimeout
 
 
@@ -104,6 +105,10 @@ class ResultClassTest(Workspace):
             "http 200 with a body that is not json": (gemini_samples.not_json(), "error", None),
             "token count is not a number": (gemini_samples.with_fields(ok_response(), usageMetadata={"promptTokenCount": "many"}), "error", None),
             "model version is not a string": (gemini_samples.with_fields(ok_response(), modelVersion=["x"]), "error", None),
+            "translated text is a number": (gemini_samples.ok(json.dumps(
+                translation_with(lambda t: component(t, "002").update(text=123)))), "malformed", None),
+            "translated caption is a list": (gemini_samples.ok(json.dumps(
+                translation_with(lambda t: component(t, "003").update(caption=["x"])))), "malformed", None),
         }
         for name, (sample, outcome, reason) in cases.items():
             with self.subTest(name):

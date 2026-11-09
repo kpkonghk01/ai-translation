@@ -156,11 +156,11 @@ class Workspace(unittest.TestCase):
             code = cli.main(argv, transport=transport)
         return code, out.getvalue(), err.getvalue()
 
-    def assert_fails_cleanly(self, needle: str, command: str = "translate") -> None:
+    def assert_fails_cleanly(self, needle: str) -> None:
         """輸入或設定不合法：非 0 結束，列出原因，不送請求，不寫出任何檔案（連 data 目錄也不建）。"""
         transport = FakeTransport()   # 任何請求都會令測試失敗
-        for command_args in ((), ("--dry-run",)) if command == "translate" else ((),):
-            code, out, err = self.run_cli(command, *command_args, transport=transport)
+        for command_args in ((), ("--dry-run",)):
+            code, out, err = self.run_cli("translate", *command_args, transport=transport)
             self.assertNotEqual(code, 0, command_args)
             self.assertIn(needle, err)
             self.assertEqual(out, "")

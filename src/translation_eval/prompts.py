@@ -27,7 +27,7 @@ class PromptTemplate:
         base, _, terminology = self.text.partition(TERMINOLOGY_MARKER)
         if not entries:
             return base.rstrip() + "\n"
-        lines = "\n".join(f"- {e.source} -> {' / '.join(e.translations[direction])}" for e in entries)
+        lines = "\n".join(f"- {e.source} -> {' / '.join(e.renderings(direction))}" for e in entries)
         return base.rstrip() + "\n\n" + terminology.strip().replace("{terms}", lines) + "\n"
 
 
