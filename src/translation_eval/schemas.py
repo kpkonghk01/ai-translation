@@ -264,6 +264,12 @@ class GroundTruthRef(StrictModel):
     group_overrides: dict[Slug, Slug] = {}
 
 
+class ReviewConfig(StrictModel):
+    """審閱清單的抽查：從不是必看的項目中，以固定種子抽出這個比例。"""
+    sample_rate: float = Field(default=0.1, ge=0, le=1)
+    seed: int = 1
+
+
 class BaselineEntry(StrictModel):
     """方案 E（Current service）這類不經 API 的 baseline：Run 由 import-baseline 從目錄匯入，不由 translate 產生。"""
     id: Slug
@@ -279,6 +285,7 @@ class ExperimentConfig(StrictModel):
     baselines: list[BaselineEntry] = []
     judging: JudgingConfig | None = None
     ground_truth: GroundTruthRef | None = None
+    review: ReviewConfig = ReviewConfig()
     weights: Weights = Weights()
     term_list: str | None = None   # Term List 檔的路徑；不設就不注入、也不做 Terminology 檢查
     length_ratio: dict[Direction, LengthRatioRange] = {}   # 覆寫預設的長度比例範圍（見 config.py）
@@ -541,6 +548,42 @@ class GtArticle(StrictModel):
 class GtFile(StrictModel):
     status: str | None = None   # 檔案自己寫的備註（例如「draft，待人手確認」）；狀態以實驗設定的 ground_truth.status 為準
     articles: list[GtArticle]
+
+
+# ───────────── 審閱決定 ─────────────
+
+class ReviewAction(StrEnum):
+    ACCEPT = "accept"      # 接受：Judge 的結果照用（uncertain 的 Finding 因此算作確認）
+    REJECT = "reject"      # 駁回：這個 Finding 不計分
+    OVERRIDE = "override"  # 改判：事實的 verdict，或 Finding 的 Severity
+
+
+class ReviewDecision(StrictModel):
+    """審閱者對一個審閱項目的決定。key 與 input_hash 照審閱清單抄；輸入改了（hash 不同），決定就過期。"""
+    key: NonBlank
+    input_hash: NonBlank
+    action: ReviewAction
+    verdict: Verdict | None = None   # 改判事實時：改成這個 verdict
+    weakening_type: WeakeningType | None = None   # 改判成 Weakened 時可以註明類型
+    severity: Severity | None = None   # 改判 Finding 時：改成這個 Severity
+    note: str = ""
+    reviewer: NonBlank
+    reviewed_on: date
+
+    @model_validator(mode="after")
+    def _action_fits_its_fields(self):
+        if self.action is ReviewAction.OVERRIDE:
+            if (self.verdict is None) == (self.severity is None):
+                raise ValueError("override 要寫 verdict（改判事實）或 severity（改判 Finding），而且只寫一個")
+        elif self.verdict is not None or self.severity is not None or self.weakening_type is not None:
+            raise ValueError("只有 override 可以寫 verdict、weakening_type 或 severity")
+        if self.weakening_type is not None and self.verdict is None:
+            raise ValueError("weakening_type 要和 verdict 一起寫")
+        return self
+
+
+class ReviewDecisionFile(StrictModel):
+    decisions: list[ReviewDecision]
 
 
 # ───────────── Component 結果 ─────────────

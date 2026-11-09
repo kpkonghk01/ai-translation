@@ -35,6 +35,7 @@ class FactJudgment:
     facts: dict[str, FactResult]   # 事實 key → 結果；只有 JUDGED 才有
     failed: list[Outcome]          # 沒有成功的請求的結果類別
     stale: bool = False            # INCOMPLETE 的原因是 ground truth 改了，舊紀錄過期
+    calls: tuple[JudgeCall, ...] = ()   # 沒有過期的請求紀錄，依請求序號；審閱清單顯示每次的 verdict 用
 
 
 def _result(valid) -> FactResult:
@@ -56,6 +57,6 @@ def judge_facts(calls: list[JudgeCall], sentences: list[Sentence]) -> FactJudgme
     succeeded = [c for c in fresh.values() if c.outcome is Outcome.OK]
     failed = [c.outcome for c in fresh.values() if c.outcome is not Outcome.OK]
     if not succeeded:
-        return FactJudgment(Status.UNJUDGED, {}, failed)
+        return FactJudgment(Status.UNJUDGED, {}, failed, calls=tuple(sorted(fresh.values(), key=lambda c: c.call_index)))
     facts = {f.key: _result([v for c in succeeded for v in c.verdicts if v.fact == f.key]) for s in sentences for f in s.facts}
-    return FactJudgment(Status.JUDGED, facts, failed)
+    return FactJudgment(Status.JUDGED, facts, failed, calls=tuple(sorted(fresh.values(), key=lambda c: c.call_index)))

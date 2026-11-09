@@ -21,7 +21,9 @@ from .facts import FactResult, FactStatus, judge_facts
 from .ground_truth import GroundTruth, Sentence
 from .judge_report import ratio
 from .pairs import component_pairs
-from .schemas import Domain, InputVariant, JudgeRole, Outcome, RunKey, RunRecord, Verdict, WeakeningType
+from .review_decisions import Decisions
+from .review_items import fact_item_key
+from .schemas import Domain, InputVariant, Outcome, ReviewAction, RunKey, RunRecord, Verdict, WeakeningType
 from .stats import clopper_pearson_upper
 from .store import OutputDir
 
@@ -44,14 +46,6 @@ class GroupGate:
     fact_runs: int = 0   # 核對過的（事實 × Run）數，待審數量的分母
 
 
-def primary_judge_for(experiment: Experiment, group: str):
-    """(Judge, 是否暫定)。沒有 role 為 primary 的 Judge 時是 (None, True)。"""
-    chosen = experiment.config.judging.primary_judges.get(group) if experiment.config.judging else None
-    if chosen is not None:
-        return next(j for j in experiment.judges if j.id == chosen), False
-    return next((j for j in experiment.judges if j.config.role is JudgeRole.PRIMARY), None), True
-
-
 def _record_sentence(gate: GroupGate, sentence_id: tuple, run_index: int, states: list) -> None:
     """states：這一句每條事實的 (事實, 結果)；結果是 None 表示這條事實還沒有最終 verdict。"""
     failed = any(r is not None and r.verdict in FAILING for _, r in states)
@@ -72,25 +66,36 @@ def _record_sentence(gate: GroupGate, sentence_id: tuple, run_index: int, states
             gate.fact_amplified[slot] = max(gate.fact_amplified.get(slot, 0), result.amplification)
 
 
-def _fact_states(gate: GroupGate, judgment, sentence: Sentence) -> list:
+def _override(decisions: Decisions, run: RunKey, component_id: str, judge_id: str, fact):
+    """審閱決定改判這條事實：最終 verdict 就是審閱者判的。"""
+    decision = decisions.get(fact_item_key(run, component_id, judge_id, fact.key))
+    if decision is None or decision.action is not ReviewAction.OVERRIDE:
+        return None
+    return FactResult(FactStatus.FINAL, decision.verdict, decision.weakening_type)
+
+
+def _fact_states(gate: GroupGate, judgment, sentence: Sentence, override) -> list:
     """一句的每條事實在這個 Run 的 (事實, 結果)；結果是 None 表示還沒有最終 verdict，並記入待審的數量。
-    judgment 是 None：譯文缺少這個 Component，事實直接是 Absent，不送給 Judge。"""
-    if judgment is None:
-        return [(f, FactResult(FactStatus.FINAL, Verdict.ABSENT)) for f in sentence.facts]
-    if judgment.status is not Status.JUDGED:
-        reason = "unjudged" if judgment.status is Status.UNJUDGED else ("stale" if judgment.stale else "incomplete")
-        gate.pending[reason] += len(sentence.facts)
-        return [(f, None) for f in sentence.facts]
+    judgment 是 None：譯文缺少這個 Component，事實直接是 Absent，不送給 Judge。
+    override(事實)：審閱決定改判的結果；有的話以它為準，這條事實就不再待審。"""
     states = []
     for fact in sentence.facts:
-        result = judgment.facts[fact.key]
-        if result.status is not FactStatus.FINAL:
-            gate.pending[result.status.value] += 1
-        states.append((fact, result if result.status is FactStatus.FINAL else None))
+        if (forced := override(fact)) is not None:
+            states.append((fact, forced))
+        elif judgment is None:
+            states.append((fact, FactResult(FactStatus.FINAL, Verdict.ABSENT)))
+        elif judgment.status is not Status.JUDGED:
+            gate.pending["unjudged" if judgment.status is Status.UNJUDGED else ("stale" if judgment.stale else "incomplete")] += 1
+            states.append((fact, None))
+        else:
+            result = judgment.facts[fact.key]
+            if result.status is not FactStatus.FINAL:
+                gate.pending[result.status.value] += 1
+            states.append((fact, result if result.status is FactStatus.FINAL else None))
     return states
 
 
-def compute_group(records: list[RunRecord], articles, translations, truth: GroundTruth, calls_by_run) -> GroupGate:
+def compute_group(records: list[RunRecord], articles, translations, truth: GroundTruth, calls_by_run, judge_id: str, decisions: Decisions) -> GroupGate:
     gate = GroupGate()
     for record in records:
         key = RunKey.of(record)
@@ -109,7 +114,7 @@ def compute_group(records: list[RunRecord], articles, translations, truth: Groun
                 gate.unjudged_reasons.update(o.value for o in judgment.failed)
             by_sentence = {}   # anchor 一樣的兩個 item 是同一句：合起來看
             for sentence in sentences:
-                by_sentence.setdefault(sentence.id, []).extend(_fact_states(gate, judgment, sentence))
+                by_sentence.setdefault(sentence.id, []).extend(_fact_states(gate, judgment, sentence, lambda fact, c=component_id: _override(decisions, key, c, judge_id, fact)))
             for sentence_id, states in by_sentence.items():
                 _record_sentence(gate, sentence_id, record.run_index, states)
     return gate
@@ -209,7 +214,7 @@ def planned_runs(experiment: Experiment, approach: str, direction, variant: Inpu
     return None
 
 
-def gate_lines(experiment: Experiment, out: OutputDir, records: list[RunRecord], articles, truth: GroundTruth | None) -> list[str]:
+def gate_lines(experiment: Experiment, out: OutputDir, records: list[RunRecord], articles, truth: GroundTruth | None, decisions: Decisions) -> list[str]:
     if truth is None:
         return []
     with_sentences = {s.article_id for s in truth.sentences}   # control 文章可以沒有任何敏感句，沒有東西可以核對
@@ -228,12 +233,12 @@ def gate_lines(experiment: Experiment, out: OutputDir, records: list[RunRecord],
                         and r.article_id in with_sentences and truth.group_of(r.article_id) == group]
             if not in_group:
                 continue
-            judge, provisional = primary_judge_for(experiment, group)
+            judge, provisional = experiment.primary_judge_for(group)
             heading = f"### {approach} × {direction}{tag} ・ 分組 {group}"
             if judge is None:
                 lines += [heading, "", "- 沒有主 Judge（實驗設定沒有角色是 primary 的 Judge），沒辦法計算 Gate", ""]
                 continue
-            gate = compute_group([r for r in in_group if r.outcome is Outcome.OK], articles, translations, truth, calls_by_judge[judge.id])
+            gate = compute_group([r for r in in_group if r.outcome is Outcome.OK], articles, translations, truth, calls_by_judge[judge.id], judge.id, decisions)
             skipped = Counter(r.outcome for r in in_group if r.outcome is not Outcome.OK)
             per_article = planned_runs(experiment, approach, direction, variant)
             expected = None if per_article is None else per_article * sum(1 for a in with_sentences if truth.group_of(a) == group)

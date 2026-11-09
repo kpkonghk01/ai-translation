@@ -15,8 +15,10 @@ from .articles import apply_variant, is_main_type
 from .config import Experiment
 from .consistency import Status, judge_component
 from .pairs import ComponentPair, component_pairs
-from .schemas import ComponentResult, Dimension, InputVariant, JudgeCall, RunKey, RunRecord, Severity, Weights
+from .schemas import ComponentResult, Dimension, InputVariant, JudgeCall, ReviewAction, RunKey, RunRecord, Severity, Weights
 from .prompts import judge_template
+from .review_decisions import Decisions
+from .review_items import finding_item_key
 from .store import OutputDir
 from .textrules import nonspace_length, squash
 
@@ -69,7 +71,7 @@ def _add(role: RoleScore, dimension: Dimension, severity: Severity, weights: Wei
         role.consistent[(dimension, severity)] += 1
 
 
-def score_group(records: list[RunRecord], articles, translations, calls_by_run, rows_by_run, weights: Weights) -> GroupScore:
+def score_group(records: list[RunRecord], articles, translations, calls_by_run, rows_by_run, weights: Weights, judge_id: str, decisions: Decisions) -> GroupScore:
     score = GroupScore()
     for record in records:
         key = RunKey.of(record)
@@ -98,12 +100,17 @@ def score_group(records: list[RunRecord], articles, translations, calls_by_run, 
                 continue
             role = score.main if pair.is_main else score.peripheral
             for merged in judgment.findings:
+                decision = decisions.get(finding_item_key(key, pair.id, judge_id, merged.finding))
+                if decision is not None and decision.action is ReviewAction.REJECT:   # 審閱駁回：不計分，也不計數
+                    continue
+                reviewed = decision is not None   # accept 或 override：審閱者確認了，算作一致
+                severity = decision.severity if decision is not None and decision.severity else merged.finding.severity
                 score.severity_mismatches += merged.severity_mismatch
                 if merged.finding.dimension is Dimension.FIDELITY_OF_FORCE:
-                    score.fof_consistent += merged.consistent
-                    score.fof_uncertain += not merged.consistent
+                    score.fof_consistent += merged.consistent or reviewed
+                    score.fof_uncertain += not (merged.consistent or reviewed)
                 else:
-                    _add(role, merged.finding.dimension, merged.finding.severity, weights, merged.consistent)
+                    _add(role, merged.finding.dimension, severity, weights, merged.consistent or reviewed)
     return score
 
 
@@ -179,7 +186,7 @@ def judge_settings_lines(experiment: Experiment, out: OutputDir) -> list[str]:
     return header_lines(experiment, out.read_judge_calls()) if experiment.judges else []
 
 
-def judge_lines(experiment: Experiment, out: OutputDir, records: list[RunRecord], rows: list[ComponentResult], articles) -> list[str]:
+def judge_lines(experiment: Experiment, out: OutputDir, records: list[RunRecord], rows: list[ComponentResult], articles, decisions: Decisions) -> list[str]:
     """Judge 的結果：每個 Approach × Direction × 輸入版本 × Judge 一節，加上 Source defect 清單。"""
     calls = out.read_judge_calls()
     if not experiment.judges or not calls:
@@ -201,7 +208,7 @@ def judge_lines(experiment: Experiment, out: OutputDir, records: list[RunRecord]
             members = [r for r in ok_records if (r.approach, r.direction, r.input_variant) == (approach, direction, variant)]
             if not any(RunKey.of(r) in calls_by_judge_run[judge.id] for r in members):
                 continue
-            score = score_group(members, articles, translations, calls_by_judge_run[judge.id], rows_by_run, experiment.config.weights)
+            score = score_group(members, articles, translations, calls_by_judge_run[judge.id], rows_by_run, experiment.config.weights, judge.id, decisions)
             tag = "" if variant is InputVariant.FULL else f"（{variant}）"
             lines += group_lines(f"### {approach} × {direction}{tag} × Judge {judge.id}（{judge.config.role}）", score, experiment.config.weights)
     return lines + source_defect_lines(calls)

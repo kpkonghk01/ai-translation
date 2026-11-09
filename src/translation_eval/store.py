@@ -66,6 +66,14 @@ class OutputDir:
         return self.root / "check-meta.json"
 
     @property
+    def decisions_path(self) -> Path:
+        return self.root / "review-decisions.json"
+
+    @property
+    def review_path(self) -> Path:
+        return self.root / "review.md"
+
+    @property
     def report_path(self) -> Path:
         return self.root / "report.md"
 
@@ -166,6 +174,9 @@ class OutputDir:
 
     def write_report(self, text: str) -> None:
         self._replace(self.report_path, text)
+
+    def write_review(self, text: str) -> None:
+        self._replace(self.review_path, text)
 
     def write_run(self, record: RunRecord, raw: bytes | None, translation: dict | None, *,
                   secrets: tuple[str, ...] = (), replaces_existing: bool = False, raw_extension: str = "body") -> RunRecord:

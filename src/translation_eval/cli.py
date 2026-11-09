@@ -8,12 +8,13 @@
   uv run --locked python -I -m translation_eval import-baseline --config <實驗設定>
   uv run --locked python -I -m translation_eval check --config <實驗設定>
   uv run --locked python -I -m translation_eval report --config <實驗設定>
+  uv run --locked python -I -m translation_eval review --config <實驗設定>
 各子命令都有 --data-dir（預設 data）。需要 key 的只有 translate，真跑的指令見 docs/data-pipeline.md。
 """
 import argparse
 import sys
 
-from . import baselines, check, cms, judging, provider_listing, report, translate
+from . import baselines, check, cms, judging, provider_listing, report, review, translate
 from .errors import InputError
 from .transport import Transport, TransportForbidden, UrllibTransport
 
@@ -31,13 +32,14 @@ def build_parser() -> argparse.ArgumentParser:
     b = sub.add_parser("import-baseline", help="把方案 E 等 baseline 目錄匯入成 Run")
     c = sub.add_parser("check", help="對 ok 的 Run 做 Deterministic check")
     r = sub.add_parser("report", help="產生 Block／Refusal 報告")
+    v = sub.add_parser("review", help="產生審閱清單（必看與抽查）")
     pv = sub.add_parser("providers", help="列出 OpenRouter 上某個模型的 provider 清單，供 Pan 確認")
     pv.add_argument("model", help="OpenRouter 的模型，寫成「作者/名稱」")
     pv.add_argument("--dry-run", action="store_true", help="不送出請求，只印出要查的網址")
     m = sub.add_parser("import-cms", help="把 CMS 匯出（CSV）轉成文章檔")
     m.add_argument("--csv", required=True, help="CMS 匯出的 CSV")
     m.add_argument("--out", default="data/cms-articles", help="文章檔的輸出目錄（預設 data/cms-articles）")
-    for p in (t, j, b, c, r):
+    for p in (t, j, b, c, r, v):
         p.add_argument("--config", required=True, help="實驗設定（JSON）")
         p.add_argument("--data-dir", default="data", help="輸出目錄（預設 data）")
     t.add_argument("--dry-run", action="store_true", help="不送出請求，只印出請求數、估計輸入字數和 endpoint")
@@ -71,6 +73,8 @@ def main(argv=None, transport: Transport | None = None) -> int:
             return check.handle(args)
         if args.command == "report":
             return report.handle(args)
+        if args.command == "review":
+            return review.handle(args)
     except InputError as e:
         print(f"{args.command}：已停止，沒有送出請求，也沒有寫出任何檔案：", file=sys.stderr)
         for problem in e.problems:

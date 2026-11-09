@@ -53,3 +53,11 @@ def translation_without(component_id: str):
     translation = json.loads(json.loads(ok_response().body)["candidates"][0]["content"]["parts"][0]["text"])
     translation["components"] = [c for c in translation["components"] if c["id"] != component_id]
     return gemini_samples.ok(json.dumps(translation, ensure_ascii=False))
+
+
+def combined_transport(mqm=None, fact=None):
+    """MQM 與 fact 兩種請求的假 Judge：fact 的請求（有 sentences）交給 fact_transport，其餘交給 judge_transport。"""
+    from fake_transport import FunctionTransport
+    from judge_helpers import fact_transport, judge_transport, user_payload
+    mqm_side, fact_side = judge_transport(mqm), fact_transport(fact)
+    return FunctionTransport(lambda request: (fact_side if "sentences" in user_payload(request) else mqm_side).send(request))

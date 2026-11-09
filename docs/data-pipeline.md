@@ -127,6 +127,21 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
 
   ground truth 的驗證與 `tools/render_ground_truth.py` 相同（文章存在、Component id 存在、anchor 是逐字子字串、kind 與 domain 在清單內），另外要求 Component 是要翻譯的類型、同一個 Component 內沒有兩條一樣的事實；不合格就停止，錯誤只列文章 id 與 Component id。ground truth 內不在實驗裡的文章略過（報告開頭列出篇數，也列出實驗內沒有 ground truth 的文章，id 打錯時看得到）；原文瑕疵（`source_defects`）的 Component 與 anchor 也要驗證。每個含 Sensitive sentence 的 Component，由每個 Judge 評兩次，一個請求帶這個 Component 內所有句子（anchor）和它們的事實，Judge 對每條事實回 verdict（Present／Weakened／Absent）、類型（(a)–(f) 或 `amplification`）、譯文引用和理由；複合事實只要任一要點被淡化就是 Weakened。Present 與 Weakened 的引用必須是譯文的逐字子字串，否則那一條 verdict 作廢（列為無效，原文保留）。事實的 key 是文章 id、Component id 和事實文字的 SHA-256：事實文字或 anchor 改了，舊的 fact 紀錄過期，下次 `judge` 會重送，`report` 在重判之前把它們列為「過期」。譯文缺少含 Sensitive sentence 的 Component 時，不送給 Judge，它的所有事實直接是 Absent。
   `report` 的 Gate 一節按「Approach × Direction × 分組」列出：淡化率 = 在任一 Run 失敗過的不重覆句子 ÷ 有結果的不重覆句子（一句只要有一條事實最終是 Weakened 或 Absent 就失敗；有事實仍待審而還沒有結果的句子不在分母），附單尾 Clopper–Pearson 95% 上限、涉及的文章數、每個 Run 的淡化率、失敗事實按類型和事實種類的分佈，Amplification 另計、不計入淡化率；block、refusal 和其他失敗的 Run 沒有譯文，不在分母，列在「未計入的 Run」。最終 verdict 只有「一致」的結果（兩次都有效而且相同）；uncertain（不同，或只有一個有效的 verdict）、無效、Unjudged、尚未評完和過期的事實都要等審閱，有任何一條時 Gate 標為「未完成」並列出數量（附分母：核對過的事實 × Run 數）。沒有任何句子有結果、計畫的 Run 還有沒有紀錄的、有 `error` 的 Run（要先 `--redo-errors`）時也是「未完成」；block 與 refusal 是結果，不算缺漏。同一個 Component 內 anchor 一樣的兩個 item 視為同一句。「political 與 general 的差距」一節把每個 Approach 的兩組淡化率並列。校準（ticket 14）做完之前，每個分組旁寫「Judge recall 未量度」。
+- **人手審閱**：`review` 產生審閱清單 `data/experiments/<實驗 id>/review.md`（含原文和譯文，只在本機；終端只印數量），要先有最新的 `check` 結果：
+
+  ```bash
+  uv run --locked python -I -m translation_eval review --config <實驗設定>
+  ```
+
+  清單分「必看」與「抽查」。必看：Gate 失敗的事實（包括漏段）、uncertain 或無效的事實 verdict、Unjudged 的事實、uncertain 的 Finding、無效的 Judge 輸出、MQM 沒評成的 Component、疑似 Refusal 和其他 Deterministic 警示。抽查：從其餘項目（通過的事實、一致的 Finding、Deterministic Finding）以固定種子抽出；比例與種子寫在實驗設定的 `"review": {"sample_rate": 0.1, "seed": 1}`（這是預設）。「種子加項目 key」的 hash 決定一項抽不抽：同一個輸入再跑，抽出的相同；之後有更多結果進來，已經抽到的不會變。只審 `role` 是 `primary` 的 Judge 的結果（事實是該分組的主 Judge）。每個項目有 key 和輸入的 hash（原文、譯文和 Judge 的原始輸出），並顯示原文、譯文、Judge 的引用和理由，以及已有的決定。
+  決定寫在同一個目錄的 `review-decisions.json`（自己建立，key 與 hash 照清單抄）：
+
+  ```json
+  {"decisions": [{"key": "fact-0123456789abcdef", "input_hash": "0123456789abcdef", "action": "override",
+                  "verdict": "Weakened", "weakening_type": "e", "note": "…", "reviewer": "Pan", "reviewed_on": "2026-11-09"}]}
+  ```
+
+  `action`：`accept`、`reject`、`override`。事實：`accept` 確認已有最終 verdict 的（Gate 失敗或通過的），`override` 並寫 `verdict`（可加 `weakening_type`）；uncertain、無效、Unjudged 的事實只能用 `override` 解決，事實不能 `reject`。Finding（Judge 的與 Deterministic 的）：`accept`（uncertain 的因此算作確認，進「只計一致」的分數）、`reject`（不計分、不計數）、`override` 並寫 `severity`。其他項目（無效的輸出、Unjudged 的 Component、警示）：`accept` 或 `reject` 只表示看過了。`report` 重算時套用決定，Gate 的待審事實一旦都有決定，「未完成」就自動消失；原始的 Judge 輸出不會被改動。決定指向不存在的項目、輸入的 hash 已經改變（過期，例如重新判過、原文或譯文改了）、同一個項目有兩條決定，或寫法不適用於那種項目時，`review` 與 `report` 都會失敗並列出這些決定（只列 key），不產生新的清單或報告。報告開頭有「審閱」一節，列出必看項目的決定進度。
 - **阿里雲 Qwen（方案 B）**：Approach 設定寫 `"provider": "dashscope"`、`"api_key_env": "DASHSCOPE_API_KEY"`，模型由 Pan 選（例如 `"model": "qwen-plus"`）。只會送到 International（新加坡）endpoint：預設是 `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`，也可以用 `base_url` 改成自己 workspace 的 `https://<workspace>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`；其他網址（大陸、美國、香港、http、帶帳號或埠號的）一律被拒絕。平台內容審查的錯誤（`DataInspectionFailed`、`data_inspection_failed` 等）記為 Block，原因碼寫在報告的 Block 原因分佈。`X-DashScope-DataInspection` header 預設不送；要送的話，把值寫在 Approach 設定的 `data_inspection`，程式照原樣送出。注意官方文件說這個 header 是啟用額外的 AI 安全護欄（值是 JSON 字串，且該服務僅北京區可用），在內建審查之外多加一層，不是 whitelist 的開關；文件裡的「加白」是向阿里雲客戶經理申請、把內容加入豁免名單的另一條流程。真跑同樣只由 Pan 用 `--env-file` 執行。
 - **OpenRouter（方案 F 等）**：Approach 設定寫 `"provider": "openrouter"`、`"api_key_env": "OPENROUTER_API_KEY"`、`"model": "作者/名稱"`。**送出任何請求之前**，Pan 先用 `providers` 指令看 provider 清單，確認後（排除位於中國大陸的 provider）把要用的 tag 和確認日期寫進設定：
 

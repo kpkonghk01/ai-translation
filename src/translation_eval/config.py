@@ -42,6 +42,14 @@ class Experiment:
     term_list: LoadedTermList
     judges: list[PlannedJudge]
 
+    def primary_judge_for(self, group: str):
+        """Gate 的分組由哪個 Judge 決定：(Judge, 是否暫定)。設定沒有為這個分組指定時，用第一個角色是 primary 的 Judge，
+        並標為暫定；沒有 primary 的 Judge 時是 (None, True)。"""
+        chosen = self.config.judging.primary_judges.get(group) if self.config.judging else None
+        if chosen is not None:
+            return next(j for j in self.judges if j.id == chosen), False
+        return next((j for j in self.judges if j.config.role is JudgeRole.PRIMARY), None), True
+
     def approach_config(self, approach_id: str) -> ApproachConfig | None:
         """LLM Approach 的設定；baseline（不經 API）沒有。"""
         return next((p.config for p in self.approaches if p.id == approach_id), None)
