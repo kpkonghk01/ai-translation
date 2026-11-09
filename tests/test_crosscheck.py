@@ -12,6 +12,7 @@ import gemini_samples
 import openrouter_samples
 from fake_transport import FakeTransport, FunctionTransport
 from fixtures import FAKE_KEY, JUDGE, KEY_ENV, Workspace, source_article
+from judge_helpers import article_of, model_of, payload_of
 from translation_eval import prompts
 from translation_eval.crosscheck import MAX_SENTENCES
 from translation_eval.schemas import FactKind
@@ -53,20 +54,9 @@ def gemini_picks(article_id: str) -> dict:
         pick("9000002-002", SENTENCE_002, [("attribution", "不滿的是陳虛構本人")])]}   # Qwen 沒選這一句
 
 
-def payload_of(request) -> dict:
-    """請求裡的使用者訊息（Gemini 與 OpenRouter 的請求格式不同）。"""
-    body = json.loads(request.body)
-    text = body["contents"][0]["parts"][0]["text"] if "contents" in body else body["messages"][-1]["content"]
-    return json.loads(text)
-
-
-def article_of(request) -> str:
-    return payload_of(request)["components"][0]["id"].split("-")[0]
-
-
 def routed(qwen=qwen_picks, gemini=gemini_picks) -> FunctionTransport:
     def reply(request):
-        model = request.url.split("/models/")[1].split(":")[0]
+        model = model_of(request)
         picks = (qwen if model == "qwen-fake" else gemini)(article_of(request))
         return picks if not isinstance(picks, dict) else gemini_samples.ok(json.dumps(picks, ensure_ascii=False))
     return FunctionTransport(reply)
@@ -108,7 +98,7 @@ class RequestTest(CrosscheckCase):
     def test_one_request_per_article_for_the_blind_model_and_another_for_the_reference_on_the_political_article_only(self):
         transport = routed()
         self.run_ok(transport=transport)
-        by_model = sorted((r.url.split("/models/")[1].split(":")[0], article_of(r)) for r in transport.requests)
+        by_model = sorted((model_of(r), article_of(r)) for r in transport.requests)
         self.assertEqual(by_model, [("gemini-fake", "9000002"), ("qwen-fake", "9000001"), ("qwen-fake", "9000002")])
         self.assertEqual(sorted((c["judge"], c["article_id"]) for c in self.calls()), [("g1", "9000002"), ("q1", "9000001"), ("q1", "9000002")])
 
@@ -136,7 +126,7 @@ class RequestTest(CrosscheckCase):
     def resent(self) -> list[tuple[str, str]]:
         transport = routed()
         self.run_ok(transport=transport)
-        return sorted((r.url.split("/models/")[1].split(":")[0], article_of(r)) for r in transport.requests)
+        return sorted((model_of(r), article_of(r)) for r in transport.requests)
 
     def test_a_rerun_skips_current_records_and_a_changed_prompt_or_judge_setup_resends_them(self):
         self.run_ok()

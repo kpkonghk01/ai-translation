@@ -197,7 +197,7 @@ class QualityComparisonTest(CompareCase):
         self.translate(ok_response("9000001"), b_response("9000001"), ok_response("9000002"), b_response("9000002"))
         self.assertEqual(self.run_cli("check")[0], 0)
         self.assertEqual(self.run_cli("report")[0], 0)   # 還沒有 Judge 紀錄
-        self.assertNotIn("## 與 baseline 比較", self.report())
+        self.assertIn("還沒有 Judge 的 MQM 紀錄，沒有分數可以比較：先執行 judge。", self.report())   # 設了 comparison：說出來，不要整節消失
 
 
 class SimplifiedBaselineTest(CompareCase):

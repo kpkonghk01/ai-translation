@@ -113,8 +113,10 @@ def scored_runs_planned(experiment: Experiment, who: str, direction: Direction) 
 
 def comparison_lines(experiment: Experiment, ctx: JudgeContext | None, records: list[RunRecord]) -> list[str]:
     """沒有設 comparison、或沒有可以算分數的 Judge 紀錄時沒有這一節。"""
-    if experiment.config.comparison is None or ctx is None:
+    if experiment.config.comparison is None:
         return []
+    if ctx is None:   # 設了 comparison 卻沒有分數可比：說出來，不要整節消失
+        return ["## 與 baseline 比較", "", "還沒有 Judge 的 MQM 紀錄，沒有分數可以比較：先執行 judge。", ""]
     full = [r for r in records if r.input_variant is InputVariant.FULL]
     everyone = [*(p.id for p in experiment.approaches), *(b.id for b in experiment.config.baselines)]
     lines = ["## 與 baseline 比較", "",

@@ -227,6 +227,7 @@ class HeaderTest(ReportCase):
         text = self.report_text()
         self.assertIn("（0 個請求）", text)
         self.assertNotIn("× Judge j1", text)
+        self.assertIn("還沒有 Judge 的 MQM 紀錄：先執行 judge。", text)   # 設了 Judge 卻還沒有紀錄：說出來，不要整節消失
 
 
 class BaselineTest(ReportCase):

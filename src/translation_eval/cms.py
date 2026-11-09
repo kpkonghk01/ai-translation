@@ -44,6 +44,8 @@ def _read_rows(csv_path: str) -> list[list[str]]:
             return list(csv.reader(f))
     except OSError as e:
         raise InputError(f"{csv_path}：讀不到檔案（{type(e).__name__}）") from e
+    except UnicodeDecodeError as e:   # 檔案不是 UTF-8：只說位置，不回顯內容
+        raise InputError(f"{csv_path}：不是 UTF-8 的文字（第 {e.start} 個位元組）") from e
     except csv.Error as e:
         raise InputError(f"{csv_path}：不是合法的 CSV（{e}）") from e
 

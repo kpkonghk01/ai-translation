@@ -23,10 +23,10 @@ from .facts import FactStatus, judge_facts
 from .ground_truth import GroundTruth
 from .pairs import component_pairs
 from .screening import judge_screening
-from .schemas import (DUPLICATE_COMPONENT, FAILING_VERDICTS, EXTRA_COMPONENT, OMISSION, TYPE_CHANGED, WHOLE_RUN, CheckWarning, ComponentResult, Dimension, Finding,
-                      JudgeFinding, JudgeRole, Outcome, RunKey, RunRecord, ScreenItem, WarningKind)
+from .schemas import (CheckWarning, ComponentResult, DUPLICATE_COMPONENT, Dimension, EXTRA_COMPONENT, FAILING_VERDICTS, Finding, InvalidKind,
+                      JudgeFinding, JudgeRole, OMISSION, Outcome, RunKey, RunRecord, ScreenItem, TYPE_CHANGED, Task, WHOLE_RUN, WarningKind)
 from .store import OutputDir
-from .textrules import squash
+from .textrules import one_line, squash
 
 MAX_RAW_SHOWN = 300
 STRUCTURAL_SUBTYPES = frozenset({OMISSION, EXTRA_COMPONENT, DUPLICATE_COMPONENT, TYPE_CHANGED})   # 程式證明的，不能駁回或改判
@@ -123,22 +123,16 @@ def screening_item_keys(run: RunKey, judge: str, items: list[ScreenItem]) -> lis
     return [item_key(ItemKind.SCREENING, run, WHOLE_RUN, judge, *i) for i in _with_ordinals(identities)]
 
 
-def unjudged_item_key(run: RunKey, component_id: str, judge: str, task: str) -> str:
+def unjudged_item_key(run: RunKey, component_id: str, judge: str, task: Task) -> str:
     return item_key(ItemKind.UNJUDGED, run, component_id, judge, task)
 
 
-def invalid_item_key(run: RunKey, component_id: str, judge: str, task: str, call_index: int, raw: str) -> str:
+def invalid_item_key(run: RunKey, component_id: str, judge: str, task: Task, call_index: int, raw: str) -> str:
     return item_key(ItemKind.INVALID, run, component_id, judge, task, call_index, digest(raw))
 
 
 def is_structural(finding: Finding) -> bool:
     return finding.subtype in STRUCTURAL_SUBTYPES
-
-
-def _one_line(text: str, limit: int | None = None) -> str:
-    """Judge 寫的文字放進清單前壓成一行，才不會長出新的標題或項目。"""
-    line = " ".join(text.split())
-    return line if limit is None or len(line) <= limit else line[:limit] + "…"
 
 
 def _raw(component) -> str:
@@ -148,7 +142,7 @@ def _raw(component) -> str:
 def _call_summary(calls) -> list:
     return [[c.call_index, c.outcome.value, c.reason, [f.model_dump(mode="json") for f in c.findings],
              [v.model_dump(mode="json") for v in c.verdicts], [i.model_dump(mode="json") for i in c.invalid],
-             *([[s.model_dump(mode="json") for s in c.screenings]] if c.task == "screen" else [])] for c in calls]   # MQM 與 fact 的格式不變：已寫的審閱決定不會因此過期
+             *([[s.model_dump(mode="json") for s in c.screenings]] if c.task is Task.SCREEN else [])] for c in calls]   # MQM 與 fact 的格式不變：已寫的審閱決定不會因此過期
 
 
 def _item(key, kind, status, run, component_id, judge, source, target, hash_parts, lines, locked=False) -> ReviewItem:
@@ -158,7 +152,7 @@ def _item(key, kind, status, run, component_id, judge, source, target, hash_part
 
 def build_items(experiment: Experiment, out: OutputDir, records: list[RunRecord], rows: list[ComponentResult], articles,
                 truth: GroundTruth | None) -> list[ReviewItem]:
-    calls = {task: defaultdict(list) for task in ("mqm", "fact", "screen")}
+    calls = {task: defaultdict(list) for task in Task}
     for task, grouped in calls.items():
         for call in out.read_judge_calls(task):
             grouped[(call.judge, RunKey.of(call), call.component_id)].append(call)
@@ -189,22 +183,22 @@ def build_items(experiment: Experiment, out: OutputDir, records: list[RunRecord]
             for key, finding in zip(check_finding_keys(run, row.component_id, row.findings), row.findings):
                 items.append(_item(key, ItemKind.CHECK_FINDING, ItemStatus.CHECKED, run, row.component_id, None, source, target,
                                    (finding.model_dump(mode="json"),),
-                                   [f"{finding.dimension.value}／{finding.subtype}／{finding.severity.value}：{_one_line(finding.reason)}"],
+                                   [f"{finding.dimension.value}／{finding.subtype}／{finding.severity.value}：{one_line(finding.reason)}"],
                                    locked=is_structural(finding)))
             for warning in row.warnings:
                 status = ItemStatus.SUSPECTED_REFUSAL if warning.kind is WarningKind.SUSPECTED_REFUSAL else ItemStatus.WARNING
                 items.append(_item(warning_item_key(run, row.component_id, warning), ItemKind.WARNING, status, run, row.component_id, None,
-                                   source, target, (warning.model_dump(mode="json"),), [f"{warning.kind.value}：{_one_line(warning.detail)}"]))
+                                   source, target, (warning.model_dump(mode="json"),), [f"{warning.kind.value}：{one_line(warning.detail)}"]))
         limit = limits.get(record.approach)
         if limit is None or record.run_index <= limit:   # mqm_run_limit 刻意沒評的 Run 沒有 MQM 項目
             for judge in primary:
                 for pair in pairs:
                     if pair.translated_text is not None:
-                        _mqm_items(items, run, pair, judge.id, calls["mqm"].get((judge.id, run, pair.id), []))
+                        _mqm_items(items, run, pair, judge.id, calls[Task.MQM].get((judge.id, run, pair.id), []))
         for judge in primary:
-            _screening_items(items, run, pairs, judge.id, calls["screen"].get((judge.id, run, WHOLE_RUN), []))
+            _screening_items(items, run, pairs, judge.id, calls[Task.SCREEN].get((judge.id, run, WHOLE_RUN), []))
         if truth is not None:
-            _fact_items(items, experiment, truth, record, by_id, calls["fact"])
+            _fact_items(items, experiment, truth, record, by_id, calls[Task.FACT])
     return items
 
 
@@ -215,8 +209,8 @@ def _mqm_items(items, run: RunKey, pair, judge: str, calls) -> None:
     ordered = sorted(calls, key=lambda c: c.call_index)
     summary = _call_summary(ordered)
     if judgment.status is Status.UNJUDGED:
-        reasons = "、".join(f"第 {c.call_index} 次 {c.outcome.value}" + (f"（{_one_line(c.reason)}）" if c.reason else "") for c in ordered)
-        items.append(_item(unjudged_item_key(run, pair.id, judge, "mqm"), ItemKind.UNJUDGED, ItemStatus.UNJUDGED, run, pair.id, judge,
+        reasons = "、".join(f"第 {c.call_index} 次 {c.outcome.value}" + (f"（{one_line(c.reason)}）" if c.reason else "") for c in ordered)
+        items.append(_item(unjudged_item_key(run, pair.id, judge, Task.MQM), ItemKind.UNJUDGED, ItemStatus.UNJUDGED, run, pair.id, judge,
                            pair.source_text, pair.translated_text, (summary,), [f"MQM 的兩次請求都失敗：{reasons}"]))
         return
     for key, merged in zip(finding_item_keys(run, pair.id, judge, [m.finding for m in judgment.findings]), judgment.findings):
@@ -230,13 +224,13 @@ def _mqm_items(items, run: RunKey, pair, judge: str, calls) -> None:
             status = ItemStatus.CONSISTENT if merged.consistent else ItemStatus.UNCERTAIN
         items.append(_item(key, ItemKind.FINDING, status, run, pair.id, judge,
                            pair.source_text, pair.translated_text, (summary,),
-                           [f"{f.dimension.value}／{f.subtype}／{f.severity.value}（{note}）：{_one_line(f.reason)}",
-                            f"原文片段：「{_one_line(f.source_span)}」；譯文片段：「{_one_line(f.target_span)}」"]))
+                           [f"{f.dimension.value}／{f.subtype}／{f.severity.value}（{note}）：{one_line(f.reason)}",
+                            f"原文片段：「{one_line(f.source_span)}」；譯文片段：「{one_line(f.target_span)}」"]))
     for call in ordered:
-        for invalid in (i for i in call.invalid if i.kind != "verdict"):   # verdict 的在事實項目裡
-            items.append(_item(invalid_item_key(run, pair.id, judge, "mqm", call.call_index, invalid.raw), ItemKind.INVALID, ItemStatus.INVALID,
+        for invalid in (i for i in call.invalid if i.kind is not InvalidKind.VERDICT):   # verdict 的在事實項目裡
+            items.append(_item(invalid_item_key(run, pair.id, judge, Task.MQM, call.call_index, invalid.raw), ItemKind.INVALID, ItemStatus.INVALID,
                                run, pair.id, judge, pair.source_text, pair.translated_text, (invalid.model_dump(mode="json"),),
-                               [f"第 {call.call_index} 次的 {invalid.kind} 無效：{invalid.why}", f"Judge 的輸出：{_one_line(invalid.raw, MAX_RAW_SHOWN)}"]))
+                               [f"第 {call.call_index} 次的 {invalid.kind} 無效：{invalid.why}", f"Judge 的輸出：{one_line(invalid.raw, MAX_RAW_SHOWN)}"]))
 
 
 def _screening_items(items, run: RunKey, pairs, judge: str, calls) -> None:
@@ -248,8 +242,8 @@ def _screening_items(items, run: RunKey, pairs, judge: str, calls) -> None:
     ordered = sorted(calls, key=lambda c: c.call_index)
     summary = _call_summary(ordered)
     if judgment.status is Status.UNJUDGED:
-        reasons = "、".join(f"第 {c.call_index} 次 {c.outcome.value}" + (f"（{_one_line(c.reason)}）" if c.reason else "") for c in ordered)
-        items.append(_item(unjudged_item_key(run, WHOLE_RUN, judge, "screen"), ItemKind.UNJUDGED, ItemStatus.UNJUDGED, run, WHOLE_RUN, judge,
+        reasons = "、".join(f"第 {c.call_index} 次 {c.outcome.value}" + (f"（{one_line(c.reason)}）" if c.reason else "") for c in ordered)
+        items.append(_item(unjudged_item_key(run, WHOLE_RUN, judge, Task.SCREEN), ItemKind.UNJUDGED, ItemStatus.UNJUDGED, run, WHOLE_RUN, judge,
                            full_source, full_translation, (summary,), [f"全文篩查的兩次請求都失敗：{reasons}"]))
         return
     by_id = {p.id: p for p in pairs}
@@ -261,13 +255,13 @@ def _screening_items(items, run: RunKey, pairs, judge: str, calls) -> None:
         items.append(_item(key, ItemKind.SCREENING, ItemStatus.SCREENED, run, screened.component_id or WHOLE_RUN, judge,
                            owner.source_text if owner else full_source, owner.translated_text if owner else full_translation,
                            (full_source, full_translation, summary),
-                           [f"全文篩查：{screened.verdict.value}{kind}（{note}）：{_one_line(screened.reason)}",
-                            f"原文片段：「{_one_line(screened.source_span)}」；譯文片段：「{_one_line(screened.target_span)}」"]))
+                           [f"全文篩查：{screened.verdict.value}{kind}（{note}）：{one_line(screened.reason)}",
+                            f"原文片段：「{one_line(screened.source_span)}」；譯文片段：「{one_line(screened.target_span)}」"]))
     for call in ordered:
         for invalid in call.invalid:
-            items.append(_item(invalid_item_key(run, WHOLE_RUN, judge, "screen", call.call_index, invalid.raw), ItemKind.INVALID, ItemStatus.INVALID,
+            items.append(_item(invalid_item_key(run, WHOLE_RUN, judge, Task.SCREEN, call.call_index, invalid.raw), ItemKind.INVALID, ItemStatus.INVALID,
                                run, WHOLE_RUN, judge, full_source, full_translation, (invalid.model_dump(mode="json"),),
-                               [f"全文篩查第 {call.call_index} 次的條目無效：{invalid.why}", f"Judge 的輸出：{_one_line(invalid.raw, MAX_RAW_SHOWN)}"]))
+                               [f"全文篩查第 {call.call_index} 次的條目無效：{invalid.why}", f"Judge 的輸出：{one_line(invalid.raw, MAX_RAW_SHOWN)}"]))
 
 
 def _fact_lines(judgment, fact) -> list[str]:
@@ -281,8 +275,8 @@ def _fact_lines(judgment, fact) -> list[str]:
             lines.append(f"Judge 第 {call.call_index} 次：verdict 作廢（{why}）")
         else:
             kind = f"（{verdict.weakening_type.value}）" if verdict.weakening_type else ""
-            quote = f"；引用「{_one_line(verdict.quote)}」" if verdict.quote else ""
-            lines.append(f"Judge 第 {call.call_index} 次：{verdict.verdict.value}{kind}{quote}；理由：{_one_line(verdict.reason)}")
+            quote = f"；引用「{one_line(verdict.quote)}」" if verdict.quote else ""
+            lines.append(f"Judge 第 {call.call_index} 次：{verdict.verdict.value}{kind}{quote}；理由：{one_line(verdict.reason)}")
     return lines
 
 
@@ -303,7 +297,7 @@ def _fact_items(items, experiment: Experiment, truth: GroundTruth, record: RunRe
         summary = [] if judgment is None else _call_summary(judgment.calls)
         for sentence in sentences:
             for fact in sentence.facts:
-                prefix = f"事實（{fact.kind.value}）：{_one_line(fact.text)}"
+                prefix = f"事實（{fact.kind.value}）：{one_line(fact.text)}"
                 locked = judgment is None
                 if judgment is None:
                     status, lines = ItemStatus.FAILED, [prefix, "譯文缺少這個 Component：事實直接判 Absent，沒有送給 Judge"]
@@ -318,6 +312,6 @@ def _fact_items(items, experiment: Experiment, truth: GroundTruth, record: RunRe
                                    pair.source_text, pair.translated_text, (fact.kind.value, fact.text, summary), lines, locked=locked))
         for call in (judgment.calls if judgment is not None else ()):
             for invalid in (i for i in call.invalid if i.fact is None):   # 不認識的 fact_id、不是物件的條目：不屬於任何一條事實
-                items.append(_item(invalid_item_key(run, component_id, judge.id, "fact", call.call_index, invalid.raw), ItemKind.INVALID, ItemStatus.INVALID,
+                items.append(_item(invalid_item_key(run, component_id, judge.id, Task.FACT, call.call_index, invalid.raw), ItemKind.INVALID, ItemStatus.INVALID,
                                    run, component_id, judge.id, pair.source_text, pair.translated_text, (invalid.model_dump(mode="json"),),
-                                   [f"第 {call.call_index} 次的 verdict 無效：{invalid.why}", f"Judge 的輸出：{_one_line(invalid.raw, MAX_RAW_SHOWN)}"]))
+                                   [f"第 {call.call_index} 次的 verdict 無效：{invalid.why}", f"Judge 的輸出：{one_line(invalid.raw, MAX_RAW_SHOWN)}"]))

@@ -29,7 +29,7 @@ from .gold import GoldSet, item_hash, item_pair, item_sentences
 from .ground_truth import GroundTruth, fact_key
 from .judging import task_templates
 from .pairs import ComponentPair
-from .schemas import FAILING_VERDICTS, GoldCall, GoldCategory, GoldItem, JudgeFinding
+from .schemas import FAILING_VERDICTS, GoldCall, GoldCategory, GoldItem, InvalidKind, JudgeFinding, Task
 
 COMPLETE_ANNOTATION = (GoldCategory.ANNOTATED, GoldCategory.CLEAN)   # 標註是完整的：沒標到的 Finding 就是多報
 
@@ -123,11 +123,11 @@ def evaluate_judge(gold: GoldSet, truth: GroundTruth | None, calls: list[GoldCal
     outcomes, requests = [], Counter()
     for item in gold.items:
         pair = item_pair(item)
-        mqm_calls, fact_calls = fresh[(item.id, "mqm")], fresh[(item.id, "fact")]
-        requests.update({"mqm": len(mqm_calls), "fact": len(fact_calls)})
+        mqm_calls, fact_calls = fresh[(item.id, Task.MQM)], fresh[(item.id, Task.FACT)]
+        requests.update({Task.MQM: len(mqm_calls), Task.FACT: len(fact_calls)})
         facts = judge_facts(fact_calls, item_sentences(item, truth)) if item.facts else None
         outcomes.append(ItemOutcome(item, pair, judge_component(mqm_calls, pair), facts,
-                                    sum(len(c.findings) for c in mqm_calls), sum(1 for c in mqm_calls for i in c.invalid if i.kind == "finding")))
+                                    sum(len(c.findings) for c in mqm_calls), sum(1 for c in mqm_calls for i in c.invalid if i.kind is InvalidKind.FINDING)))
     return JudgeEvaluation(judge, outcomes, +requests, stale)
 
 

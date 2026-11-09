@@ -11,7 +11,7 @@ import json
 import os
 import re
 
-from .errors import InputError
+from .errors import InputError, StoppedAfterSending
 from .schemas import PROVIDER_KEY_ENV
 from .transport import Request, Transport, TransportFailure
 
@@ -55,17 +55,17 @@ def handle(args, transport: Transport) -> int:
     try:
         response = transport.send(Request("GET", url, {"Authorization": f"Bearer {key}"}, b"", 30))
     except TransportFailure as e:
-        raise InputError(f"連線失敗：{str(e).replace(key, '[REDACTED]')}") from e
+        raise StoppedAfterSending(f"連線失敗：{str(e).replace(key, '[REDACTED]')}") from e
     if response.status != 200:
-        raise InputError(f"OpenRouter 回應 HTTP {response.status}")
+        raise StoppedAfterSending(f"OpenRouter 回應 HTTP {response.status}")
     try:
         body = json.loads(response.body)
     except (ValueError, RecursionError) as e:
-        raise InputError("OpenRouter 的回應不是 JSON") from e
+        raise StoppedAfterSending("OpenRouter 的回應不是 JSON") from e
     data = body.get("data") if isinstance(body, dict) else None
     endpoints = data.get("endpoints") if isinstance(data, dict) else None
     if not isinstance(endpoints, list) or not endpoints or not all(isinstance(e, dict) for e in endpoints):
-        raise InputError("OpenRouter 的回應沒有任何 endpoint，或格式不認識")
+        raise StoppedAfterSending("OpenRouter 的回應沒有任何 endpoint，或格式不認識")
 
     print(f"{args.model}：{len(endpoints)} 個 endpoint")
     any_policy = False

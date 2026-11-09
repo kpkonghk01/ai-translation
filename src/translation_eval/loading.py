@@ -20,6 +20,8 @@ def read_model(path: str, model: type[BaseModel]):
         raise InputError(f"{path}：讀不到檔案（{type(e).__name__}）") from e
     except json.JSONDecodeError as e:
         raise InputError(f"{path}：不是合法的 JSON（第 {e.lineno} 行）") from e
+    except UnicodeDecodeError as e:   # 檔案不是 UTF-8：只說位置，不回顯內容
+        raise InputError(f"{path}：不是 UTF-8 的文字（第 {e.start} 個位元組）") from e
     try:
         return model.model_validate(raw)
     except ValidationError as e:

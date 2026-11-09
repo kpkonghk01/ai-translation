@@ -25,23 +25,22 @@ from pydantic import ValidationError
 
 from .articles import apply_variant, load_article
 from .config import PlannedJudge, load_experiment
-from .errors import InputError
+from .errors import InputError, provider_violation_stop
 from .exchange import Exchange, send_with_retries
 from .ground_truth import Fact, GroundTruth, Sentence, input_hash, load_ground_truth
 from .outcome import Interpretation, classify_text
 from .pairs import ComponentPair, component_pairs
 from .prompts import PromptTemplate, fact_template, judge_template, screen_template
 from .providers import adapter_for
-from .schemas import (WHOLE_RUN, Dimension, Direction, FactVerdict, InvalidItem, JudgeCall, JudgeFinding, Outcome, RunKey, RunRecord,
-                      ScreenItem, ScreenVerdict, SourceDefect, Verdict, WeakeningType, type_contradicts)
+from .schemas import (CALLS_PER_TASK, WHOLE_RUN, Dimension, Direction, FactVerdict, InvalidItem, InvalidKind, JudgeCall, JudgeFinding, Outcome, RunKey, RunRecord,
+                      ScreenItem, ScreenVerdict, SourceDefect, Task, Verdict, WeakeningType, type_contradicts)
 from .store import OutputDir, judge_call_id, judge_call_key
 from .terms import LoadedTermList, entries_in
 from .textrules import squash
 from .translate import select_articles
 from .transport import Transport
 
-CALLS_PER_COMPONENT = 2
-TASKS = ("mqm", "fact", "screen")
+CALLS_PER_COMPONENT = CALLS_PER_TASK
 SOURCE_ERROR_CORRECTION = "suspected correction of a source error"
 MAX_RAW_CHARS = 2000   # 無效的條目保留原文供審閱，但不能無限長
 DIRECTION_REQUIREMENTS = {
@@ -60,12 +59,12 @@ class PlannedCall:
     pairs: list[ComponentPair]
     index: int          # 這個 Component 在 pairs 裡的位置
     call_index: int     # 1 或 2
-    task: str = "mqm"
+    task: Task = Task.MQM
     sentences: tuple[Sentence, ...] = ()   # fact 任務：這個 Component 內的 Sensitive sentence
 
     @property
     def component_id(self) -> str:
-        return WHOLE_RUN if self.task == "screen" else self.pairs[self.index].id
+        return WHOLE_RUN if self.task is Task.SCREEN else self.pairs[self.index].id
 
     @property
     def key(self) -> tuple:
@@ -73,7 +72,7 @@ class PlannedCall:
 
     @property
     def input_hash(self) -> str | None:
-        return input_hash(list(self.sentences)) if self.task == "fact" else None
+        return input_hash(list(self.sentences)) if self.task is Task.FACT else None
 
     def is_stale(self, recorded: JudgeCall) -> bool:
         """fact 的請求：ground truth 的事實或 anchor 改了，舊紀錄的 verdict 就對不上。"""
@@ -165,13 +164,13 @@ def interpret_output(result: Interpretation, pair: ComponentPair):
         if finding:
             findings.append(finding)
         else:
-            invalid.append(InvalidItem(kind="finding", why=why, raw=raw_text(item)))
+            invalid.append(InvalidItem(kind=InvalidKind.FINDING, why=why, raw=raw_text(item)))
     for item in defects_raw:
         defect, why = _check_defect(item, pair)
         if defect:
             defects.append(defect)
         else:
-            invalid.append(InvalidItem(kind="source_defect", why=why, raw=raw_text(item)))
+            invalid.append(InvalidItem(kind=InvalidKind.SOURCE_DEFECT, why=why, raw=raw_text(item)))
     return Outcome.OK, None, findings, defects, invalid
 
 
@@ -243,7 +242,7 @@ def interpret_facts(result: Interpretation, pair: ComponentPair, sentences):
         if isinstance(fact_id, str) and fact_id in ids:   # 不是字串的 id（例如清單）不能拿去查 dict
             grouped.setdefault(fact_id, []).append(item)
         else:
-            invalid.append(InvalidItem(kind="verdict", why="不是物件" if not isinstance(item, dict) else "不認識的 fact_id", raw=raw_text(item)))
+            invalid.append(InvalidItem(kind=InvalidKind.VERDICT, why="不是物件" if not isinstance(item, dict) else "不認識的 fact_id", raw=raw_text(item)))
     verdicts = []
     for fact_id, fact in ids.items():
         items = grouped.get(fact_id, [])
@@ -254,7 +253,7 @@ def interpret_facts(result: Interpretation, pair: ComponentPair, sentences):
                 continue
         else:
             why = "沒有這條事實的 verdict" if not items else f"同一條事實有 {len(items)} 個 verdict"
-        invalid.append(InvalidItem(kind="verdict", why=why, raw=raw_text(items[0] if len(items) == 1 else items) if items else "", fact=fact.key))
+        invalid.append(InvalidItem(kind=InvalidKind.VERDICT, why=why, raw=raw_text(items[0] if len(items) == 1 else items) if items else "", fact=fact.key))
     return Outcome.OK, None, verdicts, invalid
 
 
@@ -308,7 +307,7 @@ def interpret_screen(result: Interpretation, pairs: list[ComponentPair]):
         if screened:
             items.append(screened)
         else:
-            invalid.append(InvalidItem(kind="screening", why=why, raw=raw_text(entry)))
+            invalid.append(InvalidItem(kind=InvalidKind.SCREENING, why=why, raw=raw_text(entry)))
     return Outcome.OK, None, items, invalid
 
 
@@ -328,22 +327,22 @@ def plan_calls(experiment, records: list[RunRecord], articles, out: OutputDir, t
             if pair.translated_text is None:
                 continue
             wanted = []
-            if "mqm" in tasks and (mqm_limit is None or record.run_index <= mqm_limit):
-                wanted.append(("mqm", ()))
+            if Task.MQM in tasks and (mqm_limit is None or record.run_index <= mqm_limit):
+                wanted.append((Task.MQM, ()))
             sentences = tuple(truth.sentences_in(record.article_id, pair.id)) if truth else ()
-            if "fact" in tasks and sentences:
-                wanted.append(("fact", sentences))
+            if Task.FACT in tasks and sentences:
+                wanted.append((Task.FACT, sentences))
             for task, task_sentences in wanted:
                 for judge in experiment.judges:
                     plan.extend(PlannedCall(record, judge, pairs, index, n, task, task_sentences) for n in range(1, CALLS_PER_COMPONENT + 1))
-        if "screen" in tasks and any(p.translated_text is not None for p in pairs):
+        if Task.SCREEN in tasks and any(p.translated_text is not None for p in pairs):
             for judge in experiment.judges:
-                plan.extend(PlannedCall(record, judge, pairs, 0, n, "screen") for n in range(1, CALLS_PER_COMPONENT + 1))
+                plan.extend(PlannedCall(record, judge, pairs, 0, n, Task.SCREEN) for n in range(1, CALLS_PER_COMPONENT + 1))
     return plan
 
 
-def task_templates() -> dict[str, PromptTemplate]:
-    return {"mqm": judge_template(), "fact": fact_template(), "screen": screen_template()}
+def task_templates() -> dict[Task, PromptTemplate]:
+    return {Task.MQM: judge_template(), Task.FACT: fact_template(), Task.SCREEN: screen_template()}
 
 
 def require_allowed_families(experiment, plan: list[PlannedCall]) -> None:
@@ -376,9 +375,9 @@ def handle(args, transport: Transport) -> int:
         raise InputError("實驗設定沒有 judging，沒有 Judge 可以執行")
     selected = select_articles(cfg.articles.ids, args.article)
     articles = {i: load_article(cfg.articles.dir, i) for i in selected}
-    if args.task == "fact" and cfg.ground_truth is None:
+    if args.task == Task.FACT and cfg.ground_truth is None:
         raise InputError("--task fact 要實驗設定有 ground_truth")
-    tasks = (args.task,) if args.task else tuple(t for t in TASKS if (t != "fact" or cfg.ground_truth) and (t != "screen" or cfg.judging.screening))
+    tasks = (Task(args.task),) if args.task else tuple(t for t in Task if (t is not Task.FACT or cfg.ground_truth) and (t is not Task.SCREEN or cfg.judging.screening))
     truth = load_ground_truth(cfg.ground_truth, articles) if cfg.ground_truth else None
     out = OutputDir(args.data_dir, cfg.id)
     records = [r for r in out.require_runs() if r.article_id in articles]
@@ -398,7 +397,7 @@ def handle(args, transport: Transport) -> int:
         record, violation = run_call(transport, call, templates[call.task], experiment.term_list, out, replaces_existing=call.key in existing)
         outcomes[record.outcome] += 1
         if violation:   # 資料已經送到不在允許清單內的 provider：不能再送下一個請求
-            raise provider_violation_stop(call.judge.id, sum(outcomes.values()))
+            raise provider_violation_stop(f"Judge {call.judge.id}", sum(outcomes.values()))
     summary = "、".join(f"{o} {n}" for o, n in sorted(outcomes.items())) or "沒有要執行的請求"
     print(f"完成 {len(pending)} 個請求（已有紀錄而略過：{skipped}）：{summary}")
     return 0
@@ -410,7 +409,7 @@ def dry_run(pending: list[PlannedCall], skipped: int) -> int:
     # 估計輸入字數需要 Term List，但 dry-run 只是估計：只算 prompt、Component 本身和事實
     for call in pending:
         per_judge[call.judge.id] += 1
-        shown = call.pairs if call.task == "screen" else [call.pairs[call.index]]   # 全文篩查送整篇
+        shown = call.pairs if call.task is Task.SCREEN else [call.pairs[call.index]]   # 全文篩查送整篇
         facts = sum(len(f.text) for s in call.sentences for f in s.facts)
         chars[call.judge.id] += len(templates[call.task].text) + sum(len(p.source_text) + len(p.translated_text or "") for p in shown) + facts
     print("dry-run：不送出任何請求，也不寫出任何檔案")
@@ -425,17 +424,17 @@ def dry_run(pending: list[PlannedCall], skipped: int) -> int:
 def interpret_call(call: PlannedCall, result: Interpretation):
     """Judge 的回應 → (結果類別, 說明, 這個任務在 JudgeCall 裡的欄位, 無效的條目)。"""
     pair = call.pairs[call.index]
-    if call.task == "fact":
+    if call.task is Task.FACT:
         outcome, reason, verdicts, invalid = interpret_facts(result, pair, call.sentences)
         return outcome, reason, {"verdicts": verdicts}, invalid
-    if call.task == "screen":
+    if call.task is Task.SCREEN:
         outcome, reason, screenings, invalid = interpret_screen(result, call.pairs)
         return outcome, reason, {"screenings": screenings}, invalid
     outcome, reason, findings, defects, invalid = interpret_output(result, pair)
     return outcome, reason, {"findings": findings, "source_defects": defects}, invalid
 
 
-MESSAGE_BUILDERS = {"mqm": user_message, "fact": fact_message, "screen": screen_message}
+MESSAGE_BUILDERS = {Task.MQM: user_message, Task.FACT: fact_message, Task.SCREEN: screen_message}
 
 
 def select_pending(plan: list, existing: dict, *, redo_errors: bool, limit: int | None, is_stale) -> tuple[list, int]:
@@ -476,10 +475,6 @@ def send_judge_request(transport: Transport, judge: PlannedJudge, template: Prom
     api_key = os.environ[judge.config.api_key_env]
     request = adapter.build_request(judge.config, template.text, message, api_key)
     return send_with_retries(transport, adapter, request, judge.config, classify_text), api_key
-
-
-def provider_violation_stop(judge_id: str, recorded: int) -> InputError:
-    return InputError(f"Judge {judge_id} 的回應來自不在允許清單內的 provider：已停止，沒有再送出請求（已記錄 {recorded} 個）")
 
 
 def run_call(transport: Transport, call: PlannedCall, template: PromptTemplate, term_list: LoadedTermList, out: OutputDir, *,

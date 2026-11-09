@@ -23,14 +23,14 @@ from pydantic import ValidationError
 
 from .articles import load_article, text_of
 from .config import Experiment, PlannedJudge, load_experiment
-from .errors import InputError
+from .errors import InputError, provider_violation_stop
 from .ground_truth import GroundTruth, Sentence, load_ground_truth
-from .judging import (is_verbatim, print_endpoint, provider_violation_stop, raw_text, require_judges_ready, select_pending, send_judge_request)
+from .judging import (is_verbatim, print_endpoint, raw_text, require_judges_ready, select_pending, send_judge_request)
 from .outcome import Interpretation
 from .prompts import PromptTemplate, crosscheck_template
-from .schemas import Article, CrosscheckCall, CrosscheckSentence, Domain, GtFact, InvalidItem, Outcome
+from .schemas import (Article, CrosscheckCall, CrosscheckSentence, Domain, GtFact, InvalidItem, InvalidKind, Outcome)
 from .store import OutputDir, crosscheck_call_key
-from .textrules import chinese_numbers, digit_strings, quoted_phrases, squash
+from .textrules import one_line, chinese_numbers, digit_strings, quoted_phrases, squash
 from .translate import select_articles
 from .transport import Transport
 
@@ -75,7 +75,7 @@ def _verbatim_in_one_field(sentence: str, text: str) -> bool:
 
 
 def _dropped(why: str, item) -> InvalidItem:
-    return InvalidItem(kind="crosscheck", why=why, raw=raw_text(item))
+    return InvalidItem(kind=InvalidKind.CROSSCHECK, why=why, raw=raw_text(item))
 
 
 def _build_sentence(item, texts: dict[str, str]) -> tuple[CrosscheckSentence | None, list[InvalidItem]]:
@@ -281,16 +281,12 @@ def current_calls(experiment: Experiment, truth: GroundTruth, articles: dict[str
     return {crosscheck_call_key(c): c for c in calls if crosscheck_call_key(c) in planned and is_current(c, planned[crosscheck_call_key(c)], template)}
 
 
-def _one_line(text: str) -> str:
-    return " ".join(text.split())
-
-
 def _truth_fact_lines(facts) -> list[str]:
-    return [f"{f.kind.value}：{_one_line(f.text)}" for f in facts]
+    return [f"{f.kind.value}：{one_line(f.text)}" for f in facts]
 
 
 def _model_fact_lines(facts) -> list[str]:
-    return [f"{f.kind.value}：{_one_line(f.fact)}" for f in facts]
+    return [f"{f.kind.value}：{one_line(f.fact)}" for f in facts]
 
 
 def call_status(call: CrosscheckCall | None) -> str:
@@ -298,7 +294,7 @@ def call_status(call: CrosscheckCall | None) -> str:
     if call is None:
         return "還沒有結果（尚未跑，或請求已過期）"
     if call.outcome is not Outcome.OK:
-        return f"請求結果是 {call.outcome.value}" + (f"（{_one_line(call.reason)}）" if call.reason else "") + "：這本身就是結果，與「評了但漏看」不同"
+        return f"請求結果是 {call.outcome.value}" + (f"（{one_line(call.reason)}）" if call.reason else "") + "：這本身就是結果，與「評了但漏看」不同"
     dropped_sentences, dropped_facts = dropped_counts(call)
     full = f"；選滿 {MAX_SENTENCES} 句（ground truth 的句子更多時，「只有 ground truth 有」可能是上限造成的）" if len(call.sentences) >= MAX_SENTENCES else ""
     return f"選了 {len(call.sentences)} 句；丟掉的句子 {dropped_sentences}、丟掉的事實 {dropped_facts}（句子不是逐字取自原文，或事實的 kind 不合）{full}"
@@ -307,8 +303,8 @@ def call_status(call: CrosscheckCall | None) -> str:
 def _group_lines(group: Group) -> list[str]:
     model_facts = [f for m in group.model for f in m.facts]
     truth_facts = [f for t in group.truth for f in t.facts]
-    lines = [f"- `{group.truth[0].component_id}`" + "".join(f" ・ ground truth 的句子：「{_one_line(t.anchor)}」" for t in group.truth)]
-    lines += [f"  - 模型選的句子：「{_one_line(m.sentence)}」" for m in group.model]
+    lines = [f"- `{group.truth[0].component_id}`" + "".join(f" ・ ground truth 的句子：「{one_line(t.anchor)}」" for t in group.truth)]
+    lines += [f"  - 模型選的句子：「{one_line(m.sentence)}」" for m in group.model]
     lines += [f"  - ground truth 事實 {line}" for line in _truth_fact_lines(truth_facts)] + [f"  - 模型事實 {line}" for line in _model_fact_lines(model_facts)]
     lines += [f"  - {d}" for d in number_and_quote_differences([f.text for f in truth_facts], [f.fact for f in model_facts])]
     return lines + [""]
@@ -321,11 +317,11 @@ def _comparison_lines(comparison: Comparison) -> list[str]:
     if comparison.model_only:
         lines += ["### 只有模型選了的句子", ""]
         for m in comparison.model_only:
-            lines += [f"- `{m.component_id}` ・「{_one_line(m.sentence)}」（{_one_line(m.why) or '沒有寫原因'}）", *[f"  - 模型事實 {line}" for line in _model_fact_lines(m.facts)], ""]
+            lines += [f"- `{m.component_id}` ・「{one_line(m.sentence)}」（{one_line(m.why) or '沒有寫原因'}）", *[f"  - 模型事實 {line}" for line in _model_fact_lines(m.facts)], ""]
     if comparison.truth_only:
         lines += ["### 只有 ground truth 有的句子", ""]
         for s in comparison.truth_only:
-            lines += [f"- `{s.component_id}` ・「{_one_line(s.anchor)}」", *[f"  - ground truth 事實 {line}" for line in _truth_fact_lines(s.facts)], ""]
+            lines += [f"- `{s.component_id}` ・「{one_line(s.anchor)}」", *[f"  - ground truth 事實 {line}" for line in _truth_fact_lines(s.facts)], ""]
     return lines
 
 
@@ -335,7 +331,7 @@ def _reference_lines(cfg, texts: dict[str, str], reference: CrosscheckCall, blin
     note = "" if blind_ok else f"（盲抽的模型 Judge {cfg.judge} 沒有結果，所以對照模型的全部事實都列出）"
     lines = [f"### 參考：Judge {cfg.reference_judge} 抽到、Judge {cfg.judge} 沒抽到的事實{note}（只作參考，不用來改 ground truth）", ""]
     for gap in gaps[:MAX_LISTED_GAPS]:
-        lines += [f"- `{gap.sentence.component_id}` ・「{_one_line(gap.sentence.sentence)}」：{gap.why}", *[f"  - {line}" for line in _model_fact_lines(gap.facts)]]
+        lines += [f"- `{gap.sentence.component_id}` ・「{one_line(gap.sentence.sentence)}」：{gap.why}", *[f"  - {line}" for line in _model_fact_lines(gap.facts)]]
     if len(gaps) > MAX_LISTED_GAPS:
         lines.append(f"- …另有 {len(gaps) - MAX_LISTED_GAPS} 句沒有列出")
     return lines + ([] if gaps else ["沒有。"]) + [""]
@@ -425,7 +421,7 @@ def handle(args, transport: Transport) -> int:
         record, violation = run_crosscheck(transport, call, template, out, replaces_existing=call.key in existing)
         outcomes[record.outcome] += 1
         if violation:   # 資料已經送到不在允許清單內的 provider：不能再送下一個請求
-            raise provider_violation_stop(call.judge.id, sum(outcomes.values()))
+            raise provider_violation_stop(f"Judge {call.judge.id}", sum(outcomes.values()))
     print(f"完成 {len(pending)} 個請求（已有新的紀錄而略過：{skipped}）：" + ("、".join(f"{o} {n}" for o, n in sorted(outcomes.items())) or "沒有要執行的請求"))
     out.write_crosscheck(render(experiment, truth, articles, out.read_crosscheck_calls()))
     print(f"已寫入 {out.crosscheck_path}")

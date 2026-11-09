@@ -178,6 +178,26 @@ class ServedProviderTest(OpenRouterCase):
             self.assertIn("- 實際服務的 provider：DeepInfra（1 個 Run）", f.read())
 
 
+class ProviderViolationStopTest(OpenRouterCase):
+    """資料已經送到不在允許清單內的 provider：不只這個 Run 的後面的請求，後面的 Run 也不能再送。"""
+    runs = 3
+
+    def test_the_command_stops_after_the_first_run_served_by_an_unlisted_provider(self):
+        self.write_json(self.config_path, self.experiment())
+        code, transport, out, err = self.translate(ok_response("SomewhereElse"), ok_response(), ok_response())
+        self.assertNotEqual(code, 0)
+        self.assertEqual(len(transport.requests), 1)   # 後面兩個 Run 沒有送
+        self.assertEqual(len(self.read_runs()), 1)   # 第一個 Run 的紀錄保留
+        self.assertIn("Approach f 的回應來自不在允許清單內的 provider", err)
+        self.assertIn("請求已經送出，已寫的紀錄保留", err)   # 不能說「沒有送出請求」
+        self.assertNotIn("沒有送出請求，也沒有寫出任何檔案", err)
+
+    def test_a_listed_provider_runs_every_run(self):
+        self.write_json(self.config_path, self.experiment())
+        code, transport, _, err = self.translate(ok_response(), ok_response(), ok_response())
+        self.assertEqual((code, len(transport.requests)), (0, 3), err)
+
+
 class ResultClassTest(OpenRouterCase):
     def test_each_response_is_recorded_as_its_result_class(self):
         partial = '{"title": "Fictional'

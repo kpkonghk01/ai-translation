@@ -172,7 +172,7 @@ _Avoid_: threshold, KPI
 _Avoid_: 原文錯誤（泛指時可用）
 
 **Unjudged**:
-Judge 自己被 block 或拒絕而未能評核的 Component。既不是通過，也不是「沒有 Finding」，交人手處理。
+Judge 的兩次請求都沒有結果（被 block、拒絕、輸出壞掉或出錯）而未能評核的 Component 或事實；原因（block、refusal、malformed、error）列出。既不是通過，也不是「沒有 Finding」，交人手處理。
 
 **Gold set**:
 已知答案的 Component 集合，用來量度 Judge 的準確度：含人手標註真實譯文的 Finding、人手寫的 Softening 變體，以及無錯樣本。

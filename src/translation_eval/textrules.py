@@ -17,6 +17,12 @@ def quoted(text: str) -> str:
     return "\n  > " + text.replace("\n", "\n  > ")
 
 
+def one_line(text: str, limit: int | None = None) -> str:
+    """Judge 或模型寫的文字放進報告、清單前先壓成一行（可以截斷），才不會在裡面開出新的行、標題或項目。"""
+    line = " ".join(text.split())
+    return line if limit is None or len(line) <= limit else line[:limit] + "…"
+
+
 def nonspace_length(text: str) -> int:
     return len(squash(text))
 

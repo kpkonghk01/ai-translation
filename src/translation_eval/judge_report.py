@@ -17,12 +17,14 @@ from .config import Experiment
 from .consistency import Status, judge_component
 from .screening import judge_screening
 from .pairs import component_pairs
-from .schemas import ComponentResult, Dimension, InputVariant, JudgeCall, ReviewAction, RunKey, RunRecord, Severity, Weights
+from .schemas import (ComponentResult, Dimension, InputVariant, InvalidKind, JudgeCall, Outcome, ReviewAction, RunKey, RunRecord, Severity, Task,
+                      Weights)
 from .prompts import fact_template, judge_template, screen_template
+from .report_text import ratio
 from .review_decisions import Decisions
 from .review_items import finding_item_keys
 from .store import OutputDir
-from .textrules import nonspace_length, squash
+from .textrules import one_line, nonspace_length, squash
 
 SEVERITIES = (Severity.MINOR, Severity.MAJOR, Severity.CRITICAL)
 
@@ -51,17 +53,8 @@ class GroupScore:
     peripheral: RoleScore = field(default_factory=RoleScore)
 
 
-def _one_line(text: str) -> str:
-    """Judge 寫的文字放進報告前先壓成一行，才不會在報告裡開出新的行或標題。"""
-    return " ".join(text.split())
-
-
 def _number(value: float) -> str:
     return f"{value:g}"
-
-
-def ratio(numerator: int, denominator: int) -> str:
-    return f"{numerator}/{denominator}（{100 * numerator / denominator:.1f}%）" if denominator else f"{numerator}/{denominator}（—）"
 
 
 def _add(role: RoleScore, dimension: Dimension, severity: Severity, weights: Weights, consistent: bool) -> None:
@@ -82,7 +75,7 @@ def score_group(records: list[RunRecord], articles, translations, calls_by_run, 
         for call in calls_by_run.get(key, []):
             calls[call.component_id].append(call)
             score.valid_findings += len(call.findings)
-            score.invalid_findings += sum(1 for item in call.invalid if item.kind == "finding")
+            score.invalid_findings += sum(1 for item in call.invalid if item.kind is InvalidKind.FINDING)
         for row in rows_by_run.get(key, []):   # Deterministic 的 Finding 一律計入，包括漏段和多出的 Component
             role = score.main if is_main_type(row.source_type) else score.peripheral
             for finding in row.findings:
@@ -151,7 +144,7 @@ def group_lines(heading: str, score: GroupScore, weights: Weights) -> list[str]:
     ]
 
 
-TASK_TEMPLATES = (("fact", "Must-retain fact 核對", fact_template), ("screen", "全文篩查", screen_template))
+TASK_TEMPLATES = ((Task.FACT, "Must-retain fact 核對", fact_template), (Task.SCREEN, "全文篩查", screen_template))
 
 
 def header_lines(experiment: Experiment, calls: list[JudgeCall], *, summary: bool = False) -> list[str]:
@@ -159,7 +152,7 @@ def header_lines(experiment: Experiment, calls: list[JudgeCall], *, summary: boo
     judging, template = experiment.config.judging, judge_template()
     lines = ["## Judge 設定", ""]
     for judge in experiment.judges:
-        mine = [c for c in calls if c.judge == judge.id and c.task == "mqm"]
+        mine = [c for c in calls if c.judge == judge.id and c.task is Task.MQM]
         stale = sum(1 for c in mine if (c.prompt_hash, c.config_hash) != (template.hash, judge.config_hash))
         c = judge.config
         lines.append(f"- {c.id}（{c.role}）：家族 {c.family}；provider {c.provider}；模型 {c.model}；prompt judge-mqm {template.hash}；"
@@ -186,8 +179,8 @@ def source_defect_lines(calls: list[JudgeCall], *, summary: bool = False) -> lis
     for call in calls:
         for defect in call.source_defects:
             key = (call.article_id, call.component_id, squash(defect.source_span))
-            issue, judges = found.setdefault(key, (_one_line(defect.issue), set()))
-            spans.setdefault(key, _one_line(defect.source_span))
+            issue, judges = found.setdefault(key, (one_line(defect.issue), set()))
+            spans.setdefault(key, one_line(defect.source_span))
             judges.add(call.judge)
     lines = ["## Source defect", ""]
     if summary:   # 摘要版沒有原文：每個 Component 一行，只列有幾處、哪些 Judge 發現的
@@ -258,7 +251,7 @@ def judge_context(experiment: Experiment, out: OutputDir, records: list[RunRecor
     if not experiment.judges or not calls:
         return None
     limits = experiment.config.judging.mqm_run_limit
-    ok_records = [r for r in records if r.outcome.value == "ok" and not (r.approach in limits and r.run_index > limits[r.approach])]
+    ok_records = [r for r in records if r.outcome is Outcome.OK and not (r.approach in limits and r.run_index > limits[r.approach])]
     calls_by_judge_run = defaultdict(lambda: defaultdict(list))
     for call in calls:
         calls_by_judge_run[call.judge][RunKey.of(call)].append(call)
@@ -271,10 +264,10 @@ def judge_context(experiment: Experiment, out: OutputDir, records: list[RunRecor
 
 def judge_lines(experiment: Experiment, out: OutputDir, ctx: JudgeContext | None, *, summary: bool = False) -> list[str]:
     """Judge 的結果：每個 Approach × Direction × 輸入版本 × Judge 一節，加上 Source defect 清單。summary：摘要版，Source defect 只列位置。"""
-    if ctx is None:
-        return []
+    if ctx is None:   # 設了 Judge 卻還沒有 MQM 紀錄：說出來，不要整節消失（看起來像沒有設 Judge）
+        return ["## Judge 評核", "", "還沒有 Judge 的 MQM 紀錄：先執行 judge。", ""] if experiment.judges else []
     screen_by_judge_run = defaultdict(lambda: defaultdict(list))
-    for call in out.read_judge_calls("screen"):
+    for call in out.read_judge_calls(Task.SCREEN):
         screen_by_judge_run[call.judge][RunKey.of(call)].append(call)
     lines = ["## Judge 評核", ""]
     groups = sorted({(r.approach, r.direction, r.input_variant) for r in ctx.records})

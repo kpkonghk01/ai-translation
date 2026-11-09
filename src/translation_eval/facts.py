@@ -15,6 +15,19 @@ from .ground_truth import Sentence, input_hash
 from .schemas import JudgeRecord, Outcome, Verdict, WeakeningType
 
 
+class Pending(StrEnum):
+    """一條事實還沒有最終 verdict 的原因：Gate 的「未完成」與 Judge 實驗都用它。值與 FactStatus 的 UNCERTAIN、INVALID 相同。"""
+    UNCERTAIN = "uncertain"
+    INVALID = "invalid"
+    UNJUDGED = "unjudged"
+    INCOMPLETE = "incomplete"   # 還沒有兩個請求的紀錄
+    STALE = "stale"             # ground truth 改了，舊紀錄過期
+
+    @property
+    def label(self) -> str:
+        return {"uncertain": "uncertain", "invalid": "無效", "unjudged": "Unjudged", "incomplete": "尚未評完", "stale": "過期"}[self.value]
+
+
 class FactStatus(StrEnum):
     FINAL = "final"
     UNCERTAIN = "uncertain"

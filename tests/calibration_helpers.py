@@ -17,7 +17,7 @@ import os
 
 from fake_transport import FakeTransport, FunctionTransport
 from fixtures import GROUND_TRUTH, JUDGE, Workspace, ok_response
-from judge_helpers import fact_output, fact_transport, finding, judge_transport, user_payload
+from judge_helpers import fact_output, fact_transport, finding, judge_transport, screen_transport, user_payload
 from translation_eval import cli
 
 GOOD_EN = "The renovation is six months late and over budget."
@@ -92,13 +92,15 @@ def j1_facts() -> dict:
 
 
 def routed(by_model: dict) -> FunctionTransport:
-    """按請求網址裡的模型名分派給不同的假 Judge：{模型名: (mqm outputs, fact outputs)}。MQM 請求的 Component id 是 Gold set 項目的 id。"""
-    sides = {model: (judge_transport(m), fact_transport(f)) for model, (m, f) in by_model.items()}
+    """按請求網址裡的模型名分派給不同的假 Judge：{模型名: (mqm outputs, fact outputs)} 或 {模型名: (mqm, fact, screen)}。
+    MQM 請求的 Component id 是 Gold set 項目的 id（校準）或 Component 的 id（正式評核）；全文篩查的 outputs 按請求的序號。"""
+    sides = {model: (judge_transport(sides[0]), fact_transport(sides[1]), screen_transport(sides[2] if len(sides) > 2 else None)) for model, sides in by_model.items()}
 
     def reply(request):
         model = request.url.split("/models/")[1].split(":")[0]
-        mqm_side, fact_side = sides[model]
-        return (fact_side if "sentences" in user_payload(request) else mqm_side).send(request)
+        mqm_side, fact_side, screen_side = sides[model]
+        payload = user_payload(request)
+        return (fact_side if "sentences" in payload else screen_side if "components" in payload else mqm_side).send(request)
 
     return FunctionTransport(reply)
 

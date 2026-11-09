@@ -57,6 +57,25 @@ class Dimension(StrEnum):
     LOCALE_FORMAT = "Locale & Format"
 
 
+class Task(StrEnum):
+    """Judge 的任務：每個任務的每個請求都評兩次（CALLS_PER_TASK）。"""
+    MQM = "mqm"       # 每個要翻譯的 Component 的 Finding 與 Source defect
+    FACT = "fact"     # 每個含 Sensitive sentence 的 Component 的 Must-retain fact 的 verdict
+    SCREEN = "screen"   # 每個 Run 的全文篩查
+
+
+CALLS_PER_TASK = 2
+
+
+class InvalidKind(StrEnum):
+    """Judge 或模型輸出裡不合格的一條屬於哪一種輸出。"""
+    FINDING = "finding"
+    SOURCE_DEFECT = "source_defect"
+    VERDICT = "verdict"
+    SCREENING = "screening"
+    CROSSCHECK = "crosscheck"
+
+
 class Severity(StrEnum):
     MINOR = "minor"
     MAJOR = "major"
@@ -496,7 +515,7 @@ class SourceDefect(StrictModel):
 
 class InvalidItem(StrictModel):
     """Judge 的輸出裡不合格的一條：片段不是逐字子字串、Dimension 或 Severity 不在清單內、結構不符。原文保留供審閱。"""
-    kind: Literal["finding", "source_defect", "verdict", "screening", "crosscheck"]
+    kind: InvalidKind
     why: str
     raw: str   # 模型輸出的那一條，存成 JSON 文字（有長度上限）。不存成巢狀結構：太深的結構會讓紀錄寫不進去或讀不回來
     fact: str | None = None   # kind 是 verdict 時：作廢的是哪一條事實（事實 key 的最後一段）；模型回了不認識的 id 時沒有
@@ -549,7 +568,7 @@ class RequestRecord(StrictModel):
 
 class JudgeRecord(RequestRecord):
     """Judge 一次評核請求的結果：正式評核（JudgeCall）與校準（GoldCall）共用，所以一致性判定可以直接用在兩者上。call_index 是 1 或 2（每個任務評兩次）。"""
-    call_index: int = Field(ge=1, le=2)
+    call_index: int = Field(ge=1, le=CALLS_PER_TASK)
     findings: list[JudgeFinding] = []
     source_defects: list[SourceDefect] = []
     verdicts: list[FactVerdict] = []
@@ -561,7 +580,7 @@ class JudgeCall(RunKey, JudgeRecord):
     """Judge 對一個 Run 的一個 Component 的一次請求。
     task 是 mqm（Finding）、fact（Must-retain fact 的 verdict）或 screen（全文篩查，整個 Run 一個請求，Component 是 *）。"""
     component_id: str
-    task: Literal["mqm", "fact", "screen"] = "mqm"
+    task: Task = Task.MQM
     screenings: list[ScreenItem] = []
 
 
@@ -727,7 +746,7 @@ class GoldFile(StrictModel):
 class GoldCall(JudgeRecord):
     """校準時 Judge 對一個 Gold set 項目的一次請求（MQM 與 fact 兩個任務各兩次）。item_hash 是項目送給 Judge 的內容的 hash：改了，舊的請求就過期。"""
     item_id: Slug
-    task: Literal["mqm", "fact"]
+    task: Literal[Task.MQM, Task.FACT]
     item_hash: str
 
 

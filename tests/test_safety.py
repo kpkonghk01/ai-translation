@@ -47,6 +47,26 @@ class InvalidInputTest(Workspace):
             f.write("{not json")
         self.assert_fails_cleanly("不是合法的 JSON")
 
+    def test_a_file_that_is_not_utf8_is_rejected_without_echoing_any_of_its_bytes(self):
+        with open(os.path.join(self.articles_dir, "9000001.json"), "wb") as f:
+            f.write(b'{"title": "\xff\xfe\xfa secret-ish"}')
+        transport = FakeTransport()
+        code, out, err = self.run_cli("translate", transport=transport)
+        self.assertNotEqual(code, 0)
+        self.assertIn("不是 UTF-8 的文字", err)
+        self.assertNotIn("secret-ish", err + out)
+        self.assertEqual(transport.requests, [])
+        self.assertFalse(os.path.exists(self.data_dir))
+
+    def test_a_run_record_file_that_is_not_utf8_stops_the_command_instead_of_a_traceback(self):
+        self.run_cli("translate", transport=FakeTransport(ok_response()))
+        with open(os.path.join(self.out_dir, "runs.jsonl"), "wb") as f:
+            f.write(b"\xff\xfe not json\n")
+        for command in ("translate", "check", "report"):
+            code, out, err = self.run_cli(command, transport=FakeTransport())
+            self.assertNotEqual(code, 0, command)
+            self.assertIn("不是 UTF-8 的文字", err)
+
     def test_same_approach_listed_twice(self):
         self.rewrite_experiment(lambda e: e["approaches"].append(dict(e["approaches"][0])))
         self.assert_fails_cleanly("Approach id 重覆")

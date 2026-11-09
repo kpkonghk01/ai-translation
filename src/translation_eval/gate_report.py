@@ -13,29 +13,34 @@ main-only 的 Run 沒有送的 Component，它的句子不在這個 Run 的核�
 """
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 from .articles import apply_variant
 from .calibration import JudgeEvaluation
 from .calibration_report import recall_text
 from .config import Experiment
 from .consistency import Status
-from .facts import FactResult, FactStatus, judge_facts
+from .facts import FactResult, FactStatus, Pending, judge_facts
 from .ground_truth import GroundTruth, Sentence
-from .judge_report import ratio
+from .report_text import ratio
 from .pairs import component_pairs
 from .review_decisions import Decisions
 from .review_items import fact_item_key
-from .schemas import FAILING_VERDICTS, Domain, InputVariant, Outcome, ReviewAction, RunKey, RunRecord, Verdict, WeakeningType
+from .schemas import (Domain, FAILING_VERDICTS, InputVariant, Outcome, ReviewAction, RunKey, RunRecord, Task, Verdict, WeakeningType)
 from .stats import clopper_pearson_upper
 from .store import OutputDir
 
 LETTERS = (WeakeningType.A, WeakeningType.B, WeakeningType.C, WeakeningType.D, WeakeningType.E, WeakeningType.F)
-PENDING_LABELS = (("uncertain", "uncertain"), ("invalid", "無效"), ("unjudged", "Unjudged"), ("incomplete", "尚未評完"), ("stale", "過期"))
+
+
+class SentenceResult(StrEnum):
+    FAILED = "failed"
+    PASSED = "passed"
 
 
 @dataclass
 class GroupGate:
-    sentence_runs: dict = field(default_factory=lambda: defaultdict(dict))   # 句子 id → {run_index → "failed"|"passed"}
+    sentence_runs: dict = field(default_factory=lambda: defaultdict(dict))   # 句子 id → {run_index → SentenceResult}
     fact_failed: dict = field(default_factory=lambda: defaultdict(set))      # (句子 id, 事實 key) → 失敗時的類型（None 是未標）
     fact_final: set = field(default_factory=set)                              # 有最終 verdict 的 (句子 id, 事實 key)
     fact_kind: dict = field(default_factory=dict)
@@ -52,7 +57,7 @@ def _record_sentence(gate: GroupGate, sentence_id: tuple, run_index: int, states
     failed = any(r is not None and r.verdict in FAILING_VERDICTS for _, r in states)
     passed = all(r is not None and r.verdict is Verdict.PRESENT for _, r in states)
     if failed or passed:
-        gate.sentence_runs[sentence_id][run_index] = "failed" if failed else "passed"
+        gate.sentence_runs[sentence_id][run_index] = SentenceResult.FAILED if failed else SentenceResult.PASSED
     for fact, result in states:
         slot = (sentence_id, fact.key)
         gate.fact_kind[slot] = fact.kind
@@ -86,12 +91,12 @@ def _fact_states(gate: GroupGate, judgment, sentence: Sentence, override) -> lis
         elif judgment is None:
             states.append((fact, FactResult(FactStatus.FINAL, Verdict.ABSENT)))
         elif judgment.status is not Status.JUDGED:
-            gate.pending["unjudged" if judgment.status is Status.UNJUDGED else ("stale" if judgment.stale else "incomplete")] += 1
+            gate.pending[Pending.UNJUDGED if judgment.status is Status.UNJUDGED else (Pending.STALE if judgment.stale else Pending.INCOMPLETE)] += 1
             states.append((fact, None))
         else:
             result = judgment.facts[fact.key]
             if result.status is not FactStatus.FINAL:
-                gate.pending[result.status.value] += 1
+                gate.pending[Pending(result.status.value)] += 1
             states.append((fact, result if result.status is FactStatus.FINAL else None))
     return states
 
@@ -127,18 +132,18 @@ def _percent(value: float) -> str:
 
 def rate_of(gate: GroupGate) -> tuple[int, int]:
     """(在任一 Run 失敗過的不重覆句子數, 有結果的不重覆句子數)。"""
-    return sum(1 for runs in gate.sentence_runs.values() if "failed" in runs.values()), len(gate.sentence_runs)
+    return sum(1 for runs in gate.sentence_runs.values() if SentenceResult.FAILED in runs.values()), len(gate.sentence_runs)
 
 
 def gate_group_lines(heading: str, judge_text: str, recall: str, gate: GroupGate, skipped: Counter, missing_runs: int) -> list[str]:
     sentences = gate.sentence_runs
     failed, evaluated = rate_of(gate)
     articles = {sid[0] for sid in sentences}
-    failed_articles = {sid[0] for sid, runs in sentences.items() if "failed" in runs.values()}
+    failed_articles = {sid[0] for sid, runs in sentences.items() if SentenceResult.FAILED in runs.values()}
     pending = sum(gate.pending.values())
     reasons = []
     if pending:
-        reasons.append(f"待審的事實（共 {gate.fact_runs} 個事實 × Run）：" + "、".join(f"{label} {gate.pending[name]}" for name, label in PENDING_LABELS))
+        reasons.append(f"待審的事實（共 {gate.fact_runs} 個事實 × Run）：" + "、".join(f"{p.label} {gate.pending[p]}" for p in Pending))
     if not evaluated:
         reasons.append("沒有任何句子有結果")
     if missing_runs:
@@ -148,7 +153,7 @@ def gate_group_lines(heading: str, judge_text: str, recall: str, gate: GroupGate
     status = "完成" if not reasons else "未完成；" + "；".join(reasons)
     upper = f"；95% 上限 {_percent(clopper_pearson_upper(failed, evaluated))}" if evaluated else ""
     per_run = "、".join(
-        f"Run {n} " + ratio(sum(1 for runs in sentences.values() if runs.get(n) == "failed"), sum(1 for runs in sentences.values() if n in runs))
+        f"Run {n} " + ratio(sum(1 for runs in sentences.values() if runs.get(n) is SentenceResult.FAILED), sum(1 for runs in sentences.values() if n in runs))
         for n in sorted(gate.run_indexes)) or "無"
     failed_by_type = Counter()
     for types in gate.fact_failed.values():
@@ -222,7 +227,7 @@ def gate_lines(experiment: Experiment, out: OutputDir, records: list[RunRecord],
     with_sentences = {s.article_id for s in truth.sentences}   # control 文章可以沒有任何敏感句，沒有東西可以核對
     groups = sorted({truth.group_of(a) for a in truth.domains if a in with_sentences})
     calls_by_judge = defaultdict(lambda: defaultdict(list))
-    for call in out.read_judge_calls("fact"):
+    for call in out.read_judge_calls(Task.FACT):
         calls_by_judge[call.judge][RunKey.of(call)].append(call)
     ok = [r for r in records if r.outcome is Outcome.OK]
     translations = {RunKey.of(r): out.read_translation(r) for r in ok}

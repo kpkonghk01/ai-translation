@@ -84,3 +84,22 @@ def screen_transport(outputs=None):
         return gemini_samples.ok(json.dumps(item, ensure_ascii=False)) if isinstance(item, dict) else item
 
     return FunctionTransport(reply)
+
+
+# ───────────── 請求的內容（Gemini 與 OpenRouter 的格式不同） ─────────────
+
+def payload_of(request) -> dict:
+    """請求裡的使用者訊息（JSON）。"""
+    body = json.loads(request.body)
+    text = body["contents"][0]["parts"][0]["text"] if "contents" in body else body["messages"][-1]["content"]
+    return json.loads(text)
+
+
+def article_of(request) -> str:
+    """交叉檢驗的請求是哪一篇文章的：第一個 Component 的 id 的前綴（9000001-001 → 9000001）。"""
+    return payload_of(request)["components"][0]["id"].split("-")[0]
+
+
+def model_of(request) -> str:
+    """Gemini 的請求網址裡的模型名。"""
+    return request.url.split("/models/")[1].split(":")[0]

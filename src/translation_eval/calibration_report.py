@@ -7,8 +7,8 @@ from .consistency import Status, same_finding
 from .facts import FactStatus
 from .gold import GoldSet, item_pair
 from .ground_truth import fact_key
-from .judge_report import ratio
-from .schemas import Domain, GoldCategory, JudgeFinding, Verdict
+from .report_text import ratio
+from .schemas import Domain, GoldCategory, JudgeFinding, Task, Verdict
 from .textrules import quoted
 
 
@@ -50,7 +50,7 @@ def _groups(gold: GoldSet, evaluation: JudgeEvaluation) -> list[tuple[str, Metri
 def evaluation_lines(gold: GoldSet, evaluation: JudgeEvaluation) -> list[str]:
     judge = evaluation.judge
     lines = [f"## Judge {judge.id}（{judge.config.role}）", "",
-             f"- 新的請求：MQM {evaluation.requests['mqm']}、fact {evaluation.requests['fact']}；過期而忽略 {evaluation.stale}"
+             f"- 新的請求：MQM {evaluation.requests[Task.MQM]}、fact {evaluation.requests[Task.FACT]}；過期而忽略 {evaluation.stale}"
              f"（prompt、Judge 設定或項目送給 Judge 的內容改了）；設定 hash {judge.config_hash}", ""]
     for title, metrics in _groups(gold, evaluation):
         if metrics.items:
@@ -65,7 +65,7 @@ def summary_lines(gold: GoldSet, evaluations: list[JudgeEvaluation]) -> list[str
     for evaluation in recorded:
         judge = evaluation.judge
         lines += [f"### Judge {judge.id}（{judge.config.role}）", "",
-                  f"- 新的請求：MQM {evaluation.requests['mqm']}、fact {evaluation.requests['fact']}；過期而忽略 {evaluation.stale}", *metric_lines(metrics_for(evaluation)), ""]
+                  f"- 新的請求：MQM {evaluation.requests[Task.MQM]}、fact {evaluation.requests[Task.FACT]}；過期而忽略 {evaluation.stale}", *metric_lines(metrics_for(evaluation)), ""]
     if not recorded:
         lines += ["還沒有校準紀錄。", ""]
     return lines

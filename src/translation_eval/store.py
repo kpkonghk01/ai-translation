@@ -15,7 +15,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from .errors import InputError
-from .schemas import CheckMeta, ComponentResult, CrosscheckCall, GoldCall, JudgeCall, RunKey, RunRecord, Translation
+from .schemas import CheckMeta, ComponentResult, CrosscheckCall, GoldCall, JudgeCall, RunKey, RunRecord, Task, Translation
 
 REDACTED = "[REDACTED]"
 
@@ -123,16 +123,7 @@ class OutputDir:
         """讀既有的 Run 紀錄。壞掉的一行令指令失敗，不略過：略過就會重送請求，或漏算結果。"""
         if not self.runs_path.exists():
             return []
-        records = []
-        with open(self.runs_path, encoding="utf-8") as f:
-            for n, line in enumerate(f, 1):
-                if not line.strip():
-                    continue
-                try:
-                    records.append(RunRecord.model_validate_json(line))
-                except ValidationError as e:
-                    raise InputError(f"{self.runs_path}：第 {n} 行不是合法的 Run 紀錄（{e.error_count()} 個錯誤）") from e
-        return records
+        return self._read_records(self.runs_path, RunRecord, "Run 紀錄")
 
     def require_runs(self) -> list[RunRecord]:
         records = self.read_runs()
@@ -140,10 +131,10 @@ class OutputDir:
             raise InputError(f"{self.runs_path}：沒有 Run 紀錄，先執行 translate")
         return records
 
-    def read_judge_calls(self, task: str | None = "mqm") -> list[JudgeCall]:
-        """某個任務的 Judge 紀錄（預設是 MQM）；task 是 None 就是全部。"""
+    def read_judge_calls(self, task: Task | None = Task.MQM) -> list[JudgeCall]:
+        """某個任務的 Judge 紀錄（預設是 MQM）；task 是 None 就是全部。不認識的任務名稱（打錯字）會失敗，不是回傳空的。"""
         calls = self._read_all_judge_calls()
-        return calls if task is None else [c for c in calls if c.task == task]
+        return calls if task is None else [c for c in calls if c.task is Task(task)]
 
     def _read_all_judge_calls(self) -> list[JudgeCall]:
         return self._read_records(self.judge_calls_path, JudgeCall, "Judge 紀錄")
@@ -210,7 +201,11 @@ class OutputDir:
                                   self.read_crosscheck_calls, secrets, replaces_existing)
 
     def write_experiment_misses(self, text: str) -> None:
-        self._replace(self.experiment_misses_path, text)
+        """疑似漏看的詳細清單。沒有內容就刪掉舊的：舊的含原文，不能留著讓報告指向一份過期的清單。"""
+        if text:
+            self._replace(self.experiment_misses_path, text)
+        else:
+            self.experiment_misses_path.unlink(missing_ok=True)
 
     def write_crosscheck(self, text: str) -> None:
         self._replace(self.crosscheck_path, text)
@@ -257,14 +252,17 @@ class OutputDir:
         if not path.exists():
             return []
         records = []
-        with open(path, encoding="utf-8") as f:
-            for n, line in enumerate(f, 1):
-                if not line.strip():
-                    continue
-                try:
-                    records.append(model.model_validate_json(line))
-                except ValidationError as e:
-                    raise InputError(f"{path}：第 {n} 行不是合法的{what}（{e.error_count()} 個錯誤）") from e
+        try:
+            with open(path, encoding="utf-8") as f:
+                for n, line in enumerate(f, 1):
+                    if not line.strip():
+                        continue
+                    try:
+                        records.append(model.model_validate_json(line))
+                    except ValidationError as e:
+                        raise InputError(f"{path}：第 {n} 行不是合法的{what}（{e.error_count()} 個錯誤）") from e
+        except UnicodeDecodeError as e:   # 檔案不是 UTF-8：只說位置，不回顯內容
+            raise InputError(f"{path}：不是 UTF-8 的文字（第 {e.start} 個位元組）") from e
         return records
 
     def _append_raw(self, relative: str, raw: bytes | None, secrets: tuple[str, ...], fields: dict) -> str | None:

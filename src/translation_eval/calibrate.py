@@ -17,19 +17,18 @@ from datetime import datetime, timezone
 from .calibration import evaluate_judge, is_current
 from .calibration_report import disagreement_lines, evaluation_lines
 from .config import Experiment, PlannedJudge
-from .errors import InputError
+from .errors import InputError, provider_violation_stop
 from .gold import GoldSet, count_lines, item_hash, item_pair, item_sentences, load_gold_for
 from .ground_truth import GroundTruth, Sentence, input_hash
-from .judging import (fact_request_message, interpret_facts, interpret_output, mqm_message, print_endpoint, provider_violation_stop, require_judges_ready,
+from .judging import (fact_request_message, interpret_facts, interpret_output, mqm_message, print_endpoint, require_judges_ready,
                       select_pending, send_judge_request, task_templates)
 from .pairs import ComponentPair
 from .prompts import PromptTemplate
-from .schemas import GoldCall, GoldItem
+from .schemas import CALLS_PER_TASK, GoldCall, GoldItem, Task
 from .store import OutputDir, gold_call_key
 from .terms import LoadedTermList
 from .transport import Transport
 
-CALLS_PER_TASK = 2
 
 
 @dataclass(frozen=True)
@@ -44,7 +43,7 @@ class PlannedGoldCall:
     @property
     def input_hash(self) -> str | None:
         """fact 任務：送出的事實與 anchor 的 hash（與正式評核一樣）。"""
-        return input_hash(list(self.sentences)) if self.task == "fact" else None
+        return input_hash(list(self.sentences)) if self.task is Task.FACT else None
 
     @property
     def key(self) -> tuple:
@@ -55,15 +54,15 @@ def plan_gold_calls(gold: GoldSet, truth: GroundTruth | None, judge: PlannedJudg
     plan = []
     for item in gold.items:
         sentences, digest = tuple(item_sentences(item, truth)), item_hash(item, truth)
-        for task in ("mqm", *(("fact",) if item.facts else ())):
-            plan.extend(PlannedGoldCall(item, judge, task, n, sentences if task == "fact" else (), digest) for n in range(1, CALLS_PER_TASK + 1))
+        for task in (Task.MQM, *((Task.FACT,) if item.facts else ())):
+            plan.extend(PlannedGoldCall(item, judge, task, n, sentences if task is Task.FACT else (), digest) for n in range(1, CALLS_PER_TASK + 1))
     return plan
 
 
 def gold_message(call: PlannedGoldCall, term_list: LoadedTermList) -> str:
     """與正式評核同一種格式：MQM 的前後文是項目自己的 context（沒有就是 None）。"""
     item, pair = call.item, item_pair(call.item)
-    if call.task == "fact":
+    if call.task is Task.FACT:
         return fact_request_message(item.direction, pair, list(call.sentences), term_list)
     before = [ComponentPair(f"{item.id}-before", item.component_type, item.context_before.source, item.context_before.translation)] if item.context_before else []
     after = [ComponentPair(f"{item.id}-after", item.component_type, item.context_after.source, item.context_after.translation)] if item.context_after else []
@@ -77,7 +76,7 @@ def run_gold_call(transport: Transport, call: PlannedGoldCall, template: PromptT
     judge = call.judge.config
     result, pair = exchange.interpretation, item_pair(call.item)
     findings, defects, verdicts = [], [], []
-    if call.task == "fact":
+    if call.task is Task.FACT:
         outcome, reason, verdicts, invalid = interpret_facts(result, pair, call.sentences)
     else:
         outcome, reason, findings, defects, invalid = interpret_output(result, pair)
@@ -114,7 +113,7 @@ def handle(args, transport: Transport) -> int:
         record, violation = run_gold_call(transport, call, templates[call.task], experiment.term_list, out, replaces_existing=call.key in existing)
         outcomes[record.outcome] += 1
         if violation:   # 資料已經送到不在允許清單內的 provider：不能再送下一個請求
-            raise provider_violation_stop(judge.id, sum(outcomes.values()))
+            raise provider_violation_stop(f"Judge {judge.id}", sum(outcomes.values()))
     if judge:
         print(f"完成 {len(pending)} 個請求（已有新的紀錄而略過：{skipped}）：" + ("、".join(f"{o} {n}" for o, n in sorted(outcomes.items())) or "沒有要執行的請求"))
     write_outputs(experiment, gold, truth, out)

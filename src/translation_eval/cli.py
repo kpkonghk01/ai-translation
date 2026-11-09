@@ -12,13 +12,15 @@
   uv run --locked python -I -m translation_eval calibrate --config <實驗設定> [--judge <id>] [--dry-run] [--limit <N>] [--redo-errors]
   uv run --locked python -I -m translation_eval crosscheck --config <實驗設定> [--dry-run] [--article <id>]... [--limit <N>] [--redo-errors]
   uv run --locked python -I -m translation_eval gold check|sample --config <實驗設定> [--count 30] [--seed 1]
-各子命令都有 --data-dir（預設 data）。需要 key 的只有 translate，真跑的指令見 docs/data-pipeline.md。
+有輸出的子命令有 --data-dir（預設 data）；providers、import-cms（用 --out）、gold check 沒有。會呼叫 API、需要 key 的：translate、judge、calibrate --judge、crosscheck、
+providers，只由 Pan 在自己的終端機執行（真跑的指令見 docs/data-pipeline.md）。
 """
 import argparse
 import sys
 
 from . import baselines, calibrate, check, cms, crosscheck, gold, judging, provider_listing, report, review, translate
-from .errors import InputError
+from .errors import InputError, StoppedAfterSending
+from .schemas import Task
 from .transport import Transport, TransportForbidden, UrllibTransport
 
 
@@ -27,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     t = sub.add_parser("translate", help="把文章送去各個 Approach 翻譯")
     j = sub.add_parser("judge", help="Judge 評核每個 Component（MQM），每個評兩次")
-    j.add_argument("--task", choices=("mqm", "fact", "screen"), help="只跑這個任務（預設：全部；沒有 ground_truth 時沒有 fact，judging.screening 是 false 時沒有 screen）")
+    j.add_argument("--task", choices=[t.value for t in Task], help="只跑這個任務（預設：全部；沒有 ground_truth 時沒有 fact，judging.screening 是 false 時沒有 screen）")
     j.add_argument("--dry-run", action="store_true", help="不送出請求，只印出請求數和 endpoint")
     j.add_argument("--article", action="append", default=[], help="只評這篇文章（可重覆）")
     j.add_argument("--limit", type=_positive_int, help="最多執行幾個請求")
@@ -101,6 +103,11 @@ def main(argv=None, transport: Transport | None = None) -> int:
             return calibrate.handle(args, transport or UrllibTransport())
         if args.command == "gold":
             return gold.handle_check(args) if args.gold_command == "check" else gold.handle_sample(args)
+    except StoppedAfterSending as e:
+        print(f"{args.command}：已停止；請求已經送出，已寫的紀錄保留（下次續跑會略過）：", file=sys.stderr)
+        for problem in e.problems:
+            print(f"- {problem}", file=sys.stderr)
+        return 1
     except InputError as e:
         print(f"{args.command}：已停止，沒有送出請求，也沒有寫出任何檔案：", file=sys.stderr)
         for problem in e.problems:

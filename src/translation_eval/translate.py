@@ -20,7 +20,7 @@ from pydantic import ValidationError
 
 from .articles import apply_variant, field_problems, load_article
 from .config import PlannedApproach, load_experiment
-from .errors import InputError
+from .errors import InputError, provider_violation_stop
 from .exchange import Exchange, send_with_retries
 from .outcome import Interpretation, classify_plain_text, classify_text, refusal_or_malformed
 from .prompts import PromptTemplate, translation_template
@@ -96,10 +96,12 @@ def handle(args, transport: Transport) -> int:
 
     outcomes = Counter()
     for key, planned in pending:
-        record = translate_one(transport, key, planned, articles[key.article_id], out, experiment.term_list,
-                               replaces_existing=key in done)
+        record, violation = translate_one(transport, key, planned, articles[key.article_id], out, experiment.term_list,
+                                          replaces_existing=key in done)
         outcomes[record.outcome] += 1
         print(f"{key.label}: {record.outcome}")
+        if violation:   # 資料已經送到不在允許清單內的 provider：不能再送下一個 Run
+            raise provider_violation_stop(f"Approach {key.approach}", sum(outcomes.values()))
     summary = "、".join(f"{o} {n}" for o, n in sorted(outcomes.items())) or "沒有要執行的 Run"
     print(f"完成 {len(pending)} 個 Run（已有紀錄而略過：{skipped}）：{summary}")
     return 0
@@ -165,7 +167,8 @@ def assemble_translation(sent: Article, units: list[Unit], payloads: list, json_
 
 
 def translate_one(transport: Transport, key: RunKey, planned: PlannedApproach, article: Article, out: OutputDir,
-                  term_list: LoadedTermList, *, replaces_existing: bool) -> RunRecord:
+                  term_list: LoadedTermList, *, replaces_existing: bool) -> tuple[RunRecord, bool]:
+    """翻譯一個 Run 並記錄。第二個回傳值是：有沒有請求的回應來自不在允許清單內的 provider。"""
     approach = planned.config
     adapter = adapter_for(approach)
     json_mode = approach.request_mode is RequestMode.ARTICLE_JSON
@@ -210,5 +213,6 @@ def translate_one(transport: Transport, key: RunKey, planned: PlannedApproach, a
         created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
     )
     raw = _raw_lines([(unit, ex) for unit, ex, _ in results]) if several else results[0][1].raw_body
-    return out.write_run(record, raw, translation, secrets=(api_key,), replaces_existing=replaces_existing,
-                         raw_extension="jsonl" if several else "body")
+    written = out.write_run(record, raw, translation, secrets=(api_key,), replaces_existing=replaces_existing,
+                            raw_extension="jsonl" if several else "body")
+    return written, any(r.provider_violation for _, _, r in results)

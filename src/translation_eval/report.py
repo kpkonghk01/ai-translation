@@ -20,10 +20,10 @@ from .ground_truth import GroundTruth, load_ground_truth
 from .calibration import evaluate_judge
 from .calibration_report import summary_lines
 from .comparison import comparison_lines
-from .experiment_report import experiment_lines
+from .experiment_report import experiment_lines, gather_experiment, misses_text
 from .gold import load_gold_set
 from .judge_report import judge_context, judge_lines, judge_settings_lines
-from .report_text import shown
+from .report_text import ratio, shown
 from .review import completion_lines
 from .review_decisions import apply_check_decisions, check_decisions, load_decisions
 from .review_items import build_items
@@ -43,12 +43,6 @@ WARNING_LABELS = {
 def section_key(item) -> tuple[str, Direction, InputVariant]:
     """報告的一節：Approach × Direction × 輸入版本。輸入版本不同的 Run 各有一節，不混在一起算。"""
     return item.approach, item.direction, item.input_variant
-
-
-def format_ratio(numerator: int, denominator: int) -> str:
-    if denominator == 0:
-        return f"{numerator}/{denominator}（—）"
-    return f"{numerator}/{denominator}（{100 * numerator / denominator:.1f}%）"
 
 
 def _counts(values, none_label: str = "未回報", summary: bool = False) -> str:
@@ -108,7 +102,7 @@ def block_rates(records: list[RunRecord]) -> str:
     articles = {r.article_id for r in records}
     blocked_articles = {r.article_id for r in records if r.outcome is Outcome.BLOCK}
     blocked_runs = sum(1 for r in records if r.outcome is Outcome.BLOCK)
-    return f"按 Run {format_ratio(blocked_runs, len(records))}；按文章 {format_ratio(len(blocked_articles), len(articles))}"
+    return f"按 Run {ratio(blocked_runs, len(records))}；按文章 {ratio(len(blocked_articles), len(articles))}"
 
 
 def _blocked_and_total(records: list[RunRecord], article_id: str) -> tuple[int, int]:
@@ -194,12 +188,12 @@ def section_lines(approach_id: str, direction: str, variant: InputVariant, plann
     warning_counts = Counter(w.kind for r in rows for w in r.warnings)
     findings = "、".join(f"{d.value} {finding_counts[d]}" for d in Dimension)
     warnings = "、".join(f"{WARNING_LABELS[k]} {warning_counts[k]}" for k in WarningKind)
-    others = "、".join(f"{o.value} {format_ratio(by_outcome[o], n)}" for o in (Outcome.MALFORMED, Outcome.TRUNCATED, Outcome.ERROR))
+    others = "、".join(f"{o.value} {ratio(by_outcome[o], n)}" for o in (Outcome.MALFORMED, Outcome.TRUNCATED, Outcome.ERROR))
     return [
         f"## {approach_id} × {direction}" + ("" if variant is InputVariant.FULL else f"（{variant}）"), "",
         f"- Run：{recorded}",
         f"- Block 率：{block_rates(records)}；原因分佈：{reason_text}",
-        f"- Refusal 率：{format_ratio(by_outcome[Outcome.REFUSAL], n)}",
+        f"- Refusal 率：{ratio(by_outcome[Outcome.REFUSAL], n)}",
         f"- 其他失敗：{others}",
         f"- 漏段數：{omissions}（已檢查 {checked_runs} 個 ok 的 Run、共 {n_components} 個 Component）",
         f"- Deterministic Finding：{findings}（已檢查 {checked_runs} 個 ok 的 Run、共 {n_components} 個 Component）",
@@ -233,16 +227,17 @@ def handle(args) -> int:
         evaluations = {j.id: evaluate_judge(gold, truth, gold_calls, j) for j in experiment.judges}
         calibration = summary_lines(gold, list(evaluations.values()))
 
-    def build(summary: bool) -> tuple[str, str]:
-        experiment_section, misses = experiment_lines(experiment, out, records, articles, truth, evaluations, summary=summary)
-        extra = (judge_lines(experiment, out, ctx, summary=summary) + comparison_lines(experiment, ctx, records) + calibration
-                 + gate_lines(experiment, out, records, articles, truth, decisions, evaluations) + experiment_section)
-        return render(experiment, out, records, rows, extra, truth, completion_lines(items, decisions), summary=summary), misses
+    gathered = gather_experiment(experiment, out, records, articles, truth)   # experiment 的 Judge 的比較：走一次，完整版與摘要版共用
 
-    (report_text, misses), (summary_text, _) = build(False), build(True)   # 兩份都建好才寫：中途失敗不會留下新的完整版配舊的摘要版
+    def build(summary: bool) -> str:
+        extra = (judge_lines(experiment, out, ctx, summary=summary) + comparison_lines(experiment, ctx, records) + calibration
+                 + gate_lines(experiment, out, records, articles, truth, decisions, evaluations)
+                 + experiment_lines(experiment, gathered, out, articles, truth, evaluations, summary=summary))
+        return render(experiment, out, records, rows, extra, truth, completion_lines(items, decisions), summary=summary)
+
+    report_text, summary_text, misses = build(False), build(True), misses_text(gathered)   # 都建好才寫：中途失敗不會留下新的完整版配舊的摘要版
     out.write_report(report_text)
     out.write_summary(summary_text)
-    if misses:
-        out.write_experiment_misses(misses)
+    out.write_experiment_misses(misses)
     print(f"已寫入 {out.report_path} 和 {out.summary_path}（{len(records)} 個 Run）")
     return 0
