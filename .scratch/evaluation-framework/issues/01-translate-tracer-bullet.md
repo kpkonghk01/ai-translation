@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-human
+**Status:** resolved
 
 - [x] uv 專案：專案設定與 lockfile，依賴 pydantic 和 opencc 1.4.2，沿用現有的 `.venv`；指令以 `uv run --locked python -I -m <package>` 執行
 - [x] `tools/check.sh` 經 uv 執行新測試；找不到 uv 時明確記為失敗
@@ -25,7 +25,7 @@
 - [x] `report` 開頭列出實驗設定、Approach 設定、prompt hash 和實際回應的模型版本
 - [x] `report` 為每個 Approach × Direction 列出 Block 率（附原因分佈）、Refusal 率、其他失敗和漏段數，每個比率都附分子和分母
 - [x] 所有輸出預設寫在 `data/`
-- [ ] Pan 用真 key 對 1 篇文章跑一次，回報結果類別和數量（不貼內容）
+- [x] Pan 用真 key 對 1 篇文章跑一次，回報結果類別和數量（不貼內容）
 
 ## Comments
 
@@ -43,4 +43,8 @@
 - 文章檔的 `meta.unknown` 不是空的就拒絕翻譯，要先檢視（現有的本機文章都是空的）。
 - GLOSSARY 原本沒有「Attempt」：程式與報告用「嘗試」指一個請求的重試（spec 也這樣用），但 Run 的 _Avoid_ 列了 attempt。Pan 決定加一條，已加入 GLOSSARY。
 
-煙霧測試若每個 Run 都是 `HTTP 400 INVALID_ARGUMENT`：先看 `raw/` 裡的回應。官方 API reference 沒有寫 key 的 header 名稱，程式用 `x-goog-api-key`（來自 Google 的快速入門，這次沒有核對到）；safety category 含 `HARM_CATEGORY_JAILBREAK`，threshold 用 `OFF`，兩者都在 `providers/gemini.py` 一處可改。
+煙霧測試若每個 Run 都是 `HTTP 400 INVALID_ARGUMENT`：先看 `raw/` 裡的回應（2026-11-09 的煙霧測試沒有出現這個情況，見下）。
+
+### 2026-11-09 煙霧測試通過
+
+Pan 用真 key 對 1 篇文章（`60403903`）跑一次：結果 `ok` 1；`check` 檢查了 18 個 Component，漏段 0。API 接受了請求的寫法，所以 key 的 header 名稱（`x-goog-api-key`）、safety settings（含 `HARM_CATEGORY_JAILBREAK`、threshold `OFF`）和 model id（`gemini-3.1-flash-lite`）都已實證可用。
