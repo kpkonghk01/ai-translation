@@ -4,7 +4,6 @@ Judge 對 b 的 highlight 提出一個 major 的 Accuracy Finding（罰分 5）�
 import json
 import os
 import shutil
-from pathlib import Path
 
 import gemini_samples
 from fake_transport import FakeTransport, FunctionTransport
@@ -62,8 +61,7 @@ class CompareCase(Workspace):
         return self.report()
 
     def report(self) -> str:
-        with open(os.path.join(self.out_dir, "report.md"), encoding="utf-8") as f:
-            return f.read()
+        return self.output_text("report.md")
 
     @staticmethod
     def section(report: str, heading: str) -> str:
@@ -88,7 +86,6 @@ class QualityComparisonTest(CompareCase):
         report = self.world(ok_response("9000001"), b_response("9000001"), main_only("9000001"),
                             ok_response("9000002"), b_response("9000002"), main_only("9000002"))
         self.assertIn("- Main：平均每個 Run 的總罰分：b 10.0／10.0、a 0.0／0.0", self.section(report, self.HEADING))
-        self.assertNotIn("main-only）× Judge j1\n\n- 比較的文章", report)
 
     def test_the_baseline_is_not_compared_with_itself(self):
         report = self.world()
@@ -105,7 +102,7 @@ class QualityComparisonTest(CompareCase):
     def test_an_article_the_approach_has_no_translation_for_is_left_out_and_not_counted_as_a_perfect_score(self):
         section = self.section(self.world(ok_response("9000001"), b_response("9000001"), ok_response("9000002"), gemini_samples.prompt_blocked()), self.HEADING)
         self.assertIn("比較的文章：1 篇（9000001）", section)
-        self.assertIn("b 沒有 ok 的 Run 1 篇（9000002）", section)
+        self.assertIn("b 沒有可評核的 ok 的 Run 1 篇（9000002）", section)
 
     def test_an_article_that_is_not_judged_yet_is_left_out(self):
         self.translate(ok_response("9000001"), b_response("9000001"), ok_response("9000002"), b_response("9000002"))
@@ -130,19 +127,58 @@ class QualityComparisonTest(CompareCase):
         self.assertIn("比較的文章：1 篇（9000001）", section)   # 9000002 的第 2 個 Run 被 Block：baseline 不是所有 Run 都 ok
 
     def test_a_baseline_that_has_fewer_runs_recorded_than_planned_does_not_count_the_article(self):
+        self.translate(ok_response("9000001"), b_response("9000001"), ok_response("9000002"), b_response("9000002"))
+        self.extra_experiment["approaches"] = [{"config": self.approach_path, "runs": 2}, {"config": self.b_path, "runs": 1}]
+        self.write_json(self.config_path, self.experiment())   # 之後才把 a 的計畫加到 2 個 Run：每篇只有 1 個紀錄
+        section = self.section(self.finish(), self.HEADING)
+        self.assertIn("沒有可以比較的文章", section)
+        self.assertIn("a 沒有全部 ok 的 Run 2 篇（9000001、9000002）", section)
+
+    def test_a_baseline_with_more_runs_recorded_than_planned_still_counts(self):
         self.extra_experiment["approaches"] = [{"config": self.approach_path, "runs": 2}, {"config": self.b_path, "runs": 1}]
         self.write_json(self.config_path, self.experiment())
         self.translate(ok_response("9000001"), ok_response("9000001"), b_response("9000001"),
                        ok_response("9000002"), ok_response("9000002"), b_response("9000002"))
-        runs_path = os.path.join(self.out_dir, "runs.jsonl")
-        lines = Path(runs_path).read_text(encoding="utf-8").splitlines()
-        kept = [line for line in lines if not (json.loads(line)["article_id"] == "9000002" and json.loads(line)["approach"] == "a" and json.loads(line)["run_index"] == 2)]
-        self.assertEqual(len(kept), len(lines) - 1)
-        with open(runs_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(kept) + "\n")   # 9000002 的 a 只剩第 1 個 Run：計畫是 2 個
+        self.extra_experiment["approaches"] = [{"config": self.approach_path, "runs": 1}, {"config": self.b_path, "runs": 1}]
+        self.write_json(self.config_path, self.experiment())   # 計畫後來減到 1 個，紀錄有 2 個，都是 ok
+        self.assertIn("比較的文章：2 篇（9000001、9000002）", self.section(self.finish(), self.HEADING))
+
+    def test_the_comparison_says_how_many_runs_it_averaged_and_flags_a_candidate_that_is_missing_some(self):
+        self.extra_experiment["approaches"] = [{"config": self.approach_path, "runs": 1}, {"config": self.b_path, "runs": 2}]
+        self.write_json(self.config_path, self.experiment())
+        report = self.world(ok_response("9000001"), b_response("9000001"), gemini_samples.prompt_blocked(),   # b 在 9000001 的第 2 個 Run 被 Block
+                            ok_response("9000002"), b_response("9000002"), b_response("9000002"))
+        section = self.section(report, self.HEADING)
+        self.assertIn("平均用的 Run：b 3 個（這些文章計畫 4 個）；⚠ 有 Run 沒有 ok 或還沒有紀錄，平均不完整、a 2 個", section)
+
+    def test_a_run_outside_the_mqm_run_limit_is_not_a_scorable_run(self):
+        self.extra_experiment["approaches"] = [{"config": self.approach_path, "runs": 1}, {"config": self.b_path, "runs": 2}]
+        self.write_json(self.config_path, self.experiment())
+        self.use_judging(mqm_run_limit={"b": 1})
+        report = self.world(ok_response("9000001"), gemini_samples.prompt_blocked(), b_response("9000001"),   # b 的第 1 個 Run 被 Block，第 2 個 ok 但不在評核範圍
+                            ok_response("9000002"), b_response("9000002"), b_response("9000002"))
+        section = self.section(report, self.HEADING)
+        self.assertIn("比較的文章：1 篇（9000002）", section)
+        self.assertIn("b 沒有可評核的 ok 的 Run 1 篇（9000001）", section)
+
+    def test_runs_the_mqm_run_limit_leaves_out_are_not_counted_as_missing_from_the_average(self):
+        self.extra_experiment["approaches"] = [{"config": self.approach_path, "runs": 1}, {"config": self.b_path, "runs": 2}]
+        self.write_json(self.config_path, self.experiment())
+        self.use_judging(mqm_run_limit={"b": 1})
+        report = self.world(ok_response("9000001"), b_response("9000001"), b_response("9000001"),
+                            ok_response("9000002"), b_response("9000002"), b_response("9000002"))
+        line = next(l for l in self.section(report, self.HEADING).splitlines() if l.startswith("- 平均用的 Run"))
+        self.assertEqual(line, "- 平均用的 Run：b 2 個（這些文章計畫 2 個）、a 2 個")   # 第 2 個 Run 不評：計畫的是評核範圍內的 2 個，不是 4 個
+
+    def test_a_long_list_of_left_out_articles_is_listed_in_full(self):
+        ids = [f"90001{n:02d}" for n in range(1, 13)]
+        for article_id in ids:
+            self.write_json(os.path.join(self.articles_dir, f"{article_id}.json"), source_article(article_id))
+        self.article_ids = tuple(ids)
+        self.write_json(self.config_path, {**self.experiment(), "articles": {"dir": self.articles_dir, "ids": ids}})
+        self.translate(*[x for article_id in ids for x in (gemini_samples.prompt_blocked(), b_response(article_id))])
         section = self.section(self.finish(), self.HEADING)
-        self.assertIn("比較的文章：1 篇（9000001）", section)
-        self.assertIn("a 沒有全部 ok 的 Run 1 篇（9000002）", section)
+        self.assertIn(f"a 沒有全部 ok 的 Run 12 篇（{'、'.join(ids)}）", section)
 
     def test_the_score_follows_the_weights_without_judging_again(self):
         self.world()
@@ -200,40 +236,56 @@ class SimplifiedBaselineTest(CompareCase):
         self.assertIn("比較的文章：1 篇（9000001）", section)
         self.assertIn("：b 113.6／113.6、e 0.0／0.0、差 +113.6／+113.6（原文 44 字）", section)
 
-    def test_the_service_is_compared_with_the_quality_baseline_too_and_never_with_itself(self):
+    def test_the_service_and_the_quality_baseline_are_compared_both_ways_and_never_with_themselves(self):
         report = self.simplified_world()
         self.assertIn("### e × trad-to-simplified 對 a（質素 baseline）× Judge j1", report)
         self.assertNotIn("e × trad-to-simplified 對 e", report)
-        self.assertNotIn("### a × trad-to-simplified 對 e", report)   # 質素 baseline 不是被比的對象；E 對 A 已經列了
+        self.assertIn("### a × trad-to-simplified 對 e（baseline）× Judge j1", report)   # A 對 E 也列：以 E 為 baseline 篩選文章
         self.assertNotIn("### e × trad-to-en", report)   # E 只有繁→簡
+        self.assertNotIn("a × trad-to-simplified 對 a", report)
 
-    def test_a_blocked_service_run_leaves_the_article_out_of_the_service_comparison(self):
-        self.translate(ok_response(), simplified_response(), b_response(), simplified_response())
+    def test_a_blocked_quality_baseline_run_leaves_the_article_out_for_everyone_but_the_service_comparison_filters_on_the_service(self):
+        # a 繁→英 ok，繁→簡被 Block；b 兩個都 ok
+        self.translate(ok_response(), gemini_samples.prompt_blocked(), b_response(), simplified_response())
         self.assertEqual(self.run_cli("import-baseline")[0], 0)
-        runs_path = os.path.join(self.out_dir, "runs.jsonl")
-        runs = [json.loads(line) for line in Path(runs_path).read_text(encoding="utf-8").splitlines()]
-        for run in runs:
-            if run["approach"] == "e":
-                run.update(outcome="block", reason="prompt:FICTIONAL", translation=None)
-        with open(runs_path, "w", encoding="utf-8") as f:
-            f.write("".join(json.dumps(run, ensure_ascii=False) + "\n" for run in runs))
         report = self.finish()
-        section = self.section(report, "b × trad-to-simplified 對 e（baseline）× Judge j1")
-        self.assertIn("e 沒有全部 ok 的 Run 1 篇（9000001）", section)
-        self.assertIn("沒有可以比較的文章", section)
+        against_a = self.section(report, "b × trad-to-simplified 對 a（質素 baseline）× Judge j1")
+        self.assertIn("a 沒有全部 ok 的 Run 1 篇（9000001）", against_a)
+        self.assertIn("沒有可以比較的文章", against_a)
+        against_e = self.section(report, "b × trad-to-simplified 對 e（baseline）× Judge j1")
+        self.assertIn("比較的文章：1 篇（9000001）", against_e)   # 服務 E 沒有被 Block：這篇照比
+        a_against_e = self.section(report, "a × trad-to-simplified 對 e（baseline）× Judge j1")
+        self.assertIn("a 沒有可評核的 ok 的 Run 1 篇（9000001）", a_against_e)   # a 自己沒有譯文：不當零分
 
 
 class ConfigTest(CompareCase):
     def assert_rejected(self, needle):
-        code, out, err = self.run_cli("report", transport=None)
+        code, _, err = self.run_cli("report")
         self.assertNotEqual(code, 0)
         self.assertIn(needle, err)
 
     def test_a_baseline_or_direction_that_does_not_exist_is_rejected(self):
-        for comparison, needle in (({"baseline": "zz"}, "comparison.baseline 指向不存在"),
+        for comparison, needle in (({"baseline": "zz"}, "comparison.baseline 要是實驗內的 Approach"),
                                    ({"baseline": "a", "also_against": {"trad-to-en": ["zz"]}}, "comparison.also_against.trad-to-en 指向不存在"),
                                    ({"baseline": "a", "also_against": {"trad-to-simplified": ["a"]}}, "Direction 不在實驗內")):
             with self.subTest(needle):
                 self.extra_experiment["comparison"] = comparison
                 self.write_json(self.config_path, self.experiment())
                 self.assert_rejected(needle)
+
+    def test_a_reference_that_has_no_full_run_in_the_direction_is_rejected_instead_of_silently_listing_nothing(self):
+        directory = os.path.join(self.tmp, "baseline-e")
+        self.write_baseline(directory, "9000001", good_simplified_translation("9000001"))
+        self.extra_experiment["baselines"] = [{"id": "e", "dir": directory, "direction": "trad-to-simplified"}]
+        self.extra_experiment["directions"] = ["trad-to-en", "trad-to-simplified"]
+        for comparison, needle in (({"baseline": "a", "also_against": {"trad-to-en": ["e"]}}, "e 在這個 Direction 沒有 full 的 Run"),
+                                   ({"baseline": "e"}, "要是實驗內的 Approach（不是匯入的 baseline）")):
+            with self.subTest(needle):
+                self.extra_experiment["comparison"] = comparison
+                self.write_json(self.config_path, self.experiment())
+                self.assert_rejected(needle)
+
+    def test_a_quality_baseline_that_only_runs_main_only_is_rejected(self):
+        self.extra_experiment["approaches"] = [{"config": self.approach_path, "runs": 1, "input_variants": ["main-only"]}, {"config": self.b_path, "runs": 1}]
+        self.write_json(self.config_path, self.experiment())
+        self.assert_rejected("comparison.baseline 沒有 full 的 Run")

@@ -249,6 +249,11 @@ class Workspace(unittest.TestCase):
         with open(os.path.join(self.out_dir, "runs.jsonl"), encoding="utf-8") as f:
             return [json.loads(line) for line in f if line.strip()]
 
+    def output_text(self, name: str) -> str:
+        """實驗輸出目錄裡某個檔案（例如 report.md、summary.md、review.md）的內容。"""
+        with open(os.path.join(self.out_dir, name), encoding="utf-8") as f:
+            return f.read()
+
     def all_output_text(self) -> str:
         """data 目錄下所有檔案的內容，供檢查有沒有不該出現的字串。"""
         chunks = []

@@ -47,12 +47,12 @@ def format_ratio(numerator: int, denominator: int) -> str:
     return f"{numerator}/{denominator}（{100 * numerator / denominator:.1f}%）"
 
 
-_SAFE_LABEL = re.compile(r"[A-Za-z0-9_:. \-]{1,60}")
+_SAFE_CODE = re.compile(r"[A-Za-z0-9_:.\-]{1,60}")   # 沒有空白：一句英文不會通過
 
 
 def shown(value, summary: bool):
-    """摘要版只放得出是固定代碼的字串（Block 原因、模型版本、baseline 標籤等）：provider 或檔案裡的其他文字不外傳。"""
-    if not summary or value is None or _SAFE_LABEL.fullmatch(str(value)):
+    """摘要版只放得出是代碼的字串（Block 原因、模型版本、baseline 標籤等：字母、數字和 _:.-，60 字以內）：provider 或檔案裡的其他文字不外傳。"""
+    if not summary or value is None or _SAFE_CODE.fullmatch(str(value)):
         return value
     return "（其他）"
 
@@ -79,7 +79,7 @@ def render(experiment: Experiment, out: OutputDir, records: list[RunRecord], row
         "", "## Approach 設定", "",
     ]
     for planned in experiment.approaches:
-        lines += approach_lines(planned, [r for r in records if r.approach == planned.config.id], summary)
+        lines += approach_lines(planned, [r for r in records if r.approach == planned.config.id], summary=summary)
     lines += judge_settings_lines(experiment, out, summary=summary)
     lines += ground_truth_settings_lines(experiment, truth)
     lines += review_lines
@@ -103,7 +103,7 @@ def render(experiment: Experiment, out: OutputDir, records: list[RunRecord], row
         rows_by_section[section_key(r)].append(r)
     sections = list(planned_runs) + sorted(set(records_by_section) - set(planned_runs))   # 紀錄裡有、設定裡沒有的也列出
     for key in sections:
-        lines += section_lines(*key, planned_runs.get(key), records_by_section[key], rows_by_section[key], summary)
+        lines += section_lines(*key, planned_runs.get(key), records_by_section[key], rows_by_section[key], summary=summary)
     lines += block_incentive_lines(records)
     lines += extra_lines
     return "\n".join(lines).rstrip("\n") + "\n"
@@ -163,7 +163,7 @@ def term_list_text(experiment: Experiment) -> str:
     return f"目前 {term_list.prompt_hash}（{len(term_list.entries)} 條）"
 
 
-def approach_lines(planned: PlannedApproach, records: list[RunRecord], summary: bool = False) -> list[str]:
+def approach_lines(planned: PlannedApproach, records: list[RunRecord], *, summary: bool = False) -> list[str]:
     approach = planned.config
     hashes = Counter(r.config_hash for r in records)
     hash_text = "、".join(
@@ -184,7 +184,7 @@ def approach_lines(planned: PlannedApproach, records: list[RunRecord], summary: 
 
 
 def section_lines(approach_id: str, direction: str, variant: InputVariant, planned: int | None,
-                  records: list[RunRecord], rows: list[ComponentResult], summary: bool = False) -> list[str]:
+                  records: list[RunRecord], rows: list[ComponentResult], *, summary: bool = False) -> list[str]:
     n = len(records)
     by_outcome = Counter(r.outcome for r in records)
     reasons = Counter(shown(r.reason, summary) for r in records if r.outcome is Outcome.BLOCK)
@@ -238,7 +238,8 @@ def handle(args) -> int:
                  + gate_lines(experiment, out, records, articles, truth, decisions))
         return render(experiment, out, records, rows, extra, truth, completion_lines(items, decisions), summary=summary)
 
-    out.write_report(build(False))
-    out.write_summary(build(True))
+    report_text, summary_text = build(False), build(True)   # 兩份都建好才寫：中途失敗不會留下新的完整版配舊的摘要版
+    out.write_report(report_text)
+    out.write_summary(summary_text)
     print(f"已寫入 {out.report_path} 和 {out.summary_path}（{len(records)} 個 Run）")
     return 0

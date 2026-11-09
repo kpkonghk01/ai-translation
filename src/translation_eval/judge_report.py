@@ -10,6 +10,7 @@
 """
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from functools import cached_property
 
 from .articles import apply_variant, is_main_type
 from .config import Experiment
@@ -189,8 +190,12 @@ def source_defect_lines(calls: list[JudgeCall], *, summary: bool = False) -> lis
             spans.setdefault(key, _one_line(defect.source_span))
             judges.add(call.judge)
     lines = ["## Source defect", ""]
-    if summary:   # 摘要版沒有原文：只列在哪一篇的哪個 Component、哪些 Judge 發現的
-        lines += [f"- 文章 {key[0]} ・ {key[1]}（Judge {'、'.join(sorted(judges))}）" for key, (_, judges) in sorted(found.items())]
+    if summary:   # 摘要版沒有原文：每個 Component 一行，只列有幾處、哪些 Judge 發現的
+        by_component: dict[tuple, tuple[int, set]] = {}
+        for (article_id, component_id, _), (_, judges) in found.items():
+            count, seen = by_component.get((article_id, component_id), (0, set()))
+            by_component[(article_id, component_id)] = (count + 1, seen | judges)
+        lines += [f"- 文章 {article_id} ・ {component_id}：{count} 處（Judge {'、'.join(sorted(judges))}）" for (article_id, component_id), (count, judges) in sorted(by_component.items())]
     else:
         lines += [f"- 文章 {key[0]} ・ {key[1]} ・「{spans[key]}」：{issue}（Judge {'、'.join(sorted(judges))}）" for key, (issue, judges) in sorted(found.items())]
     return lines + ([] if found else ["沒有 Judge 發現原文的問題。"]) + [""]
@@ -232,6 +237,14 @@ class JudgeContext:
     rows_by_run: dict
     weights: Weights
     decisions: Decisions
+
+    @cached_property
+    def _keys(self) -> set:
+        return {RunKey.of(r) for r in self.records}
+
+    def covers(self, record: RunRecord) -> bool:
+        """這個 Run 在 MQM 的評核範圍內（ok，而且不是 mqm_run_limit 刻意沒評的）。"""
+        return RunKey.of(record) in self._keys
 
     def score(self, records: list[RunRecord], judge_id: str) -> GroupScore:
         return score_group(records, self.articles, self.translations, self.calls_by_judge_run[judge_id], self.rows_by_run, self.weights, judge_id,

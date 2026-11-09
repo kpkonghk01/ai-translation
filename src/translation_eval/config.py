@@ -86,7 +86,7 @@ def load_experiment(path: str) -> Experiment:
     problems += [f"baseline 的 id 與 Approach 的 id 重覆：{i}" for i in clashes]
     judges = load_judges(config, seen, problems)
     problems += gate_config_problems(config, judges)
-    problems += comparison_problems(config, seen)
+    problems += comparison_problems(config, approaches)
     if problems:
         raise InputError(problems)
     term_list = load_term_list(config.term_list) if config.term_list else LoadedTermList.unused()
@@ -134,13 +134,32 @@ def gate_config_problems(config: ExperimentConfig, judges: list[PlannedJudge]) -
     return problems
 
 
-def comparison_problems(config: ExperimentConfig, approach_ids: set[str]) -> list[str]:
-    """比較用的 id 要是實驗內的 Approach 或 baseline；also_against 的 Direction 要在實驗內。"""
-    if config.comparison is None:
+def comparison_problems(config: ExperimentConfig, approaches: list[PlannedApproach]) -> list[str]:
+    """比較用的 id 要是實驗內的 Approach 或 baseline，而且在要比的 Direction 有 full 的 Run：沒有的話比較會什麼也不列，
+    悄悄漏掉。質素的 baseline 是用 API 跑的 Approach（方案 A），不是匯入的 baseline。"""
+    comparison = config.comparison
+    if comparison is None:
         return []
-    known = approach_ids | {b.id for b in config.baselines}
-    wanted = [("comparison.baseline", config.comparison.baseline)]
-    wanted += [(f"comparison.also_against.{d}", i) for d, ids in config.comparison.also_against.items() for i in ids]
-    problems = [f"{where} 指向不存在的 Approach 或 baseline：{i}" for where, i in wanted if i not in known]
-    problems += [f"comparison.also_against 的 Direction 不在實驗內：{d}" for d in config.comparison.also_against if d not in config.directions]
+    by_id = {p.id: p for p in approaches}
+    baselines = {b.id: b for b in config.baselines}
+
+    def covers(who: str, direction) -> bool:
+        if who in by_id:
+            return InputVariant.FULL in by_id[who].input_variants
+        return who in baselines and baselines[who].direction == direction
+
+    problems = []
+    if comparison.baseline not in by_id:
+        problems.append(f"comparison.baseline 要是實驗內的 Approach（不是匯入的 baseline）：{comparison.baseline}")
+    elif not covers(comparison.baseline, None):
+        problems.append(f"comparison.baseline 沒有 full 的 Run：{comparison.baseline}")
+    for direction, ids in comparison.also_against.items():
+        if direction not in config.directions:
+            problems.append(f"comparison.also_against 的 Direction 不在實驗內：{direction}")
+            continue
+        for who in ids:
+            if who not in by_id and who not in baselines:
+                problems.append(f"comparison.also_against.{direction} 指向不存在的 Approach 或 baseline：{who}")
+            elif not covers(who, direction):
+                problems.append(f"comparison.also_against.{direction} 的 {who} 在這個 Direction 沒有 full 的 Run")
     return problems

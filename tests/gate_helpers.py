@@ -95,8 +95,7 @@ class ReviewCase(FactCase):
     def report_text(self) -> str:
         code, _, err = self.run_cli("report")
         self.assertEqual(code, 0, err)
-        with open(os.path.join(self.out_dir, "report.md"), encoding="utf-8") as f:
-            return f.read()
+        return self.output_text("report.md")
 
     @staticmethod
     def part(text: str, heading: str) -> str:
