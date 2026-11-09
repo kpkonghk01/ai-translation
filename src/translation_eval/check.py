@@ -150,6 +150,9 @@ def check_run(key: RunKey, article: Article, translation: Translation, entries: 
                 warnings.append(_warning(WarningKind.UNTRANSLATABLE_CHANGED, "不翻譯的 Component 內容被改動"))
         rows.append(row(expected.id, expected.type, findings, warnings))
 
+    if TAGS_ID in reserved and not article.tags:   # 沒有送 tags（例如 main-only）、譯文卻有
+        rows.append(row(TAGS_ID, None, [_finding(Dimension.LOCALE_FORMAT, EXTRA_COMPONENT, Severity.MAJOR,
+                                                 "譯文多出原文沒有的 tags")]))
     source_ids = {c.id for c in article.components}
     for component_id in real:
         if component_id not in source_ids:

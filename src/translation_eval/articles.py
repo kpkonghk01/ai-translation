@@ -107,7 +107,9 @@ def apply_variant(article: Article, variant: InputVariant) -> Article:
     送出的內容、注入的 Term List 條目、check 預期收到的 Component，都以這一份為準。"""
     if variant is InputVariant.FULL:
         return article
-    return article.model_copy(update={"tags": [], "components": [c for c in article.components if c.type in MAIN_TYPES]})
+    if variant is InputVariant.MAIN_ONLY:
+        return article.model_copy(update={"tags": [], "components": [c for c in article.components if c.type in MAIN_TYPES]})
+    raise ValueError(f"沒有處理的輸入版本：{variant}")   # 新增輸入版本時，這裡要跟著加
 
 
 def request_payload(article: Article) -> dict:

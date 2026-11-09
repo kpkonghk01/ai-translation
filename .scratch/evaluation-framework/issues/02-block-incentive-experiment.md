@@ -22,5 +22,6 @@
 - `input_variants` 寫在實驗設定的每個 Approach 上（預設只有 `full`），`runs` 是每個輸入版本各跑幾次。
 - `main-only` 送出 title 和 Main component，`tags` 送空清單；`check` 也只核對送出去的那一份，所以沒送的圖說、code、tags 不會被當成漏段。
 - 兩個輸入版本各有自己的 Approach × Direction 一節（標題加「（main-only）」），不混在一起算。
-- 「結果不同」的定義：同一篇文章在兩個輸入版本下，「有沒有任何 Run 被 Block」不一樣。
+- 「結果不同」的定義：同一篇文章在兩個輸入版本下被 Block 的 Run 比例不一樣（Run 次數不同也能比），報告列出各版本的 Block 數／Run 數。`error` 的 Run 不計入比較，某個版本只有 `error` 的文章不比較，報告會寫明有幾篇。
+- `main-only` 時模型若自己加了 tags，`check` 會記為多出的 Component，不會靜默忽略。
 - 只有一個輸入版本有紀錄的文章不在比較內；沒有任何 `main-only` 的 Run 時，報告不出現這一節。

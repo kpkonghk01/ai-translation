@@ -75,7 +75,8 @@ def handle(args, transport: Transport) -> int:
         pending = pending[: args.limit]
 
     if args.dry_run:
-        return dry_run(pending, skipped, articles, experiment.term_list)
+        variants = sorted({v for p in experiment.approaches for v in p.input_variants})
+        return dry_run(pending, skipped, articles, experiment.term_list, variants)
 
     # 缺少 key 時在送出任何請求之前就停止，只列出變數名稱
     missing = sorted({p.config.api_key_env for _, p in pending if not os.environ.get(p.config.api_key_env)})
@@ -93,7 +94,7 @@ def handle(args, transport: Transport) -> int:
     return 0
 
 
-def dry_run(pending, skipped: int, articles, term_list: LoadedTermList) -> int:
+def dry_run(pending, skipped: int, articles, term_list: LoadedTermList, variants) -> int:
     chars_by_variant, requests_by_variant = Counter(), Counter()
     destinations = {}
     for key, planned in pending:
@@ -105,7 +106,7 @@ def dry_run(pending, skipped: int, articles, term_list: LoadedTermList) -> int:
     print("dry-run：不送出任何請求，也不寫出任何檔案")
     print(f"Run：{len(pending)}（已有紀錄而略過：{skipped}）")
     print(f"請求數：{len(pending)}")
-    for variant in sorted(requests_by_variant):
+    for variant in variants:   # 沒有要送的版本也列出，免得以為漏了
         print(f"輸入版本 {variant}：請求數 {requests_by_variant[variant]}、估計輸入字數 {chars_by_variant[variant]}")
     print(f"估計輸入字數：{sum(chars_by_variant.values())}")
     for approach_id, (endpoint, concurrency) in destinations.items():

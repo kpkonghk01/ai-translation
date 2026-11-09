@@ -12,6 +12,7 @@ from unittest import mock
 import gemini_samples
 from fake_transport import FakeTransport
 from translation_eval import cli
+from translation_eval.articles import MAIN_TYPES
 from translation_eval.transport import OFFLINE_ENV
 
 # 假 key：執行時才拼接，避免原始碼裡出現像 key 的字串
@@ -58,9 +59,6 @@ ARTICLE_ID = "9000001"
 def ok_response(article_id: str = ARTICLE_ID):
     """Gemini 的正常回應，內容是 good_translation。"""
     return gemini_samples.ok(json.dumps(good_translation(source_article(article_id)), ensure_ascii=False))
-
-
-MAIN_TYPES = ("highlight", "heading", "paragraph", "quote")
 
 
 def main_only_translation(article_id: str = ARTICLE_ID) -> dict:

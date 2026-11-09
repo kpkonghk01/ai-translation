@@ -73,6 +73,23 @@ class BothVariantsTest(Workspace):
         self.assertIn("輸入版本 full：請求數 2", out)
         self.assertIn("輸入版本 main-only：請求數 2", out)
 
+    def test_a_variant_with_nothing_left_to_do_is_still_listed_with_zero_requests(self):
+        self.run_cli("translate", transport=FakeTransport(ok_response("9000001"), main_only_response("9000001"),
+                                                          ok_response("9000002"), main_only_response("9000002")))
+        _, out, _ = self.run_cli("translate", "--dry-run", transport=FakeTransport())
+        self.assertIn("輸入版本 full：請求數 0", out)
+        self.assertIn("輸入版本 main-only：請求數 0", out)
+
+    def test_the_report_lists_the_variants_and_the_run_count_per_variant(self):
+        self.run_cli("translate", transport=FakeTransport(ok_response("9000001"), main_only_response("9000001"),
+                                                          ok_response("9000002"), main_only_response("9000002")))
+        self.run_cli("check")
+        self.run_cli("report")
+        with open(os.path.join(self.out_dir, "report.md"), encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("- 輸入版本：full、main-only", text)
+        self.assertIn("- 每篇每個 Direction 每個輸入版本的 Run 次數：1", text)
+
     def test_the_estimate_for_main_only_is_smaller_than_for_full(self):
         _, out, _ = self.run_cli("translate", "--dry-run", transport=FakeTransport())
         chars = {line.split("：")[0]: int(line.split("估計輸入字數 ")[1]) for line in out.splitlines() if "估計輸入字數 " in line}
@@ -107,6 +124,13 @@ class CheckTest(Workspace):
         translation["components"].pop()
         rows = self.check_rows(translation)
         self.assertEqual([f["subtype"] for f in rows["9000001-002"]["findings"]], ["omission"])
+
+    def test_tags_the_model_invents_are_flagged_instead_of_ignored(self):
+        translation = main_only_translation()
+        translation["tags"] = ["Invented tag"]
+        rows = self.check_rows(translation)
+        self.assertEqual([f["subtype"] for f in rows["tags"]["findings"]], ["extra-component"])
+        self.assertIsNone(rows["tags"]["source_type"])
 
     def test_a_component_that_was_never_sent_but_came_back_is_extra(self):
         translation = main_only_translation()
@@ -157,9 +181,38 @@ class BlockIncentiveReportTest(Workspace):
         self.assertIn("比較的文章：2 篇", section)                                      # 9000003 只有 full，不在內
         self.assertIn("- full：按 Run 1/2（50.0%）；按文章 1/2（50.0%）", section)
         self.assertIn("- main-only：按 Run 0/2（0.0%）；按文章 0/2（0.0%）", section)
-        self.assertIn("結果不同的文章：9000001", section)
+        self.assertIn("結果不同的文章：9000001（full 1/1、main-only 0/1）", section)
         self.assertNotIn("9000002", section.split("結果不同的文章")[1])
         self.assertNotIn("9000003", section)
+
+    def test_an_article_is_different_when_its_block_rate_differs_not_only_when_one_side_is_never_blocked(self):
+        self.rewrite_experiment(lambda e: (e["articles"].update(ids=["9000001"]),
+                                           e["approaches"][0].update(runs=3, input_variants=["full", "main-only"])))
+        blocked = gemini_samples.prompt_blocked
+        self.run_cli("translate", transport=FakeTransport(
+            blocked(), ok_response(), ok_response(),         # full：3 個 Run 被 Block 1 個
+            blocked(), blocked(), blocked()))                # main-only：3 個 Run 全被 Block
+        section = self.report_text().split("## Block 誘因實驗")[1].split("\n## ")[0]
+        self.assertIn("結果不同的文章：9000001（full 1/3、main-only 3/3）", section)
+
+    def test_an_article_with_the_same_block_rate_in_both_variants_is_not_different_even_with_uneven_run_counts(self):
+        self.rewrite_experiment(lambda e: (e["articles"].update(ids=["9000001"]),
+                                           e["approaches"][0].update(runs=2, input_variants=["full"])))
+        self.run_cli("translate", transport=FakeTransport(gemini_samples.prompt_blocked(), ok_response()))   # full：1/2
+        self.rewrite_experiment(lambda e: (e["articles"].update(ids=["9000001"]),
+                                           e["approaches"][0].update(runs=2, input_variants=["full", "main-only"])))
+        self.run_cli("translate", transport=FakeTransport(gemini_samples.prompt_blocked(), main_only_response()))   # main-only：1/2
+        section = self.report_text().split("## Block 誘因實驗")[1].split("\n## ")[0]
+        self.assertIn("結果不同的文章：無", section)
+
+    def test_an_article_whose_main_only_run_only_failed_with_an_error_is_not_compared_and_the_section_says_so(self):
+        self.rewrite_experiment(lambda e: (e["articles"].update(ids=["9000001"]),
+                                           e["approaches"][0].update(input_variants=["full", "main-only"])))
+        self.run_cli("translate", transport=FakeTransport(gemini_samples.prompt_blocked(), gemini_samples.unknown_format()))
+        section = self.report_text().split("## Block 誘因實驗")[1].split("\n## ")[0]
+        self.assertIn("比較的文章：0 篇", section)
+        self.assertIn("因某個輸入版本只有 error 的 Run 而未比較：1 篇", section)
+        self.assertIn("結果不同的文章：無", section)
 
     def test_there_is_no_incentive_section_when_no_main_only_run_exists(self):
         self.run_cli("translate", transport=FakeTransport(ok_response("9000001"), ok_response("9000002"), ok_response("9000003")))
