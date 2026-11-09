@@ -2,6 +2,7 @@
 
 用法（在 repo 根目錄）：
   uv run --locked python -I -m translation_eval translate --config <實驗設定> [--dry-run] [--article <id>] [--limit <N>] [--redo-errors]
+  uv run --locked python -I -m translation_eval import-baseline --config <實驗設定>
   uv run --locked python -I -m translation_eval check --config <實驗設定>
   uv run --locked python -I -m translation_eval report --config <實驗設定>
 各子命令都有 --data-dir（預設 data）。需要 key 的只有 translate，真跑的指令見 docs/data-pipeline.md。
@@ -9,7 +10,7 @@
 import argparse
 import sys
 
-from . import check, report, translate
+from . import baselines, check, report, translate
 from .errors import InputError
 from .transport import Transport, TransportForbidden, UrllibTransport
 
@@ -18,9 +19,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="translation_eval", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     t = sub.add_parser("translate", help="把文章送去各個 Approach 翻譯")
+    b = sub.add_parser("import-baseline", help="把方案 E 等 baseline 目錄匯入成 Run")
     c = sub.add_parser("check", help="對 ok 的 Run 做 Deterministic check")
     r = sub.add_parser("report", help="產生 Block／Refusal 報告")
-    for p in (t, c, r):
+    for p in (t, b, c, r):
         p.add_argument("--config", required=True, help="實驗設定（JSON）")
         p.add_argument("--data-dir", default="data", help="輸出目錄（預設 data）")
     t.add_argument("--dry-run", action="store_true", help="不送出請求，只印出請求數、估計輸入字數和 endpoint")
@@ -42,6 +44,8 @@ def main(argv=None, transport: Transport | None = None) -> int:
     try:
         if args.command == "translate":
             return translate.handle(args, transport or UrllibTransport())
+        if args.command == "import-baseline":
+            return baselines.handle(args)
         if args.command == "check":
             return check.handle(args)
         if args.command == "report":

@@ -1,7 +1,10 @@
 """Deterministic check 的文字規則：只做字串運算，不認識 Run、Component 或檔案。同一輸入必得同一結果。"""
+import functools
 import math
 import re
 from dataclasses import dataclass
+
+from opencc import OpenCC
 
 
 def squash(text: str) -> str:
@@ -26,7 +29,40 @@ def contains_han(text: str) -> bool:
     return bool(_HAN_RUN.search(text))
 
 
+@functools.cache
+def _t2s() -> OpenCC:
+    return OpenCC("t2s")
+
+
+@functools.cache
+def _changed_by_t2s(char: str) -> bool:
+    return _t2s().convert(char) != char
+
+
+def residual_traditional(text: str, exempt: frozenset[str] = frozenset()) -> list[str]:
+    """文字裡 OpenCC t2s 會改動的字，即殘留的繁體字。每個字只列一次，依第一次出現的順序；exempt 內的字不列。"""
+    seen: set[str] = set()
+    residue = []
+    for char in text:
+        if char in seen or char in exempt:
+            continue
+        seen.add(char)
+        if _changed_by_t2s(char):
+            residue.append(char)
+    return residue
+
+
 # ───────────── 數字 ─────────────
+
+_DIGIT_TOKEN = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def missing_digit_tokens(source_text: str, translated_text: str) -> list[str]:
+    """繁→簡：原文的阿拉伯數字（去掉千位分隔號）在譯文找不到的。單位 萬／万 這類只是字形不同，不用換算。"""
+    def normalised(text: str) -> list[str]:
+        return [t.replace(",", "") for t in _DIGIT_TOKEN.findall(text)]
+    present = set(normalised(translated_text))
+    return [t for t in normalised(source_text) if t not in present]
 
 # 原文的數字：數字加上可選的 千／百 和 萬／億；後面接「月」的是月份
 _SOURCE_GROUP = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*([千仟百佰])?\s*([萬万億亿])?(月)?")

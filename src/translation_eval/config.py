@@ -38,7 +38,10 @@ def config_hash(approach: ApproachConfig) -> str:
 
 
 # 譯文與原文長度之比的預設範圍：暫定，等有繁→英的實際分佈再定；實驗設定的 length_ratio 可以按 Direction 覆寫
-DEFAULT_LENGTH_RATIO = {Direction.TRAD_TO_EN: LengthRatioRange(min=1.5, max=8.0)}
+DEFAULT_LENGTH_RATIO = {
+    Direction.TRAD_TO_EN: LengthRatioRange(min=1.5, max=8.0),
+    Direction.TRAD_TO_SIMPLIFIED: LengthRatioRange(min=0.6, max=1.6),
+}
 
 
 def length_ranges(config: ExperimentConfig) -> dict[Direction, LengthRatioRange]:
@@ -56,6 +59,8 @@ def load_experiment(path: str) -> Experiment:
             continue
         seen.add(approach.id)
         approaches.append(PlannedApproach(approach, entry.runs, config_hash(approach), tuple(entry.input_variants)))
+    clashes = [b.id for b in config.baselines if b.id in seen]
+    problems += [f"baseline 的 id 與 Approach 的 id 重覆：{i}" for i in clashes]
     if problems:
         raise InputError(problems)
     term_list = load_term_list(config.term_list) if config.term_list else LoadedTermList.unused()

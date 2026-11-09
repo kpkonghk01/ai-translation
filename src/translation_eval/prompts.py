@@ -13,7 +13,7 @@ from pathlib import Path
 from .schemas import Direction, TermEntry
 
 _DIR = Path(__file__).parent / "prompt_templates"
-_TEMPLATE_IDS = {Direction.TRAD_TO_EN: "translate-trad-to-en"}
+_TEMPLATE_IDS = {Direction.TRAD_TO_EN: "translate-trad-to-en", Direction.TRAD_TO_SIMPLIFIED: "translate-trad-to-simplified"}
 TERMINOLOGY_MARKER = "<<TERMINOLOGY>>"
 
 

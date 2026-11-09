@@ -20,7 +20,7 @@ class InvalidInputTest(Workspace):
             "no articles": (lambda e: e["articles"].update(ids=[]), "ids"),
             "duplicate article id": (lambda e: e["articles"].update(ids=["9000001", "9000001"]), "重覆"),
             "article id that is not a safe file name": (lambda e: e["articles"].update(ids=["../escape"]), "ids"),
-            "direction that is not supported yet": (lambda e: e.update(directions=["trad-to-simplified"]), "directions"),
+            "direction that does not exist": (lambda e: e.update(directions=["trad-to-klingon"]), "directions"),
             "experiment id that is not a safe directory name": (lambda e: e.update(id="../escape"), "id"),
         }
         for name, (mutate, needle) in cases.items():

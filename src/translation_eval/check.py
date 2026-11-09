@@ -22,12 +22,14 @@ from .articles import (TAGS_ID, TAGS_TYPE, TITLE_ID, TITLE_TYPE, apply_variant, 
 from .config import Experiment, length_ranges, load_experiment
 from .errors import InputError
 from .outcome import looks_like_refusal
-from .schemas import (DUPLICATE_COMPONENT, EXTRA_COMPONENT, OMISSION, RESIDUAL_HAN, TERM_MISMATCH, TYPE_CHANGED, Article, CheckMeta,
+from .schemas import (DUPLICATE_COMPONENT, EXTRA_COMPONENT, OMISSION, RESIDUAL_HAN, RESIDUAL_TRADITIONAL, TERM_MISMATCH, TYPE_CHANGED,
+                      Article, CheckMeta,
                       CheckWarning, ComponentResult, Dimension, Direction, Finding, LengthRatioRange, Outcome, RunKey, Severity,
                       TermEntry, Translation, WarningKind)
 from .store import OutputDir
 from .terms import entries_in, has_allowed_rendering, matched_text
-from .textrules import contains_han, han_runs, missing_numbers, nonspace_length, quote_count
+from .textrules import (contains_han, han_runs, missing_digit_tokens, missing_numbers, nonspace_length, quote_count,
+                        residual_traditional)
 
 MAX_LISTED_NUMBERS = 10
 # 實作這些規則的原始碼：它們的內容決定 rules_version
@@ -76,17 +78,24 @@ def _reserved_translations(translation: Translation) -> dict[str, _Translated]:
 
 def _content_findings(direction: Direction, source_text: str, translated_text: str, entries: Sequence[TermEntry]) -> list[Finding]:
     findings = []
-    for entry in entries_in(entries, source_text, direction):
+    applicable = entries_in(entries, source_text, direction)
+    for entry in applicable:
         if not has_allowed_rendering(translated_text, entry.renderings(direction)):
             findings.append(_finding(Dimension.TERMINOLOGY, TERM_MISMATCH, entry.severity, "譯文沒有用 Term List 指定的譯法",
                                      source_span=matched_text(source_text, entry.source)))
     if direction is Direction.TRAD_TO_EN:
         findings += [_finding(Dimension.LOCALE_FORMAT, RESIDUAL_HAN, Severity.MINOR, "譯文殘留漢字", target_span=run)
                      for run in han_runs(translated_text)]
+    elif direction is Direction.TRAD_TO_SIMPLIFIED:
+        # Term List 的例外只對原文有那個詞的 Component 有效
+        exempt = frozenset(char for entry in applicable for exception in entry.simplified_exceptions for char in exception)
+        findings += [_finding(Dimension.LOCALE_FORMAT, RESIDUAL_TRADITIONAL, Severity.MINOR, "譯文殘留 OpenCC t2s 會改動的繁體字",
+                              target_span=char)
+                     for char in residual_traditional(translated_text, exempt)]
     return findings
 
 
-def _content_warnings(source_text: str, translated_text: str, length_range: LengthRatioRange) -> list[CheckWarning]:
+def _content_warnings(direction: Direction, source_text: str, translated_text: str, length_range: LengthRatioRange) -> list[CheckWarning]:
     warnings = []
     source_length, translated_length = nonspace_length(source_text), nonspace_length(translated_text)
     if source_length:
@@ -97,15 +106,16 @@ def _content_warnings(source_text: str, translated_text: str, length_range: Leng
         # 「遠短於原文」以這個 Direction 正常範圍的下限為準：低於它，又像拒絕語，才列為疑似 Refusal
         if ratio < length_range.min and looks_like_refusal(translated_text):
             warnings.append(_warning(WarningKind.SUSPECTED_REFUSAL, "譯文像拒絕語，而且遠短於原文"))
-    missing = missing_numbers(source_text, translated_text)
+    missing = (missing_numbers if direction is Direction.TRAD_TO_EN else missing_digit_tokens)(source_text, translated_text)
     if missing:
         warnings.append(_warning(WarningKind.NUMBER_MISSING,
                                  f"原文的 {len(missing)} 個數字在譯文找不到：{'、'.join(missing[:MAX_LISTED_NUMBERS])}"))
     source_quotes, translated_quotes = quote_count(source_text), quote_count(translated_text)
     if source_quotes != translated_quotes:
         warnings.append(_warning(WarningKind.QUOTE_COUNT, f"原文有 {source_quotes} 段直接引語，譯文有 {translated_quotes} 段"))
-    # 原文沒有漢字的（例如只有英文或數字）本來就不用翻譯，相同不算沒翻譯
-    if translated_text == source_text and contains_han(source_text):
+    # 原文沒有漢字的（例如只有英文或數字）本來就不用翻譯，相同不算沒翻譯。繁→簡留著原文的繁體字，
+    # 殘留字的 Finding 已經記了，不另列警示
+    if direction is Direction.TRAD_TO_EN and translated_text == source_text and contains_han(source_text):
         warnings.append(_warning(WarningKind.UNCHANGED_TRANSLATABLE, "譯文與原文完全相同"))
     return warnings
 
@@ -144,7 +154,7 @@ def check_run(key: RunKey, article: Article, translation: Translation, entries: 
             if source_text is not None:
                 translated_text = text_of(expected.type, found.fields) or ""
                 findings += _content_findings(key.direction, source_text, translated_text, entries)
-                warnings += _content_warnings(source_text, translated_text, ranges[key.direction])
+                warnings += _content_warnings(key.direction, source_text, translated_text, ranges[key.direction])
             elif found.type == expected.type and found.fields != source_fields[expected.id]:
                 # 不翻譯的 Component 要原樣保留；type 被改的已經記為 Finding，不重覆列警示
                 warnings.append(_warning(WarningKind.UNTRANSLATABLE_CHANGED, "不翻譯的 Component 內容被改動"))
@@ -170,7 +180,7 @@ def current_check_meta(experiment: Experiment) -> CheckMeta:
 def require_same_term_list(experiment: Experiment, ok_records) -> None:
     """check 用的 Term List 要與翻譯時注入 prompt 的是同一份。不同的話，check 會拿模型沒看過的條目去扣分，
     或漏掉模型被要求用的譯法，所以停止。只改嚴重度、類別或備註不影響 prompt，不在此限。"""
-    mismatched = [r for r in ok_records if r.term_list_hash != experiment.term_list.prompt_hash]
+    mismatched = [r for r in ok_records if not r.is_baseline and r.term_list_hash != experiment.term_list.prompt_hash]
     if mismatched:
         raise InputError(f"{len(mismatched)} 個 ok 的 Run 翻譯時用的 Term List 與現在的不同（原文詞或譯法有改，或加了、拿掉了 Term List）。"
                          "請把 Term List 改回去，或用新的實驗 id 重新翻譯")

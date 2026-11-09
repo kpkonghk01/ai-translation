@@ -93,6 +93,13 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
 
 - `translate` 可以中斷後重跑同一條指令：已有紀錄的 Run 會略過；`--redo-errors` 重做結果為 `error` 的 Run（`block`、`refusal`、`malformed`、`truncated` 是結果，不會重做）。`--article <id>`（可重覆）只跑指定文章，`--limit <N>` 最多執行 N 個 Run。
 - `check` 與 `report` 每次都從 `runs.jsonl` 整份重算。`report` 發現有 `ok` 的 Run 還沒有 `check` 結果，或 `check` 之後規則、Term List、長度比例範圍改了，會停止，不產生報告；先重新執行 `check`。`check` 另寫 `components.jsonl`（每個 Component 的 Finding 與警示）和 `check-meta.json`（check 當時用的規則版本與輸入，report 靠它判斷結果有沒有過期）。規則版本由實作規則的原始碼的 hash 決定：程式的規則有任何改動，舊的 check 結果就視為過期，重跑 `check` 即可（只要幾秒，不呼叫 API）。所有 Run 都沒有譯文（例如全被 Block）時不需要 `check`。
+- **繁→簡與方案 E**：實驗設定的 `directions` 可以寫 `trad-to-simplified`，LLM Approach 就會跑繁→簡（prompt 是 `translate-trad-to-simplified`）。方案 E（Current service）不經 API：實驗設定寫 `"baselines": [{"id": "e", "dir": "data/baseline-service", "direction": "trad-to-simplified"}]`，然後執行
+
+  ```bash
+  uv run --locked python -I -m translation_eval import-baseline --config <實驗設定>
+  ```
+
+  把 baseline 目錄匯入成 Run（每篇文章一個，結果 `ok`，沒有 tokens 和 latency，記下 `meta.baseline` 標籤）。沒有標籤、同一份 baseline 標籤不一致、或缺少某篇，整個指令失敗，不會留下一半的 Run；已有紀錄的略過，標籤與已匯入的不同時要用新的實驗 id。匯入後與其他 Approach 一樣 `check`、`report`；報告的「Baseline」一節列出標籤。繁→簡的 `check` 另記殘留的繁體字（OpenCC 1.4.2 的 t2s 會改動的字，每個 Component 每個字一個 Finding；Term List 條目的 `simplified_exceptions` 只對原文有那個詞的 Component 有效），長度比例預設 0.6–1.6（暫定）。
 - **輸入版本**：實驗設定裡每個 Approach 可以寫 `input_variants`（預設只有 `full`）。`main-only` 只送 title 和 Main component（highlight、heading、paragraph、quote），tags、圖說、code 等都不送，用來看周邊內容會不會誘發 Block：
 
   ```json

@@ -61,6 +61,26 @@ def ok_response(article_id: str = ARTICLE_ID):
     return gemini_samples.ok(json.dumps(good_translation(source_article(article_id)), ensure_ascii=False))
 
 
+def good_simplified_translation(article_id: str = ARTICLE_ID) -> dict:
+    """與 source_article 同結構、Component id 與 type 不變的簡體譯文；沒有任何殘留的繁體字。"""
+    texts = {"highlight": "翻新工程延误半年，预算超支。", "paragraph": "市民陈虚构表示，工程拖延令他十分不满。"}
+    components = []
+    for c in source_article(article_id)["components"]:
+        t = {"id": c["id"], "type": c["type"]}
+        if c["type"] == "image":
+            t["caption"] = "施工中的虚构市政厅"
+        elif c["type"] == "code":
+            t["code"] = c["code"]
+        else:
+            t["text"] = texts[c["type"]]
+        components.append(t)
+    return {"title": "虚构市政厅翻新工程延误", "tags": ["虚构", "测试"], "components": components}
+
+
+def simplified_response(article_id: str = ARTICLE_ID):
+    return gemini_samples.ok(json.dumps(good_simplified_translation(article_id), ensure_ascii=False))
+
+
 def main_only_translation(article_id: str = ARTICLE_ID) -> dict:
     """模型收到 main-only 輸入時應該回的譯文：只有 Main component，tags 是空的。"""
     translation = good_translation(source_article(article_id))
@@ -107,6 +127,7 @@ class Workspace(unittest.TestCase):
 
     article_ids = ("9000001",)
     runs = 1
+    directions: list = ["trad-to-en"]
     input_variants: list | None = None   # 設了才寫進實驗設定；沒設就用預設（只有 full）
     extra_experiment: dict = {}   # 併入實驗設定的欄位（例如 term_list）
 
@@ -132,11 +153,23 @@ class Workspace(unittest.TestCase):
         return {
             "id": "tracer",
             "articles": {"dir": self.articles_dir, "ids": list(self.article_ids)},
-            "directions": ["trad-to-en"],
+            "directions": list(self.directions),
             "approaches": [{"config": self.approach_path, "runs": self.runs,
                             **({"input_variants": self.input_variants} if self.input_variants else {})}],
             **self.extra_experiment,
         }
+
+    def write_baseline(self, directory: str, article_id: str, translation: dict, label: object = "fictional-service-1") -> None:
+        """方案 E 的 baseline 檔：與文章同結構，meta.baseline 是標籤（label 設 None 就不寫這個欄位）。"""
+        meta = {"source": "public-web", "unknown": [], "warnings": []}
+        if label is not None:
+            meta["baseline"] = label
+        os.makedirs(directory, exist_ok=True)
+        self.write_json(os.path.join(directory, f"{article_id}.json"), {**translation, "mainChannel": "社會新聞", "meta": meta})
+
+    def use_baseline(self, directory: str, baseline_id: str = "e", direction: str = "trad-to-simplified") -> None:
+        self.extra_experiment["baselines"] = [{"id": baseline_id, "dir": directory, "direction": direction}]
+        self.write_json(self.config_path, self.experiment())
 
     def use_term_list(self, term_list: dict) -> str:
         path = os.path.join(self.tmp, "term-list.json")

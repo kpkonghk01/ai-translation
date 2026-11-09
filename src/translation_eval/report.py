@@ -52,19 +52,24 @@ def render(experiment: Experiment, records: list[RunRecord], rows: list[Componen
         f"- Direction：{'、'.join(cfg.directions)}",
         f"- 輸入版本：{'、'.join(sorted({r.input_variant for r in records}))}",
         f"- Term List：{term_list_text(experiment)}",
-        f"- Run 紀錄裡的 Term List hash：{_counts((r.term_list_hash for r in records), none_label='未使用')}",
+        f"- Run 紀錄裡的 Term List hash：{_counts((r.term_list_hash for r in records if not r.is_baseline), none_label='未使用')}",
         "- 長度比例範圍（警示用）：" + "；".join(f"{d} {r.min}–{r.max}" for d, r in length_ranges(cfg).items() if d in cfg.directions),
         "", "## Approach 設定", "",
     ]
     for planned in experiment.approaches:
         lines += approach_lines(planned, [r for r in records if r.approach == planned.config.id])
     lines += ["## Prompt", ""]
-    prompts = Counter((r.prompt_id, r.prompt_hash) for r in records)
+    prompts = Counter((r.prompt_id, r.prompt_hash) for r in records if r.prompt_id is not None)
     lines += [f"- {prompt_id}：{prompt_hash}（{n} 個 Run）" for (prompt_id, prompt_hash), n in sorted(prompts.items())]
     lines.append("")
+    if cfg.baselines:
+        lines += ["## Baseline", ""]
+        lines += [f"- {b.id}：{_counts((r.baseline_label for r in records if r.approach == b.id)) or '尚未匯入'}" for b in cfg.baselines]
+        lines.append("")
 
     planned_runs = {(p.id, d, v): len(cfg.articles.ids) * p.runs
                     for p in experiment.approaches for d in cfg.directions for v in p.input_variants}
+    planned_runs.update({(b.id, b.direction, InputVariant.FULL): len(cfg.articles.ids) for b in cfg.baselines})   # baseline 每篇一個 Run
     records_by_section, rows_by_section = defaultdict(list), defaultdict(list)
     for r in records:
         records_by_section[section_key(r)].append(r)

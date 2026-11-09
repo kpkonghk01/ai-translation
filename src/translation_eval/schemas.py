@@ -20,8 +20,8 @@ class Direction(StrEnum):
     TRAD_TO_SIMPLIFIED = "trad-to-simplified"
 
 
-# 已有翻譯 prompt、可以拿來跑實驗的 Direction（繁→簡隨 ticket 05 加入）。Term List 這類資料檔可以先寫其他 Direction 的條目。
-SUPPORTED_DIRECTIONS = frozenset({Direction.TRAD_TO_EN})
+# 已有翻譯 prompt、可以拿來跑實驗的 Direction。Term List 這類資料檔可以先寫還沒支援的 Direction 的條目。
+SUPPORTED_DIRECTIONS = frozenset({Direction.TRAD_TO_EN, Direction.TRAD_TO_SIMPLIFIED})
 
 
 class InputVariant(StrEnum):
@@ -124,11 +124,19 @@ class LengthRatioRange(StrictModel):
         return self
 
 
+class BaselineEntry(StrictModel):
+    """方案 E（Current service）這類不經 API 的 baseline：Run 由 import-baseline 從目錄匯入，不由 translate 產生。"""
+    id: Slug
+    dir: str
+    direction: Direction
+
+
 class ExperimentConfig(StrictModel):
     id: Slug
     articles: ArticleSet
     directions: list[Direction] = Field(min_length=1)
     approaches: list[ApproachEntry] = Field(min_length=1)
+    baselines: list[BaselineEntry] = []
     term_list: str | None = None   # Term List 檔的路徑；不設就不注入、也不做 Terminology 檢查
     length_ratio: dict[Direction, LengthRatioRange] = {}   # 覆寫預設的長度比例範圍（見 config.py）
 
@@ -139,6 +147,9 @@ class ExperimentConfig(StrictModel):
         unsupported = [d for d in self.directions if d not in SUPPORTED_DIRECTIONS]
         if unsupported:
             raise ValueError("directions 含有尚未支援的 Direction：" + "、".join(unsupported))
+        ids = [b.id for b in self.baselines]
+        if len(set(ids)) != len(ids):
+            raise ValueError("baselines 有重覆的 id")
         return self
 
 
@@ -254,16 +265,21 @@ class RunRecord(RunKey):
     output_tokens: int | None = None
     thought_tokens: int | None = None
     latency_seconds: float | None = None   # 最後一次嘗試的耗時
-    concurrency: int
-    provider: str
+    concurrency: int | None = None   # baseline 的 Run 不經 API，下面幾項也都沒有
+    provider: str | None = None
     model_version: str | None = None   # 實際回應的模型版本
-    prompt_id: str
-    prompt_hash: str
+    prompt_id: str | None = None
+    prompt_hash: str | None = None
     term_list_hash: str | None = None   # 模型看到的 Term List（原文詞與譯法）的 hash；沒有設 Term List 時為 None
-    config_hash: str
+    config_hash: str | None = None
+    baseline_label: str | None = None   # baseline 的 Run：來源的 meta.baseline 標籤（服務與 opencc 的版本）
     raw_response: str | None = None   # 相對於輸出目錄
     translation: str | None = None
     created_at: str
+
+    @property
+    def is_baseline(self) -> bool:
+        return self.baseline_label is not None
 
 
 # ───────────── Component 結果 ─────────────
@@ -275,6 +291,7 @@ DUPLICATE_COMPONENT = "duplicate-component"
 TYPE_CHANGED = "type-changed"
 TERM_MISMATCH = "term-mismatch"
 RESIDUAL_HAN = "residual-han"
+RESIDUAL_TRADITIONAL = "residual-traditional"
 
 
 class Finding(StrictModel):
