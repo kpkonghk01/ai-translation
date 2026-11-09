@@ -13,7 +13,7 @@
   uv run --locked python -I -m translation_eval crosscheck --config <實驗設定> [--dry-run] [--article <id>]... [--limit <N>] [--redo-errors]
   uv run --locked python -I -m translation_eval gold check|sample --config <實驗設定> [--count 30] [--seed 1]
 有輸出的子命令有 --data-dir（預設 data）；providers、import-cms（用 --out）、gold check 沒有。會呼叫 API、需要 key 的：translate、judge、calibrate --judge、crosscheck、
-providers，只由 Pan 在自己的終端機執行（真跑的指令見 docs/data-pipeline.md）。
+providers，一律經 tools/run-real.sh 執行（它把 key 放進環境變數再呼叫這個 package；真跑的指令見 docs/data-pipeline.md）。
 """
 import argparse
 import sys

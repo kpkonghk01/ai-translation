@@ -4,7 +4,7 @@
   uv run --locked python -I -m translation_eval calibrate --config <實驗設定> [--judge <id>] [--data-dir data]
       [--dry-run] [--limit <N>] [--redo-errors]
 
-有 --judge 才送請求（要 key，由 Pan 在自己的終端機執行）：這個 Judge 對 Gold set 每個項目的 MQM 任務、每個有 facts 的項目的 fact 任務，各兩個
+有 --judge 才送請求（要 key，經 tools/run-real.sh 執行）：這個 Judge 對 Gold set 每個項目的 MQM 任務、每個有 facts 的項目的 fact 任務，各兩個
 獨立的請求（temperature 0，與正式評核同一份 prompt 和同一種請求格式）。已有新的紀錄的請求略過，所以可以續跑；prompt、Judge 設定或項目內容改了，
 舊的紀錄過期，會重送。不寫 --judge 就只重算結果，不送請求。請求之後（或只重算時）寫出 calibration.md（各 Judge 的指標，只有數字）和
 calibration-disagreements.md（Judge 對標註、Judge 對 Judge 的分歧，含原文與譯文，只在本機看）。Gold set 驗證不合就停止，什麼也不送、不寫。
