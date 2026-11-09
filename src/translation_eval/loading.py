@@ -6,6 +6,11 @@ from pydantic import BaseModel, ValidationError
 from .errors import InputError
 
 
+def validation_problems(error: ValidationError, prefix: str) -> list[str]:
+    """pydantic 的錯誤只列欄位位置和原因，不回顯輸入值。"""
+    return [f"{prefix}：{'.'.join(str(p) for p in err['loc']) or '(根)'}：{err['msg']}" for err in error.errors()]
+
+
 def read_model(path: str, model: type[BaseModel]):
     """錯誤訊息只列檔案、欄位位置和原因，不回顯輸入值。"""
     try:
@@ -18,4 +23,4 @@ def read_model(path: str, model: type[BaseModel]):
     try:
         return model.model_validate(raw)
     except ValidationError as e:
-        raise InputError([f"{path}：{'.'.join(str(p) for p in err['loc']) or '(根)'}：{err['msg']}" for err in e.errors()]) from e
+        raise InputError(validation_problems(e, path)) from e

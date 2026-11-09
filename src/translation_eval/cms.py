@@ -11,16 +11,20 @@ session id 就是文章 id；meta.source 記為 cms。轉換只保留已知的�
 import csv
 import json
 import os
+import re
 import sys
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ValidationError
 
 from .articles import KNOWN_TYPES, check_article, kept_fields
 from .errors import InputError
-from .schemas import Article, Slug
+from .loading import validation_problems
+from .schemas import Article
 
 TOP_LEVEL_KEPT = ("title", "mainChannel", "tags", "components")
-_SESSION_ID = TypeAdapter(Slug)
+# CMS 的 session id 是 24 位小寫 hex。收得比 Slug 窄：它要同時能當檔名、能被 baseline 工具讀，
+# 而且在不分大小寫的檔案系統上，大小寫不同的 id 不會互相覆蓋
+_SESSION_ID = re.compile(r"[0-9a-f]{24}")
 
 
 def _has_text(value) -> bool:
@@ -55,7 +59,9 @@ def _first_user_article(row_number: int, history_text: str) -> dict:
     parts = turn.get("parts") if turn else None
     if not isinstance(parts, list):
         raise InputError(f"{where}：對話紀錄裡沒有 user turn")
-    text = "".join(p.get("text", "") for p in parts if isinstance(p, dict) and isinstance(p.get("text", ""), str))
+    if not all(isinstance(p, dict) and isinstance(p.get("text"), str) for p in parts):   # 圖片等 part 不能靜默略過
+        raise InputError(f"{where}：user turn 有不是文字的 part")
+    text = "".join(p["text"] for p in parts)
     try:
         article = json.loads(text)
     except json.JSONDecodeError as e:
@@ -68,7 +74,7 @@ def _first_user_article(row_number: int, history_text: str) -> dict:
 def convert(session_id: str, raw: dict) -> dict:
     """只保留已知的欄位。被丟掉的欄位若有文字就失敗：看得見的文字都必須出現在轉換結果裡。"""
     problems = [f"文章 {session_id}：頂層欄位 {key} 的文字沒有出現在轉換結果，不認識這個欄位"
-                for key in raw if key not in TOP_LEVEL_KEPT and _has_text(raw[key])]
+                for key in raw if key not in TOP_LEVEL_KEPT and _has_text(raw[key])]   # 不認識的欄位只要有字串就失敗，不判斷是不是看得見的文字
     components = raw.get("components")
     if not isinstance(components, list):
         raise InputError(f"文章 {session_id}：沒有 components 清單")
@@ -83,15 +89,16 @@ def convert(session_id: str, raw: dict) -> dict:
         kept_components.append({k: v for k, v in component.items() if k in names})
         problems += [f"文章 {session_id}：{component['id']} 的欄位 {k} 的文字沒有出現在轉換結果，不認識這個欄位"
                      for k, v in component.items() if k not in names and _has_text(v)]
-    if problems:
-        raise InputError(problems)
     converted = {k: raw[k] for k in TOP_LEVEL_KEPT if k in raw}
     converted["components"] = kept_components
-    try:
-        article = Article.model_validate(converted)
+    try:   # 被丟掉的欄位和不認識的 type 一起列出，不必修一個再跑一次才看到下一個
+        check_article(Article.model_validate(converted), session_id)
     except ValidationError as e:
-        raise InputError([f"文章 {session_id}：{'.'.join(str(p) for p in err['loc'])}：{err['msg']}" for err in e.errors()]) from e
-    check_article(article, session_id)
+        problems += validation_problems(e, f"文章 {session_id}")
+    except InputError as e:
+        problems += e.problems
+    if problems:
+        raise InputError(problems)
     converted["meta"] = {"source": "cms", "articleId": session_id, "unknown": [], "warnings": []}
     return converted
 
@@ -104,10 +111,8 @@ def handle(args) -> int:
             if len(row) < 2:
                 raise InputError(f"第 {row_number} 列：欄位不足（要有 session id 和對話紀錄）")
             session_id = row[0]
-            try:
-                _SESSION_ID.validate_python(session_id)
-            except ValidationError as e:
-                raise InputError(f"第 {row_number} 列：session id 不能當檔名用") from e
+            if not _SESSION_ID.fullmatch(session_id):
+                raise InputError(f"第 {row_number} 列：session id 要是 24 位小寫 hex")
             if session_id in converted:
                 raise InputError(f"第 {row_number} 列：session id 重覆：{session_id}")
             converted[session_id] = convert(session_id, _first_user_article(row_number, row[1]))

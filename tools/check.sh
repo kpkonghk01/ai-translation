@@ -69,7 +69,8 @@ fi
 # CMS 匯出轉成文章檔：看得見的文字都要出現在轉換結果（不認識的欄位或 type 會令轉換失敗），而且與存檔的 data/cms-articles 相同
 cms_conversion_covers_export() {
   uv run --locked python -I -m translation_eval import-cms --csv data-prohibited.csv --out "$logdir/cms-articles" || return 1
-  [ ! -d data/cms-articles ] || diff -r "$logdir/cms-articles" data/cms-articles
+  # -q：不同時只列出檔名，不印文章內容（失敗時 log 會顯示在終端）
+  [ ! -d data/cms-articles ] || diff -rq "$logdir/cms-articles" data/cms-articles
 }
 
 # 每個抓取保存的原始物件目錄（data/web-articles*-raw），轉換結果都不可以漏掉原文
@@ -83,6 +84,7 @@ if [ "$n_raw" -eq 0 ]; then
   echo "  略過 verify：本機沒有 data/web-articles*-raw"
 fi
 if [ -f data-prohibited.csv ] && command -v uv >/dev/null 2>&1; then
+  [ -d data/cms-articles ] || echo "  注意：沒有 data/cms-articles，cms-conversion-covers-export 只檢查轉換，沒有與存檔比對"
   run cms-conversion-covers-export cms_conversion_covers_export
 else
   echo "  略過 cms-conversion-covers-export：本機沒有 data-prohibited.csv，或找不到 uv"

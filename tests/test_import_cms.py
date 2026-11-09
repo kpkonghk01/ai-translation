@@ -84,6 +84,21 @@ class ConversionTest(CmsCase):
         self.assertIn("2", out)
         self.assertNotIn("虛構", out)   # 終端只印數量
 
+    def test_every_component_type_survives_the_conversion_unchanged(self):
+        article = cms_article()
+        article["components"] += [
+            {"id": "c-007", "type": "quote", "text": "「虛構引語」", "source": "虛構人物"},
+            {"id": "c-008", "type": "gallery", "captions": ["圖一", "圖二"]},
+            {"id": "c-009", "type": "related-article", "titles": ["相關一", "相關二"]},
+            {"id": "c-010", "type": "faq", "items": [{"question": "問", "answer": "答"}]},
+            {"id": "c-011", "type": "table", "name": "表", "description": "說明", "caption": "標題", "rows": [["甲", "乙"], ["丙", "丁"]]},
+            {"id": "c-012", "type": "video", "caption": "影片說明"},
+        ]
+        self.write_csv([[SESSION, json.dumps(history(article), ensure_ascii=False)]])
+        code, _, err = self.run_import()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.read_output()["components"], article["components"])
+
     def test_the_first_user_turn_is_used_and_its_parts_are_joined(self):
         turns = [{"role": "model", "parts": [{"text": "先是模型"}]}] + history(cms_article(), split_text=True) \
             + [{"role": "user", "parts": [{"text": "後面的 user turn 不用"}]}]
@@ -165,6 +180,36 @@ class RejectionTest(CmsCase):
         article["components"][1]["text"] = 123
         self.write_csv([[SESSION, json.dumps(history(article), ensure_ascii=False)]])
         self.assert_rejected("c-002")
+
+    def test_a_part_that_is_not_plain_text_is_rejected_instead_of_skipped(self):
+        text = json.dumps(cms_article(), ensure_ascii=False)
+        for name, parts in (
+            ("an image part", [{"text": text}, {"inlineData": {"mimeType": "image/png", "data": "AAAA"}}]),
+            ("text that is a number", [{"text": text}, {"text": 5}]),
+            ("text that is a list", [{"text": text}, {"text": ["extra"]}]),
+            ("a part that is not an object", [{"text": text}, "extra"]),
+        ):
+            with self.subTest(name):
+                self.write_csv([[SESSION, json.dumps([{"role": "user", "parts": parts}], ensure_ascii=False)]])
+                self.assert_rejected("第 1 列")
+
+    def test_an_unknown_type_and_a_dropped_text_field_are_both_listed(self):
+        article = cms_article()
+        article["components"].append({"id": "c-007", "type": "poll", "text": "投票"})
+        article["components"][1]["html"] = "<b>虛構</b>"
+        self.write_csv([[SESSION, json.dumps(history(article), ensure_ascii=False)]])
+        code, _, err = self.run_import()
+        self.assertNotEqual(code, 0)
+        self.assertIn("poll", err)
+        self.assertIn("html", err)
+
+    def test_only_24_lowercase_hex_session_ids_are_accepted(self):
+        good = json.dumps(history(cms_article()), ensure_ascii=False)
+        for name, session_id in (("uppercase", SESSION.upper()), ("too short", "a0a0a0"), ("not hex", "g" * 24),
+                                 ("has a dash", "session-1"), ("path", "../escape")):
+            with self.subTest(name):
+                self.write_csv([[session_id, good]])
+                self.assert_rejected("session id")
 
     def test_one_bad_row_stops_everything(self):
         bad = cms_article()

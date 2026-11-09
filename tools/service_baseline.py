@@ -125,9 +125,10 @@ def cmd_validate(a):
 
 def cmd_convert(a):
     conv = ServiceConverter(a.service, stock_dir=a.stock_dir)
+    articles = list(load_articles(a.trad))   # 檔名不對會在這裡失敗，不會先留下一個空的輸出目錄
     os.makedirs(a.out, exist_ok=True)
     n = 0
-    for aid, art in load_articles(a.trad):
+    for aid, art in articles:
         out = conv.convert_article(art)
         out.setdefault("meta", {})["baseline"] = a.label
         with open(os.path.join(a.out, f"{aid}.json"), "w", encoding="utf-8") as f:
