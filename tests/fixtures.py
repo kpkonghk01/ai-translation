@@ -112,6 +112,19 @@ TERM_LIST = {"terms": [
 JUDGE = {"id": "j1", "role": "primary", "family": "claude", "provider": "gemini", "model": "gemini-3.1-pro", "api_key_env": "GEMINI_API_KEY",
          "timeout_seconds": 30, "retry": {"max_attempts": 2, "base_delay_seconds": 0}}
 
+# 虛構的 ground truth（現有格式）：9000001 的兩個敏感句，三條事實；一篇不在實驗內的文章，載入時略過
+GROUND_TRUTH = {"status": "draft，虛構", "articles": [
+    {"article_id": "9000001", "role": "sensitive", "domain": "general", "note": "虛構的敏感文章",
+     "items": [
+         {"component_id": "9000001-001", "anchor": "預算超支", "why": "虛構的理由",
+          "must_retain": [{"kind": "detail", "fact": "工程延誤半年"}, {"kind": "act", "fact": "預算超支"}]},
+         {"component_id": "9000001-002", "anchor": "十分不滿", "why": "虛構的理由",
+          "must_retain": [{"kind": "attribution", "fact": "不滿的是市民陳虛構本人"}]},
+     ],
+     "source_defects": []},
+    {"article_id": "9999999", "role": "control", "domain": "china-political", "note": "不在實驗內", "items": [], "source_defects": []},
+]}
+
 APPROACH = {
     "id": "a",
     "family": "gemini",
@@ -183,6 +196,13 @@ class Workspace(unittest.TestCase):
             entries.append({"config": path})
         self.extra_experiment["judging"] = {"judges": entries, **judging}
         self.write_json(self.config_path, self.experiment())
+
+    def use_ground_truth(self, ground_truth=GROUND_TRUTH, status="draft", **extra) -> str:
+        path = os.path.join(self.tmp, "ground-truth.json")
+        self.write_json(path, ground_truth)
+        self.extra_experiment["ground_truth"] = {"paths": [path], "status": status, **extra}
+        self.write_json(self.config_path, self.experiment())
+        return path
 
     def use_term_list(self, term_list: dict) -> str:
         path = os.path.join(self.tmp, "term-list.json")

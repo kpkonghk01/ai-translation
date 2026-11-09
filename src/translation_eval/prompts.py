@@ -37,12 +37,18 @@ class PromptTemplate:
         return base.rstrip() + "\n\n" + terminology.strip().replace("{terms}", lines) + "\n"
 
 
+def _template(template_id: str) -> PromptTemplate:
+    raw = (_DIR / f"{template_id}.txt").read_bytes()
+    return PromptTemplate(id=template_id, text=raw.decode("utf-8"), hash=hashlib.sha256(raw).hexdigest())
+
+
 def judge_template() -> PromptTemplate:
-    raw = (_DIR / "judge-mqm.txt").read_bytes()
-    return PromptTemplate(id="judge-mqm", text=raw.decode("utf-8"), hash=hashlib.sha256(raw).hexdigest())
+    return _template("judge-mqm")
+
+
+def fact_template() -> PromptTemplate:
+    return _template("judge-facts")
 
 
 def translation_template(direction: Direction, request_mode: RequestMode) -> PromptTemplate:
-    template_id = _TEMPLATE_IDS[(direction, request_mode)]
-    raw = (_DIR / f"{template_id}.txt").read_bytes()
-    return PromptTemplate(id=template_id, text=raw.decode("utf-8"), hash=hashlib.sha256(raw).hexdigest())
+    return _template(_TEMPLATE_IDS[(direction, request_mode)])

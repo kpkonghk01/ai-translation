@@ -2,7 +2,7 @@
 
 用法（在 repo 根目錄）：
   uv run --locked python -I -m translation_eval translate --config <實驗設定> [--dry-run] [--article <id>] [--limit <N>] [--redo-errors]
-  uv run --locked python -I -m translation_eval judge --config <實驗設定> [--dry-run] [--article <id>] [--limit <N>] [--redo-errors]
+  uv run --locked python -I -m translation_eval judge --config <實驗設定> [--task mqm|fact] [--dry-run] [--article <id>] [--limit <N>] [--redo-errors]
   uv run --locked python -I -m translation_eval providers <作者/名稱> [--dry-run]   （OpenRouter 的 provider 清單，需要 key）
   uv run --locked python -I -m translation_eval import-cms --csv <CMS 匯出> [--out data/cms-articles]
   uv run --locked python -I -m translation_eval import-baseline --config <實驗設定>
@@ -23,6 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     t = sub.add_parser("translate", help="把文章送去各個 Approach 翻譯")
     j = sub.add_parser("judge", help="Judge 評核每個 Component（MQM），每個評兩次")
+    j.add_argument("--task", choices=("mqm", "fact"), help="只跑這個任務（預設：全部；沒有 ground_truth 時只有 mqm）")
     j.add_argument("--dry-run", action="store_true", help="不送出請求，只印出請求數和 endpoint")
     j.add_argument("--article", action="append", default=[], help="只評這篇文章（可重覆）")
     j.add_argument("--limit", type=_positive_int, help="最多執行幾個請求")

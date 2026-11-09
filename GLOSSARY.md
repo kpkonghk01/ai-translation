@@ -140,6 +140,9 @@ _Avoid_: 誇大
 必須獨立達標的 pass/fail 準則，不與其他維度的分數互相抵銷或平均。
 _Avoid_: threshold, KPI
 
+**Weakening rate**:
+在任一 Run 失敗過的不重覆 Sensitive sentence，除以有評核結果的不重覆 Sensitive sentence。一個 Sensitive sentence 在一個 Run 中，只要有一條 Must-retain fact 的最終 Verdict 是 Weakened 或 Absent，就算失敗。Gate 的指標，附單尾 95% 信心上限；Amplification 不計入。中文寫作「淡化率」。
+
 **Source defect**:
 原文本身的筆誤、矛盾或未完成的句子。譯者須照譯；Judge 發現時另列清單供編輯修正，不扣譯者分數。譯者擅自改正則仍記 Accuracy Finding。
 _Avoid_: 原文錯誤（泛指時可用）

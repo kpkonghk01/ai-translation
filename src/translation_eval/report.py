@@ -13,6 +13,8 @@ from .check import current_check_meta
 from .config import Experiment, PlannedApproach, length_ranges, load_experiment
 from .articles import load_article
 from .errors import InputError
+from .gate_report import gate_lines, settings_lines as ground_truth_lines
+from .ground_truth import GroundTruth, load_ground_truth
 from .judge_report import judge_lines, judge_settings_lines
 from .schemas import ComponentResult, Dimension, Direction, InputVariant, Outcome, RunKey, RunRecord, WarningKind
 from .store import OutputDir
@@ -44,7 +46,8 @@ def _counts(values, none_label: str = "未回報") -> str:
     return "、".join(f"{v if v is not None else none_label}（{n} 個 Run）" for v, n in sorted(Counter(values).items(), key=lambda kv: str(kv[0])))
 
 
-def render(experiment: Experiment, out: OutputDir, records: list[RunRecord], rows: list[ComponentResult], extra_lines: list[str] = ()) -> str:
+def render(experiment: Experiment, out: OutputDir, records: list[RunRecord], rows: list[ComponentResult], extra_lines: list[str] = (),
+           truth: GroundTruth | None = None) -> str:
     cfg = experiment.config
     lines = [
         f"# 評核報告：{cfg.id}", "",
@@ -61,6 +64,7 @@ def render(experiment: Experiment, out: OutputDir, records: list[RunRecord], row
     for planned in experiment.approaches:
         lines += approach_lines(planned, [r for r in records if r.approach == planned.config.id])
     lines += judge_settings_lines(experiment, out)
+    lines += ground_truth_lines(truth)
     lines += ["## Prompt", ""]
     prompts = Counter((r.prompt_id, r.prompt_hash) for r in records if r.prompt_id is not None)
     lines += [f"- {prompt_id}：{prompt_hash}（{n} 個 Run）" for (prompt_id, prompt_hash), n in sorted(prompts.items())]
@@ -221,9 +225,13 @@ def handle(args) -> int:
             problems.append(f"…另有 {len(unchecked) - MAX_LISTED} 個")
         raise InputError(problems)
     require_fresh_check(experiment, out, records)   # 先列出沒檢查過的 Run（較具體）；都檢查過了，才看結果是不是過期
-    articles = {}
-    if experiment.judges:   # 只有 Judge 的分數需要讀文章；沒有 Judge 時不讀，文章檔不在也能出報告
+    articles, truth = {}, None
+    if experiment.config.ground_truth:   # ground truth 對實驗內所有文章驗證，不只有 ok 的 Run 的文章
+        articles = {i: load_article(experiment.config.articles.dir, i) for i in experiment.config.articles.ids}
+        truth = load_ground_truth(experiment.config.ground_truth, articles)
+    elif experiment.judges:   # 只有 Judge 的分數需要讀文章；沒有 Judge 也沒有 ground truth 時不讀，文章檔不在也能出報告
         articles = {r.article_id: load_article(experiment.config.articles.dir, r.article_id) for r in records if r.outcome is Outcome.OK}
-    out.write_report(render(experiment, out, records, rows, judge_lines(experiment, out, records, rows, articles)))
+    extra = judge_lines(experiment, out, records, rows, articles) + gate_lines(experiment, out, records, articles, truth)
+    out.write_report(render(experiment, out, records, rows, extra, truth))
     print(f"已寫入 {out.report_path}（{len(records)} 個 Run）")
     return 0

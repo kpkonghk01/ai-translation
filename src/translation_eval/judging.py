@@ -1,13 +1,17 @@
-"""judge：MQM 任務。每個 ok 的 Run 的每個要翻譯的 Component，由每個 Judge 評兩次（兩個獨立的請求，temperature 0）。
+"""judge：每個 ok 的 Run 由每個 Judge 評兩次（兩個獨立的請求，temperature 0）。兩個任務：
+  mqm   每個要翻譯的 Component 的 Finding 與 Source defect；
+  fact  每個含 Sensitive sentence 的 Component，核對 ground truth 的 Must-retain fact（要實驗設定有 ground_truth）。
 
 用法：
   uv run --locked python -I -m translation_eval judge --config <實驗設定> [--data-dir data]
-      [--dry-run] [--article <id>]... [--limit <N>] [--redo-errors]
+      [--task mqm|fact] [--dry-run] [--article <id>]... [--limit <N>] [--redo-errors]
+不寫 --task 就是兩個任務都跑（沒有 ground_truth 時只有 mqm）。
 
-Judge 只輸出 Finding 和 Source defect，不輸出分數。輸出裡的每個片段都要通過逐字驗證（連續空白忽略後，必須是原文或譯文的
-子字串），不通過的那一條丟掉，記為無效並保留原文；Dimension 或 Severity 不在清單內、結構不符的也一樣。
-請求的結果記在 judge-calls.jsonl，一個請求一行；已有紀錄的請求會略過，所以可以續跑。兩次結果的一致性和分數在
-report 計算，不在這裡：改了權重只要重算報告，不用重跑 Judge。
+Judge 只輸出 Finding、Source defect 和 verdict，不輸出分數。輸出裡的每個片段與引用都要通過逐字驗證（連續空白忽略後，必須是
+原文或譯文的子字串），不通過的那一條丟掉（verdict 是作廢），記為無效並保留原文；Dimension、Severity、verdict 或類型不在清單內、
+結構不符的也一樣。請求的結果記在 judge-calls.jsonl，一個請求一行；已有紀錄的請求會略過，所以可以續跑；fact 的請求在
+ground truth 的事實或 anchor 改了之後，舊紀錄過期，會重送。兩次結果的一致性、分數和 Gate 在 report 計算，不在這裡：改了權重
+只要重算報告，不用重跑 Judge。
 Judge 與被評的 Approach 同家族時拒絕執行，除非實驗設定針對這個組合寫了例外和理由。
 """
 import json
@@ -22,11 +26,13 @@ from .articles import apply_variant, load_article
 from .config import PlannedJudge, load_experiment
 from .errors import InputError
 from .exchange import send_with_retries
+from .ground_truth import Fact, GroundTruth, Sentence, input_hash, load_ground_truth
 from .outcome import Interpretation, classify_text
 from .pairs import ComponentPair, component_pairs
-from .prompts import PromptTemplate, judge_template
+from .prompts import PromptTemplate, fact_template, judge_template
 from .providers import adapter_for
-from .schemas import Dimension, Direction, InvalidItem, JudgeCall, JudgeFinding, Outcome, RunKey, RunRecord, SourceDefect
+from .schemas import (Dimension, Direction, FactVerdict, InvalidItem, JudgeCall, JudgeFinding, Outcome, RunKey, RunRecord, SourceDefect,
+                      Verdict, WeakeningType)
 from .store import OutputDir, judge_call_id, judge_call_key
 from .terms import LoadedTermList, entries_in
 from .textrules import squash
@@ -34,6 +40,7 @@ from .translate import select_articles
 from .transport import Transport
 
 CALLS_PER_COMPONENT = 2
+TASKS = ("mqm", "fact")
 SOURCE_ERROR_CORRECTION = "suspected correction of a source error"
 MAX_RAW_CHARS = 2000   # 無效的條目保留原文供審閱，但不能無限長
 DIRECTION_REQUIREMENTS = {
@@ -52,10 +59,20 @@ class PlannedCall:
     pairs: list[ComponentPair]
     index: int          # 這個 Component 在 pairs 裡的位置
     call_index: int     # 1 或 2
+    task: str = "mqm"
+    sentences: tuple[Sentence, ...] = ()   # fact 任務：這個 Component 內的 Sensitive sentence
 
     @property
     def key(self) -> tuple:
-        return judge_call_id(RunKey.of(self.record), self.pairs[self.index].id, self.judge.id, self.call_index)
+        return judge_call_id(RunKey.of(self.record), self.pairs[self.index].id, self.judge.id, self.task, self.call_index)
+
+    @property
+    def input_hash(self) -> str | None:
+        return input_hash(list(self.sentences)) if self.task == "fact" else None
+
+    def is_stale(self, recorded: JudgeCall) -> bool:
+        """fact 的請求：ground truth 的事實或 anchor 改了，舊紀錄的 verdict 就對不上。"""
+        return recorded.input_hash != self.input_hash
 
 
 def _context(pair: ComponentPair | None) -> dict | None:
@@ -147,21 +164,109 @@ def interpret_output(result: Interpretation, pair: ComponentPair):
     return Outcome.OK, None, findings, defects, invalid
 
 
+# ───────────── Must-retain fact ─────────────
+
+def fact_ids(sentences) -> dict[str, Fact]:
+    """送給 Judge 的事實 id（F1、F2…，Judge 比較不會抄錯）→ 事實。"""
+    return {f"F{n}": fact for n, fact in enumerate((f for s in sentences for f in s.facts), 1)}
+
+
+def fact_message(call: PlannedCall, term_list: LoadedTermList) -> str:
+    pair, direction = call.pairs[call.index], call.record.direction
+    terms = [f"{e.source} -> {' / '.join(e.renderings(direction))}" for e in entries_in(term_list.entries, pair.source_text, direction)]
+    numbered, sentences = iter(fact_ids(call.sentences)), []
+    for sentence in call.sentences:
+        sentences.append({"anchor": sentence.anchor, "facts": [{"id": next(numbered), "kind": f.kind.value, "fact": f.text} for f in sentence.facts]})
+    return json.dumps({
+        "direction": direction.value, "requirements": DIRECTION_REQUIREMENTS[direction], "term_list": terms,
+        "component": {"id": pair.id, "type": pair.type, "source": pair.source_text, "translation": pair.translated_text},
+        "sentences": sentences,
+    }, ensure_ascii=False)
+
+
+def _read_type(value) -> WeakeningType | None:
+    """類型寫成 e、(e)、E 都讀成 e；空的是沒有類型。不認識的丟出 ValueError。"""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise ValueError
+    return WeakeningType(value.strip().strip("()").strip().lower())
+
+
+def _check_verdict(item: dict, fact: Fact, pair: ComponentPair) -> tuple[FactVerdict | None, str]:
+    try:
+        verdict = FactVerdict.model_validate({
+            "fact": fact.key, "verdict": item.get("verdict"), "weakening_type": _read_type(item.get("type")),
+            "quote": item.get("quote") or "", "reason": item.get("reason") or ""})
+    except ValueError:   # pydantic 的 ValidationError 也是 ValueError
+        return None, "結構不符"
+    weakening = verdict.weakening_type
+    amplified = weakening is WeakeningType.AMPLIFICATION
+    if (verdict.verdict is Verdict.WEAKENED and amplified) or (verdict.verdict is Verdict.PRESENT and weakening and not amplified) \
+            or (verdict.verdict is Verdict.ABSENT and amplified):
+        return None, "verdict 與類型矛盾"
+    if verdict.verdict is Verdict.ABSENT:
+        return verdict.model_copy(update={"quote": ""}), ""
+    if not verdict.quote.strip():
+        return None, "沒有引用"
+    if not _is_verbatim(verdict.quote, pair.translated_text or ""):
+        return None, "引用不是譯文的逐字子字串"
+    return verdict, ""
+
+
+def interpret_facts(result: Interpretation, pair: ComponentPair, sentences):
+    """Judge 的回應 → (結果類別, 說明, 有效的 verdict, 無效的條目)。結構不是 {verdicts: [...]} 的，整個輸出是 malformed。
+    每條要核對的事實，這次請求不是有一個有效的 verdict，就是有一個無效的條目（沒回、重覆或不合格）：作廢的 verdict 要交人手審閱。"""
+    if result.outcome is not Outcome.OK:
+        return result.outcome, result.reason, [], []
+    raw = result.payload.get("verdicts")
+    if not isinstance(raw, list):
+        return Outcome.MALFORMED, "輸出的結構不符", [], []
+    ids, grouped, invalid = fact_ids(sentences), {}, []
+    for item in raw:
+        fact_id = item.get("fact_id") if isinstance(item, dict) else None
+        if fact_id in ids:
+            grouped.setdefault(fact_id, []).append(item)
+        else:
+            invalid.append(InvalidItem(kind="verdict", why="不是物件" if not isinstance(item, dict) else "不認識的 fact_id", raw=_raw_text(item)))
+    verdicts = []
+    for fact_id, fact in ids.items():
+        items = grouped.get(fact_id, [])
+        if len(items) == 1:
+            verdict, why = _check_verdict(items[0], fact, pair)
+            if verdict:
+                verdicts.append(verdict)
+                continue
+        else:
+            why = "沒有這條事實的 verdict" if not items else f"同一條事實有 {len(items)} 個 verdict"
+        invalid.append(InvalidItem(kind="verdict", why=why, raw=_raw_text(items[0] if len(items) == 1 else items) if items else "", fact=fact.key))
+    return Outcome.OK, None, verdicts, invalid
+
+
 # ───────────── 指令 ─────────────
 
-def plan_calls(experiment, records: list[RunRecord], articles, out: OutputDir) -> list[PlannedCall]:
+def plan_calls(experiment, records: list[RunRecord], articles, out: OutputDir, truth: GroundTruth | None, tasks) -> list[PlannedCall]:
+    """MQM：每個要翻譯、譯文也有的 Component；fact：每個含 Sensitive sentence、譯文也有的 Component。
+    譯文缺少的 Component 沒有東西可以給 Judge：漏段由 check 記為 Finding，Gate 把它的事實直接記為 Absent。"""
     limits = experiment.config.judging.mqm_run_limit
     plan = []
     for record in records:
-        limit = limits.get(record.approach)
-        if record.outcome is not Outcome.OK or (limit is not None and record.run_index > limit):
+        if record.outcome is not Outcome.OK:
             continue
+        mqm_limit = limits.get(record.approach)
         pairs = component_pairs(apply_variant(articles[record.article_id], record.input_variant), out.read_translation(record))
         for index, pair in enumerate(pairs):
             if pair.translated_text is None:
                 continue
-            for judge in experiment.judges:
-                plan.extend(PlannedCall(record, judge, pairs, index, n) for n in range(1, CALLS_PER_COMPONENT + 1))
+            wanted = []
+            if "mqm" in tasks and (mqm_limit is None or record.run_index <= mqm_limit):
+                wanted.append(("mqm", ()))
+            sentences = tuple(truth.sentences_in(record.article_id, pair.id)) if truth else ()
+            if "fact" in tasks and sentences:
+                wanted.append(("fact", sentences))
+            for task, task_sentences in wanted:
+                for judge in experiment.judges:
+                    plan.extend(PlannedCall(record, judge, pairs, index, n, task, task_sentences) for n in range(1, CALLS_PER_COMPONENT + 1))
     return plan
 
 
@@ -194,16 +299,20 @@ def handle(args, transport: Transport) -> int:
         raise InputError("實驗設定沒有 judging，沒有 Judge 可以執行")
     selected = select_articles(cfg.articles.ids, args.article)
     articles = {i: load_article(cfg.articles.dir, i) for i in selected}
+    if args.task == "fact" and cfg.ground_truth is None:
+        raise InputError("--task fact 要實驗設定有 ground_truth")
+    tasks = (args.task,) if args.task else (TASKS if cfg.ground_truth else ("mqm",))
+    truth = load_ground_truth(cfg.ground_truth, articles) if cfg.ground_truth else None
     out = OutputDir(args.data_dir, cfg.id)
     records = [r for r in out.require_runs() if r.article_id in articles]
-    existing = {judge_call_key(c): c for c in out.read_judge_calls()}
+    existing = {judge_call_key(c): c for c in out.read_judge_calls(None)}
 
-    plan = plan_calls(experiment, records, articles, out)
+    plan = plan_calls(experiment, records, articles, out, truth, tasks)
     require_allowed_families(experiment, plan)
     pending, skipped = [], 0
     for call in plan:
         done = existing.get(call.key)
-        if done is None or (args.redo_errors and done.outcome is Outcome.ERROR):
+        if done is None or (args.redo_errors and done.outcome is Outcome.ERROR) or call.is_stale(done):
             pending.append(call)
         else:
             skipped += 1
@@ -221,9 +330,9 @@ def handle(args, transport: Transport) -> int:
     if not_ready:
         raise InputError(not_ready)
 
-    template, outcomes = judge_template(), Counter()
+    templates, outcomes = {"mqm": judge_template(), "fact": fact_template()}, Counter()
     for call in pending:
-        record, violation = run_call(transport, call, template, experiment.term_list, out, replaces_existing=call.key in existing)
+        record, violation = run_call(transport, call, templates[call.task], experiment.term_list, out, replaces_existing=call.key in existing)
         outcomes[record.outcome] += 1
         if violation:   # 資料已經送到不在允許清單內的 provider：不能再送下一個請求
             raise InputError(f"Judge {call.judge.id} 的回應來自不在允許清單內的 provider：已停止，沒有再送出請求（已記錄 {sum(outcomes.values())} 個）")
@@ -234,12 +343,13 @@ def handle(args, transport: Transport) -> int:
 
 def dry_run(pending: list[PlannedCall], skipped: int) -> int:
     per_judge, chars = Counter(), Counter()
-    template = judge_template()
-    # 估計輸入字數需要 Term List，但 dry-run 只是估計：只算 prompt 和 Component 本身
+    templates = {"mqm": judge_template(), "fact": fact_template()}
+    # 估計輸入字數需要 Term List，但 dry-run 只是估計：只算 prompt、Component 本身和事實
     for call in pending:
         per_judge[call.judge.id] += 1
         pair = call.pairs[call.index]
-        chars[call.judge.id] += len(template.text) + len(pair.source_text) + len(pair.translated_text or "")
+        facts = sum(len(f.text) for s in call.sentences for f in s.facts)
+        chars[call.judge.id] += len(templates[call.task].text) + len(pair.source_text) + len(pair.translated_text or "") + facts
     print("dry-run：不送出任何請求，也不寫出任何檔案")
     print(f"請求數：{len(pending)}（已有紀錄而略過：{skipped}）")
     for judge_id, n in per_judge.items():
@@ -257,13 +367,19 @@ def run_call(transport: Transport, call: PlannedCall, template: PromptTemplate, 
     judge = call.judge.config
     adapter = adapter_for(judge)
     api_key = os.environ[judge.api_key_env]
-    request = adapter.build_request(judge, template.text, user_message(call, term_list), api_key)
+    pair = call.pairs[call.index]
+    message = fact_message(call, term_list) if call.task == "fact" else user_message(call, term_list)
+    request = adapter.build_request(judge, template.text, message, api_key)
     exchange = send_with_retries(transport, adapter, request, judge, classify_text)
     result = exchange.interpretation
-    outcome, reason, findings, defects, invalid = interpret_output(result, call.pairs[call.index])
+    findings, defects, verdicts = [], [], []
+    if call.task == "fact":
+        outcome, reason, verdicts, invalid = interpret_facts(result, pair, call.sentences)
+    else:
+        outcome, reason, findings, defects, invalid = interpret_output(result, pair)
     record = JudgeCall(
-        **RunKey.of(call.record).model_dump(), component_id=call.pairs[call.index].id, judge=judge.id, call_index=call.call_index,
-        outcome=outcome, reason=reason, attempts=exchange.attempts,
+        **RunKey.of(call.record).model_dump(), component_id=pair.id, judge=judge.id, task=call.task, call_index=call.call_index,
+        outcome=outcome, reason=reason, attempts=exchange.attempts, verdicts=verdicts, input_hash=call.input_hash,
         input_tokens=result.input_tokens, output_tokens=result.output_tokens, thought_tokens=result.thought_tokens,
         model_version=result.model_version, served_provider=result.served_provider,
         prompt_hash=template.hash, config_hash=call.judge.config_hash,

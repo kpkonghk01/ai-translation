@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from .errors import InputError
 from .loading import read_model
-from .schemas import ApproachConfig, Direction, ExperimentConfig, InputVariant, JudgeConfig, LengthRatioRange
+from .schemas import ApproachConfig, Direction, Domain, ExperimentConfig, InputVariant, JudgeConfig, JudgeRole, LengthRatioRange
 from .terms import LoadedTermList, load_term_list
 
 
@@ -77,6 +77,7 @@ def load_experiment(path: str) -> Experiment:
     clashes = [b.id for b in config.baselines if b.id in seen]
     problems += [f"baseline 的 id 與 Approach 的 id 重覆：{i}" for i in clashes]
     judges = load_judges(config, seen, problems)
+    problems += gate_config_problems(config, judges)
     if problems:
         raise InputError(problems)
     term_list = load_term_list(config.term_list) if config.term_list else LoadedTermList.unused()
@@ -103,3 +104,22 @@ def load_judges(config: ExperimentConfig, approach_ids: set[str], problems: list
         if approach_id not in approach_ids:
             problems.append(f"mqm_run_limit 指向不存在的 Approach：{approach_id}")
     return judges
+
+
+def gate_config_problems(config: ExperimentConfig, judges: list[PlannedJudge]) -> list[str]:
+    """Gate 的設定：分組覆寫指向實驗內的文章；每個分組的主 Judge 是存在的、角色是 primary 的 Judge，分組名是已知的。"""
+    problems = []
+    if config.ground_truth is not None:
+        problems += [f"ground_truth.group_overrides 指向不在實驗內的文章：{a}"
+                     for a in config.ground_truth.group_overrides if a not in config.articles.ids]
+    primary = config.judging.primary_judges if config.judging else {}
+    if primary and config.ground_truth is None:
+        problems.append("judging.primary_judges 要有 ground_truth：主 Judge 是為 Gate 指定的")
+    groups = {d.value for d in Domain} | set(config.ground_truth.group_overrides.values() if config.ground_truth else ())
+    by_id = {j.id: j.config.role for j in judges}
+    for group, judge_id in primary.items():
+        if group not in groups:
+            problems.append(f"judging.primary_judges 的分組不存在：{group}（有：{'、'.join(sorted(groups))}）")
+        if by_id.get(judge_id) is not JudgeRole.PRIMARY:
+            problems.append(f"judging.primary_judges 的 Judge {judge_id}（分組 {group}）不存在，或角色不是 primary")
+    return problems

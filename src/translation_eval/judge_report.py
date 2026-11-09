@@ -56,7 +56,7 @@ def _number(value: float) -> str:
     return f"{value:g}"
 
 
-def _ratio(numerator: int, denominator: int) -> str:
+def ratio(numerator: int, denominator: int) -> str:
     return f"{numerator}/{denominator}（{100 * numerator / denominator:.1f}%）" if denominator else f"{numerator}/{denominator}（—）"
 
 
@@ -124,14 +124,14 @@ def _role_lines(name: str, role: RoleScore, weights: Weights) -> list[str]:
 
 def group_lines(heading: str, score: GroupScore, weights: Weights) -> list[str]:
     complete = score.components - score.incomplete
-    unjudged = f"- Unjudged 率：{_ratio(score.unjudged, complete)}"
+    unjudged = f"- Unjudged 率：{ratio(score.unjudged, complete)}"
     if score.unjudged_reasons:
         unjudged += "；原因（請求數）：" + "、".join(f"{reason} {n}" for reason, n in sorted(score.unjudged_reasons.items()))
     return [
         heading, "",
         f"- 評完：{complete}/{score.components} 個 Component（尚未評完 {score.incomplete}）",
         unjudged,
-        f"- 無效 Finding 率：{_ratio(score.invalid_findings, score.valid_findings + score.invalid_findings)}",
+        f"- 無效 Finding 率：{ratio(score.invalid_findings, score.valid_findings + score.invalid_findings)}",
         *_role_lines("Main", score.main, weights),
         *_role_lines("Peripheral", score.peripheral, weights),
         f"- Fidelity-of-force（不計分，交人手審閱）：一致 {score.fof_consistent}、uncertain {score.fof_uncertain}",

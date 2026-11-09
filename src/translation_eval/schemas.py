@@ -63,6 +63,39 @@ class Severity(StrEnum):
     CRITICAL = "critical"
 
 
+class Domain(StrEnum):
+    GENERAL = "general"
+    CHINA_POLITICAL = "china-political"   # 這類文章的所有事實都算 political fact
+
+
+class FactKind(StrEnum):
+    ACTOR = "actor"
+    VICTIM = "victim"
+    ACT = "act"
+    DETAIL = "detail"
+    QUANTITY = "quantity"
+    LEGAL_STATUS = "legal_status"
+    ATTRIBUTION = "attribution"
+    QUOTE = "quote"
+    TERM = "term"
+
+
+class Verdict(StrEnum):
+    PRESENT = "Present"
+    WEAKENED = "Weakened"
+    ABSENT = "Absent"
+
+
+class WeakeningType(StrEnum):
+    A = "a"   # 去掉行為者
+    B = "b"   # 委婉或中性化的用詞
+    C = "c"   # 數量變模糊
+    D = "d"   # 具體細節被拿掉或泛化
+    E = "e"   # 對原文斷言的事加上限定
+    F = "f"   # 直接引語裡的粗話或狠話被洗乾淨
+    AMPLIFICATION = "amplification"   # 比原文更聳動；不計入淡化率
+
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -208,6 +241,7 @@ class JudgingConfig(StrictModel):
     judges: list[JudgeEntry] = Field(min_length=1)
     same_family_exceptions: list[SameFamilyException] = []
     mqm_run_limit: dict[Slug, Annotated[int, Field(ge=1)]] = {}   # Approach id → 只有 Run 序號不超過這個數的 Run 做 MQM
+    primary_judges: dict[Slug, Slug] = {}   # domain 分組（或 ground_truth.group_overrides 的分組）→ 決定 Gate 的主 Judge 的 id
 
 
 class Weights(StrictModel):
@@ -215,6 +249,19 @@ class Weights(StrictModel):
     minor: float = Field(default=1, ge=0)
     major: float = Field(default=5, ge=0)
     critical: float = Field(default=25, ge=0)
+
+
+class GroundTruthStatus(StrEnum):
+    DRAFT = "draft"   # 還沒有人手確認
+    APPROVED = "approved"
+
+
+class GroundTruthRef(StrictModel):
+    """ground truth 檔（現有格式，可以多個）的位置與狀態。group_overrides：文章 id → 分組名，把文章從它的 domain 分組
+    另列成一組（Q34 兩篇文章的歸屬未決，由 Pan 在設定裡決定，不用改程式）。"""
+    paths: list[str] = Field(min_length=1)
+    status: GroundTruthStatus
+    group_overrides: dict[Slug, Slug] = {}
 
 
 class BaselineEntry(StrictModel):
@@ -231,6 +278,7 @@ class ExperimentConfig(StrictModel):
     approaches: list[ApproachEntry] = Field(min_length=1)
     baselines: list[BaselineEntry] = []
     judging: JudgingConfig | None = None
+    ground_truth: GroundTruthRef | None = None
     weights: Weights = Weights()
     term_list: str | None = None   # Term List 檔的路徑；不設就不注入、也不做 Terminology 檢查
     length_ratio: dict[Direction, LengthRatioRange] = {}   # 覆寫預設的長度比例範圍（見 config.py）
@@ -407,16 +455,27 @@ class SourceDefect(StrictModel):
 
 class InvalidItem(StrictModel):
     """Judge 的輸出裡不合格的一條：片段不是逐字子字串、Dimension 或 Severity 不在清單內、結構不符。原文保留供審閱。"""
-    kind: Literal["finding", "source_defect"]
+    kind: Literal["finding", "source_defect", "verdict"]
     why: str
     raw: str   # 模型輸出的那一條，存成 JSON 文字（有長度上限）。不存成巢狀結構：太深的結構會讓紀錄寫不進去或讀不回來
+    fact: str | None = None   # kind 是 verdict 時：作廢的是哪一條事實（事實 key 的最後一段）；模型回了不認識的 id 時沒有
+
+
+class FactVerdict(StrictModel):
+    """Judge 對一條 Must-retain fact 的 verdict，已通過驗證（引用是譯文的逐字子字串）。"""
+    fact: str   # 事實 key 的最後一段：事實文字的 SHA-256（前兩段是這筆紀錄的文章 id 與 Component id）
+    verdict: Verdict
+    weakening_type: WeakeningType | None = None
+    quote: str = ""   # Present 與 Weakened 必須有；Absent 沒有
+    reason: str = ""
 
 
 class JudgeCall(RunKey):
-    """Judge 對一個 Run 的一個 Component 的一次請求（每個 Component 要評兩次，call_index 是 1 或 2）。"""
+    """Judge 對一個 Run 的一個 Component 的一次請求（每個 Component 要評兩次，call_index 是 1 或 2）。
+    task 是 mqm（Finding）或 fact（Must-retain fact 的 verdict）。"""
     component_id: str
     judge: Slug
-    task: Literal["mqm"] = "mqm"
+    task: Literal["mqm", "fact"] = "mqm"
     call_index: int = Field(ge=1, le=2)
     outcome: Outcome
     reason: str | None = None
@@ -430,9 +489,58 @@ class JudgeCall(RunKey):
     config_hash: str
     findings: list[JudgeFinding] = []
     source_defects: list[SourceDefect] = []
+    verdicts: list[FactVerdict] = []
     invalid: list[InvalidItem] = []
+    input_hash: str | None = None   # fact 任務：送出的事實與 anchor 的 hash；ground truth 改了，這筆紀錄就過期
     raw_response: str | None = None
     created_at: str
+
+
+# ───────────── Ground truth（現有格式，見 tools/render_ground_truth.py） ─────────────
+
+class GtFact(StrictModel):
+    kind: FactKind
+    fact: NonBlank
+
+
+class GtItem(StrictModel):
+    """一個 Sensitive sentence：它所在的 Component、定位用的 anchor，和譯文必須保留的事實。"""
+    component_id: NonBlank
+    anchor: NonBlank
+    why: str = ""
+    must_retain: list[GtFact] = Field(min_length=1)
+
+
+class GtSourceDefect(StrictModel):
+    component_id: NonBlank
+    anchor: NonBlank
+    issue: str = ""
+
+
+class GtArticle(StrictModel):
+    """文章用 article_id（沒有的話用 session_id）指向來源。domain 沒寫就是 general。"""
+    article_id: str | None = None
+    session_id: str | None = None
+    role: Literal["sensitive", "control"]
+    domain: Domain = Domain.GENERAL
+    note: str = ""
+    items: list[GtItem]
+    source_defects: list[GtSourceDefect] = []
+
+    @model_validator(mode="after")
+    def _has_an_id(self):
+        if not (self.article_id or self.session_id):
+            raise ValueError("要有 article_id 或 session_id")
+        return self
+
+    @property
+    def id(self) -> str:
+        return self.article_id or self.session_id
+
+
+class GtFile(StrictModel):
+    status: str | None = None   # 檔案自己寫的備註（例如「draft，待人手確認」）；狀態以實驗設定的 ground_truth.status 為準
+    articles: list[GtArticle]
 
 
 # ───────────── Component 結果 ─────────────

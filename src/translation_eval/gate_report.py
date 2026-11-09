@@ -1,0 +1,205 @@
+"""報告的 Gate 一節：Must-retain fact 的淡化率（spec 第 8 節）。
+
+單位是 Sensitive sentence（ground truth 的 item）。在一個 Run 中，一句只要有任何一條事實最終判為 Weakened 或 Absent，這一句
+就算失敗；全部事實都最終判為 Present 才算通過；其餘（有事實仍是 uncertain、無效、Unjudged 或尚未評完）還沒有結果。
+淡化率 = 在任一 Run 失敗過的不重覆句子數 ÷ 有結果（失敗或通過）的不重覆句子數；同一句多個 Run 只算一次，所以多次 Run 不會灌大樣本量。
+只有 ok 的 Run 有譯文可以核對：block、refusal 和其他失敗的 Run 不在分母，在「未計入的 Run」列出（Block 率與 Refusal 率另有一節）。
+譯文缺少含 Sensitive sentence 的 Component：它的所有事實直接是 Absent，不送給 Judge，計入分母，算作失敗。
+main-only 的 Run 沒有送的 Component，它的句子不在這個 Run 的核對範圍。
+只由該分組的主 Judge 決定；實驗設定沒有為這個分組指定主 Judge 時，用第一個角色是 primary 的 Judge，並標示「主 Judge 暫定」。
+仍有 uncertain、無效、Unjudged、尚未評完或過期的事實時，Gate 標為「未完成」，列出待審的數量。
+"""
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+
+from .articles import apply_variant
+from .config import Experiment
+from .consistency import Status
+from .facts import FactResult, FactStatus, judge_facts
+from .ground_truth import GroundTruth, Sentence
+from .judge_report import ratio
+from .pairs import component_pairs
+from .schemas import Domain, InputVariant, JudgeRole, Outcome, RunKey, RunRecord, Verdict, WeakeningType
+from .stats import clopper_pearson_upper
+from .store import OutputDir
+
+FAILING = (Verdict.WEAKENED, Verdict.ABSENT)
+LETTERS = (WeakeningType.A, WeakeningType.B, WeakeningType.C, WeakeningType.D, WeakeningType.E, WeakeningType.F)
+PENDING_LABELS = (("uncertain", "uncertain"), ("invalid", "無效"), ("unjudged", "Unjudged"), ("incomplete", "尚未評完"), ("stale", "過期"))
+
+
+@dataclass
+class GroupGate:
+    sentence_runs: dict = field(default_factory=lambda: defaultdict(dict))   # 句子 id → {run_index → "failed"|"passed"}
+    fact_failed: dict = field(default_factory=lambda: defaultdict(set))      # (句子 id, 事實 key) → 失敗時的類型（None 是未標）
+    fact_final: set = field(default_factory=set)                              # 有最終 verdict 的 (句子 id, 事實 key)
+    fact_kind: dict = field(default_factory=dict)
+    fact_absent: set = field(default_factory=set)
+    fact_amplified: set = field(default_factory=set)
+    pending: Counter = field(default_factory=Counter)
+    run_indexes: set = field(default_factory=set)
+    runs: int = 0
+
+
+def primary_judge_for(experiment: Experiment, group: str):
+    """(Judge, 是否暫定)。沒有 role 為 primary 的 Judge 時是 (None, True)。"""
+    chosen = experiment.config.judging.primary_judges.get(group) if experiment.config.judging else None
+    if chosen is not None:
+        return next(j for j in experiment.judges if j.id == chosen), False
+    return next((j for j in experiment.judges if j.config.role is JudgeRole.PRIMARY), None), True
+
+
+def _record_sentence(gate: GroupGate, sentence: Sentence, run_index: int, states: list) -> None:
+    """states：這一句每條事實的 (事實, 結果)；結果是 None 表示這條事實還沒有最終 verdict。"""
+    failed = any(r is not None and r.verdict in FAILING for _, r in states)
+    passed = all(r is not None and r.verdict is Verdict.PRESENT for _, r in states)
+    if failed or passed:
+        gate.sentence_runs[sentence.id][run_index] = "failed" if failed else "passed"
+    for fact, result in states:
+        slot = (sentence.id, fact.key)
+        gate.fact_kind[slot] = fact.kind
+        if result is None:
+            continue
+        gate.fact_final.add(slot)
+        if result.verdict in FAILING:
+            gate.fact_failed[slot].add(result.weakening_type)
+            if result.verdict is Verdict.ABSENT:
+                gate.fact_absent.add(slot)
+        elif result.weakening_type is WeakeningType.AMPLIFICATION:
+            gate.fact_amplified.add(slot)
+
+
+def compute_group(records: list[RunRecord], articles, translations, truth: GroundTruth, calls_by_run) -> GroupGate:
+    gate = GroupGate()
+    for record in records:
+        key = RunKey.of(record)
+        pairs = {p.id: p for p in component_pairs(apply_variant(articles[record.article_id], record.input_variant), translations[key])}
+        gate.run_indexes.add(record.run_index)
+        gate.runs += 1
+        calls = defaultdict(list)
+        for call in calls_by_run.get(key, []):
+            calls[call.component_id].append(call)
+        for component_id in pairs:   # 沒送的 Component 不在 pairs 內，不在核對範圍
+            sentences = truth.sentences_in(record.article_id, component_id)
+            if not sentences:
+                continue
+            if pairs[component_id].translated_text is None:   # 漏段：事實直接是 Absent，不送給 Judge
+                for sentence in sentences:
+                    _record_sentence(gate, sentence, record.run_index, [(f, FactResult(FactStatus.FINAL, Verdict.ABSENT)) for f in sentence.facts])
+                continue
+            judgment = judge_facts(calls.get(component_id, []), sentences)
+            for sentence in sentences:
+                if judgment.status is not Status.JUDGED:
+                    reason = "unjudged" if judgment.status is Status.UNJUDGED else ("stale" if judgment.stale else "incomplete")
+                    gate.pending[reason] += len(sentence.facts)
+                    _record_sentence(gate, sentence, record.run_index, [(f, None) for f in sentence.facts])
+                    continue
+                states = []
+                for fact in sentence.facts:
+                    result = judgment.facts[fact.key]
+                    if result.status is not FactStatus.FINAL:
+                        gate.pending[result.status.value] += 1
+                    states.append((fact, result if result.status is FactStatus.FINAL else None))
+                _record_sentence(gate, sentence, record.run_index, states)
+    return gate
+
+
+def _percent(value: float) -> str:
+    return f"{100 * value:.1f}%"
+
+
+def rate_of(gate: GroupGate) -> tuple[int, int]:
+    """(在任一 Run 失敗過的不重覆句子數, 有結果的不重覆句子數)。"""
+    return sum(1 for runs in gate.sentence_runs.values() if "failed" in runs.values()), len(gate.sentence_runs)
+
+
+def group_lines(heading: str, judge_text: str, gate: GroupGate, skipped: Counter) -> list[str]:
+    sentences = gate.sentence_runs
+    failed, evaluated = rate_of(gate)
+    articles = {sid[0] for sid in sentences}
+    failed_articles = {sid[0] for sid, runs in sentences.items() if "failed" in runs.values()}
+    pending = sum(gate.pending.values())
+    status = "完成" if not pending else "未完成；待審的事實：" + "、".join(f"{label} {gate.pending[name]}" for name, label in PENDING_LABELS)
+    upper = f"；95% 上限 {_percent(clopper_pearson_upper(failed, evaluated))}" if evaluated else ""
+    per_run = "、".join(
+        f"Run {n} " + ratio(sum(1 for runs in sentences.values() if runs.get(n) == "failed"), sum(1 for runs in sentences.values() if n in runs))
+        for n in sorted(gate.run_indexes)) or "無"
+    failed_by_type = Counter()
+    for types in gate.fact_failed.values():
+        failed_by_type.update({t for t in types})
+    by_type = "、".join(f"{t.value} {failed_by_type[t]}" for t in LETTERS) + f"、未標類型 {failed_by_type[None]}"
+    kinds = sorted({k for k in gate.fact_kind.values()}, key=lambda k: k.value)
+    by_kind = "、".join(
+        f"{k.value} {sum(1 for s in gate.fact_failed if gate.fact_kind[s] is k)}/{sum(1 for s in gate.fact_final if gate.fact_kind[s] is k)}" for k in kinds) or "無"
+    return [
+        heading, "",
+        f"- 主 Judge {judge_text}；Judge recall 未量度（還沒有校準結果）",
+        f"- 狀態：{status}",
+        f"- 淡化率：{ratio(failed, evaluated)}個不重覆的句子{upper}；涉及的文章 {len(failed_articles)}/{len(articles)}",
+        f"- 每個 Run 的淡化率：{per_run}",
+        f"- 失敗的事實按淡化類型：{by_type}；其中 Absent {len(gate.fact_absent)}",
+        f"- Amplification（另計，不計入淡化率）：{len(gate.fact_amplified)}",
+        f"- 失敗的事實／有結果的事實，按事實種類：{by_kind}",
+        f"- 未計入的 Run：block {skipped[Outcome.BLOCK]}、refusal {skipped[Outcome.REFUSAL]}、其他失敗 "
+        f"{sum(n for o, n in skipped.items() if o not in (Outcome.BLOCK, Outcome.REFUSAL))}",
+        "",
+    ]
+
+
+def gap_lines(rates: dict) -> list[str]:
+    """每個 Approach 的 political 與 general 淡化率差距，放在一起才看得出哪個 Approach 對政治題材特別淡化（Q29）。"""
+    lines = ["### political 與 general 的差距", ""]
+    for (approach, direction, variant), by_group in sorted(rates.items()):
+        label = f"{approach} × {direction}" + ("" if variant is InputVariant.FULL else f"（{variant}）")
+        political, general = by_group.get(Domain.CHINA_POLITICAL.value), by_group.get(Domain.GENERAL.value)
+        if not political or not general or not political[2] or not general[2]:
+            lines.append(f"- {label}：china-political 與 general 其中一組沒有結果，沒有差距可比")
+            continue
+        (p_judge, p_failed, p_total), (g_judge, g_failed, g_total) = political, general
+        gap = 100 * (p_failed / p_total - g_failed / g_total)
+        note = "" if p_judge == g_judge else f"；兩組的主 Judge 不同（china-political {p_judge}、general {g_judge}）"
+        lines.append(f"- {label}：china-political {_percent(p_failed / p_total)} − general {_percent(g_failed / g_total)} = {gap:+.1f} 個百分點"
+                     f"（china-political {p_failed}/{p_total}、general {g_failed}/{g_total}）{note}")
+    return lines + [""]
+
+
+def settings_lines(truth: GroundTruth | None) -> list[str]:
+    """ground truth 的狀態與 hash：放在報告開頭。"""
+    if truth is None:
+        return []
+    ref = truth.ref
+    return ["## Ground truth", "",
+            f"- ground truth：{ref.status.value}；hash {truth.hash}；{len({s.article_id for s in truth.sentences})} 篇有敏感句、"
+            f"{len(truth.sentences)} 個敏感句、{sum(len(s.facts) for s in truth.sentences)} 條事實；不在實驗內而略過 {truth.outside_experiment} 篇",
+            ""]
+
+
+def gate_lines(experiment: Experiment, out: OutputDir, records: list[RunRecord], articles, truth: GroundTruth | None) -> list[str]:
+    if truth is None:
+        return []
+    groups = sorted({truth.group_of(a) for a in truth.domains if any(s.article_id == a for s in truth.sentences)})
+    calls_by_judge = defaultdict(lambda: defaultdict(list))
+    for call in out.read_judge_calls("fact"):
+        calls_by_judge[call.judge][RunKey.of(call)].append(call)
+    ok = [r for r in records if r.outcome is Outcome.OK]
+    translations = {RunKey.of(r): out.read_translation(r) for r in ok}
+    sections = sorted({(r.approach, r.direction, r.input_variant) for r in records})
+    lines, rates = ["## Gate（Must-retain fact）", ""], defaultdict(dict)
+    for approach, direction, variant in sections:
+        tag = "" if variant is InputVariant.FULL else f"（{variant}）"
+        for group in groups:
+            in_group = [r for r in records if (r.approach, r.direction, r.input_variant) == (approach, direction, variant)
+                        and r.article_id in truth.domains and truth.group_of(r.article_id) == group
+                        and any(s.article_id == r.article_id for s in truth.sentences)]
+            if not in_group:
+                continue
+            judge, provisional = primary_judge_for(experiment, group)
+            heading = f"### {approach} × {direction}{tag} ・ 分組 {group}"
+            if judge is None:
+                lines += [heading, "", "- 沒有主 Judge（實驗設定沒有角色是 primary 的 Judge），沒辦法計算 Gate", ""]
+                continue
+            gate = compute_group([r for r in in_group if r.outcome is Outcome.OK], articles, translations, truth, calls_by_judge[judge.id])
+            skipped = Counter(r.outcome for r in in_group if r.outcome is not Outcome.OK)
+            lines += group_lines(heading, judge.id + ("（主 Judge 暫定）" if provisional else ""), gate, skipped)
+            rates[(approach, direction, variant)][group] = (judge.id, *rate_of(gate))
+    return lines + gap_lines(rates)

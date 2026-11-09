@@ -24,13 +24,13 @@ def run_stem(key: RunKey) -> str:
     return f"{key.article_id}.{key.approach}.{key.direction}.{key.input_variant}.r{key.run_index}"
 
 
-def judge_call_id(run: RunKey, component_id: str, judge: str, call_index: int) -> tuple:
-    """Judge 請求的身分：續跑靠它判斷哪些請求已經有紀錄。"""
-    return (*run.model_dump().values(), component_id, judge, "mqm", call_index)
+def judge_call_id(run: RunKey, component_id: str, judge: str, task: str, call_index: int) -> tuple:
+    """Judge 請求的身分：續跑靠它判斷哪些請求已經有紀錄。MQM 與 fact 是兩個任務，各有各的請求。"""
+    return (*run.model_dump().values(), component_id, judge, task, call_index)
 
 
 def judge_call_key(call: JudgeCall) -> tuple:
-    return judge_call_id(RunKey.of(call), call.component_id, call.judge, call.call_index)
+    return judge_call_id(RunKey.of(call), call.component_id, call.judge, call.task, call.call_index)
 
 
 def _scrub(text: str, secrets: tuple[str, ...]) -> str:
@@ -90,7 +90,12 @@ class OutputDir:
             raise InputError(f"{self.runs_path}：沒有 Run 紀錄，先執行 translate")
         return records
 
-    def read_judge_calls(self) -> list[JudgeCall]:
+    def read_judge_calls(self, task: str | None = "mqm") -> list[JudgeCall]:
+        """某個任務的 Judge 紀錄（預設是 MQM）；task 是 None 就是全部。"""
+        calls = self._read_all_judge_calls()
+        return calls if task is None else [c for c in calls if c.task == task]
+
+    def _read_all_judge_calls(self) -> list[JudgeCall]:
         if not self.judge_calls_path.exists():
             return []
         calls = []
@@ -108,7 +113,7 @@ class OutputDir:
         """原始回應按 Run 與 Judge 存成 jsonl（每個請求一行，重做的不蓋掉舊的），最後才寫 Judge 紀錄。"""
         stem = f"{run_stem(call)}.{call.judge}"
         if raw is not None:
-            line = json.dumps({"component": call.component_id, "call": call.call_index,
+            line = json.dumps({"task": call.task, "component": call.component_id, "call": call.call_index,
                                "body": raw.decode("utf-8", errors="replace")}, ensure_ascii=False)
             path = self.root / "judge-raw" / f"{stem}.jsonl"
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,7 +123,7 @@ class OutputDir:
         text = _scrub(call.model_dump_json(), secrets) + "\n"
         if replaces_existing:
             key = judge_call_key(call)
-            kept = "".join(c.model_dump_json() + "\n" for c in self.read_judge_calls() if judge_call_key(c) != key)
+            kept = "".join(c.model_dump_json() + "\n" for c in self.read_judge_calls(None) if judge_call_key(c) != key)
             self._replace(self.judge_calls_path, kept + text)
         else:
             self.root.mkdir(parents=True, exist_ok=True)
