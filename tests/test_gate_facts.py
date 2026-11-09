@@ -8,38 +8,11 @@ import shutil
 
 import gemini_samples
 from fake_transport import FakeTransport
-from fixtures import GROUND_TRUTH, JUDGE, Workspace, ok_response
-from judge_helpers import fact_output, fact_transport, judge_transport, system_text, user_payload
+from fixtures import GROUND_TRUTH, JUDGE
+from gate_helpers import FactCase, translation_without
+from judge_helpers import fact_output, fact_transport, system_text, user_payload
 
 SENTENCE_COMPONENTS = ["9000001-001", "9000001-002"]
-
-
-class FactCase(Workspace):
-    def setUp(self):
-        super().setUp()
-        self.run_cli("translate", transport=FakeTransport(ok_response()))
-        self.use_judging()
-        self.use_ground_truth()
-
-    def facts(self, transport, *args):
-        return self.run_cli("judge", "--task", "fact", *args, transport=transport)
-
-    def calls(self):
-        with open(os.path.join(self.out_dir, "judge-calls.jsonl"), encoding="utf-8") as f:
-            return [json.loads(line) for line in f if line.strip()]
-
-    def fact_calls(self, component_id=None):
-        return [c for c in self.calls() if c["task"] == "fact" and component_id in (None, c["component_id"])]
-
-    def forget_calls(self):
-        path = os.path.join(self.out_dir, "judge-calls.jsonl")
-        if os.path.exists(path):
-            os.remove(path)
-
-    def edited_ground_truth(self, mutate) -> None:
-        gt = copy.deepcopy(GROUND_TRUTH)
-        mutate(gt["articles"][0])
-        self.use_ground_truth(gt)
 
 
 class GroundTruthValidationTest(FactCase):
@@ -95,6 +68,16 @@ class GroundTruthValidationTest(FactCase):
         code, out, err = self.facts(fact_transport())
         self.assertEqual(code, 0, err)   # GROUND_TRUTH 內有一篇 9999999，不在實驗內
 
+    def test_a_source_defect_is_checked_like_an_item(self):
+        defect = {"component_id": "9000001-002", "anchor": "市民陳虛構", "issue": "虛構的瑕疵"}
+        self.edited_ground_truth(lambda a: a["source_defects"].append(defect))
+        self.assertEqual(self.facts(fact_transport())[0], 0)   # 瑕疵合法時沒有問題
+        self.forget_calls()
+        for change, needle in (({"component_id": "9000001-099"}, "9000001-099"), ({"anchor": "不存在的片段"}, "原文瑕疵")):
+            with self.subTest(needle):
+                self.edited_ground_truth(lambda a: a["source_defects"].append({**defect, **change}))
+                self.assert_rejected(needle)
+
     def test_the_same_checks_run_for_report_and_dry_run(self):
         self.edited_ground_truth(lambda a: a["items"][0].update(anchor="預算嚴重超支"))
         code, out, err = self.run_cli("judge", "--task", "fact", "--dry-run", transport=FakeTransport())
@@ -143,14 +126,11 @@ class RequestTest(FactCase):
         prompt = system_text(transport.requests[0])
         for term in ("Present", "Weakened", "Absent", "(a)", "(f)", "Amplification", "verbatim", "quote", "compound"):
             self.assertIn(term, prompt)
-        self.assertIn("any", prompt.lower())
+        self.assertIn("any one of its points", prompt)   # 複合事實的規則：任一要點被淡化就是 Weakened
 
     def test_a_component_missing_from_the_translation_is_not_sent_and_its_facts_are_not_judged_at_all(self):
         shutil.rmtree(self.data_dir)
-        translation = json.loads(ok_response().body)["candidates"][0]["content"]["parts"][0]["text"]
-        gone = json.loads(translation)
-        gone["components"] = [c for c in gone["components"] if c["id"] != "9000001-002"]
-        self.run_cli("translate", transport=FakeTransport(gemini_samples.ok(json.dumps(gone, ensure_ascii=False))))
+        self.run_cli("translate", transport=FakeTransport(translation_without("9000001-002")))
         transport = fact_transport()
         self.facts(transport)
         self.assertEqual({user_payload(r)["component"]["id"] for r in transport.requests}, {"9000001-001"})
@@ -258,6 +238,15 @@ class VerdictRecordingTest(FactCase):
         call = next(c for c in self.fact_calls("9000001-001") if c["call_index"] == 1)
         self.assertEqual(call["verdicts"], [])   # 重覆的 verdict 兩個都不用；沒回的事實沒有 verdict
         self.assertEqual(sorted(i["fact"] or "" for i in call["invalid"]), sorted(["", fact_key("工程延誤半年"), fact_key("預算超支")]))
+
+    def test_a_fact_id_that_is_not_a_string_is_invalid_and_does_not_stop_the_command(self):
+        weird = {"verdicts": [{"fact_id": ["F1"], "verdict": "Present", "quote": "x", "reason": "x"},
+                              {"fact_id": {"a": 1}, "verdict": "Present"}, {"fact_id": None}, 7]}
+        code, out, err = self.facts(fact_transport({("9000001-001", 1): weird}))
+        self.assertEqual(code, 0, err)
+        call = next(c for c in self.fact_calls("9000001-001") if c["call_index"] == 1)
+        self.assertEqual((call["outcome"], call["verdicts"]), ("ok", []))
+        self.assertEqual(len(call["invalid"]), 4 + 2)   # 4 個怪的條目，加 2 條沒有 verdict 的事實
 
     def test_an_output_that_is_not_the_expected_shape_is_malformed_and_a_block_is_recorded_as_such(self):
         for output, expected in (({"verdicts": "no"}, "malformed"), ({"findings": []}, "malformed"), (gemini_samples.prompt_blocked(), "block")):

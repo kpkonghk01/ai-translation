@@ -26,7 +26,7 @@ class FactResult:
     status: FactStatus
     verdict: Verdict | None = None            # 只有 final 有
     weakening_type: WeakeningType | None = None   # 兩次的類型一樣才有
-    type_mismatch: bool = False                # 兩次的 verdict 一樣、類型不一樣
+    amplification: int = 0                     # 有效的 verdict 裡，有幾次標了 Amplification（兩次一致才是 2）
 
 
 @dataclass(frozen=True)
@@ -42,7 +42,8 @@ def _result(valid) -> FactResult:
         return FactResult(FactStatus.INVALID)
     if len(valid) == 2 and valid[0].verdict == valid[1].verdict:
         same_type = valid[0].weakening_type == valid[1].weakening_type
-        return FactResult(FactStatus.FINAL, valid[0].verdict, valid[0].weakening_type if same_type else None, type_mismatch=not same_type)
+        amplified = sum(1 for v in valid if v.weakening_type is WeakeningType.AMPLIFICATION)
+        return FactResult(FactStatus.FINAL, valid[0].verdict, valid[0].weakening_type if same_type else None, amplified)
     return FactResult(FactStatus.UNCERTAIN)
 
 

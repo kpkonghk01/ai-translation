@@ -225,7 +225,7 @@ def interpret_facts(result: Interpretation, pair: ComponentPair, sentences):
     ids, grouped, invalid = fact_ids(sentences), {}, []
     for item in raw:
         fact_id = item.get("fact_id") if isinstance(item, dict) else None
-        if fact_id in ids:
+        if isinstance(fact_id, str) and fact_id in ids:   # 不是字串的 id（例如清單）不能拿去查 dict
             grouped.setdefault(fact_id, []).append(item)
         else:
             invalid.append(InvalidItem(kind="verdict", why="不是物件" if not isinstance(item, dict) else "不認識的 fact_id", raw=_raw_text(item)))
@@ -268,6 +268,10 @@ def plan_calls(experiment, records: list[RunRecord], articles, out: OutputDir, t
                 for judge in experiment.judges:
                     plan.extend(PlannedCall(record, judge, pairs, index, n, task, task_sentences) for n in range(1, CALLS_PER_COMPONENT + 1))
     return plan
+
+
+def task_templates() -> dict[str, PromptTemplate]:
+    return {"mqm": judge_template(), "fact": fact_template()}
 
 
 def require_allowed_families(experiment, plan: list[PlannedCall]) -> None:
@@ -330,7 +334,7 @@ def handle(args, transport: Transport) -> int:
     if not_ready:
         raise InputError(not_ready)
 
-    templates, outcomes = {"mqm": judge_template(), "fact": fact_template()}, Counter()
+    templates, outcomes = task_templates(), Counter()
     for call in pending:
         record, violation = run_call(transport, call, templates[call.task], experiment.term_list, out, replaces_existing=call.key in existing)
         outcomes[record.outcome] += 1
@@ -343,7 +347,7 @@ def handle(args, transport: Transport) -> int:
 
 def dry_run(pending: list[PlannedCall], skipped: int) -> int:
     per_judge, chars = Counter(), Counter()
-    templates = {"mqm": judge_template(), "fact": fact_template()}
+    templates = task_templates()
     # 估計輸入字數需要 Term List，但 dry-run 只是估計：只算 prompt、Component 本身和事實
     for call in pending:
         per_judge[call.judge.id] += 1

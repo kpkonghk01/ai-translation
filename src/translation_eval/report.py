@@ -13,7 +13,7 @@ from .check import current_check_meta
 from .config import Experiment, PlannedApproach, length_ranges, load_experiment
 from .articles import load_article
 from .errors import InputError
-from .gate_report import gate_lines, settings_lines as ground_truth_lines
+from .gate_report import gate_lines, ground_truth_settings_lines
 from .ground_truth import GroundTruth, load_ground_truth
 from .judge_report import judge_lines, judge_settings_lines
 from .schemas import ComponentResult, Dimension, Direction, InputVariant, Outcome, RunKey, RunRecord, WarningKind
@@ -64,7 +64,7 @@ def render(experiment: Experiment, out: OutputDir, records: list[RunRecord], row
     for planned in experiment.approaches:
         lines += approach_lines(planned, [r for r in records if r.approach == planned.config.id])
     lines += judge_settings_lines(experiment, out)
-    lines += ground_truth_lines(truth)
+    lines += ground_truth_settings_lines(experiment, truth)
     lines += ["## Prompt", ""]
     prompts = Counter((r.prompt_id, r.prompt_hash) for r in records if r.prompt_id is not None)
     lines += [f"- {prompt_id}：{prompt_hash}（{n} 個 Run）" for (prompt_id, prompt_hash), n in sorted(prompts.items())]

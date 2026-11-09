@@ -258,7 +258,7 @@ class GroundTruthStatus(StrEnum):
 
 class GroundTruthRef(StrictModel):
     """ground truth 檔（現有格式，可以多個）的位置與狀態。group_overrides：文章 id → 分組名，把文章從它的 domain 分組
-    另列成一組（Q34 兩篇文章的歸屬未決，由 Pan 在設定裡決定，不用改程式）。"""
+    另列成一組（兩篇文章的歸屬未決，由 Pan 在設定裡決定，不用改程式）。"""
     paths: list[str] = Field(min_length=1)
     status: GroundTruthStatus
     group_overrides: dict[Slug, Slug] = {}

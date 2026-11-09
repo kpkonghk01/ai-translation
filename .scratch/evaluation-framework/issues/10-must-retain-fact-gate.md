@@ -38,3 +38,15 @@
 - **ground truth 的狀態以實驗設定為準**（`draft`／`approved`）；檔案自己的 `status` 備註不讀。ground truth 的 schema 不接受多餘的欄位（比 `render_ground_truth.py` 嚴：它會忽略拼錯的欄位名，`domain` 拼錯就靜默變成 general）。
 - 作廢的 verdict 與無效的條目都保留原文在 `judge-calls.jsonl`；「列入審閱清單」要等 ticket 11 的 `review`。報告目前只列數量。
 - 還沒有的：Judge recall（要 ticket 14 的校準，報告寫「未量度」）、審閱決定（ticket 11）、全文篩查（ticket 12）。
+
+### 2026-11-09 review 之後的修正
+
+- **Gate 不能在證據不齊時寫「完成」**：原本只看有沒有待審的事實。現在沒有任何句子有結果、計畫的 Run 還有沒有紀錄的、有 `error` 的 Run 也是「未完成」（block 與 refusal 是結果，不算缺漏；spec 第 8 節）。待審的數量附分母（事實 × Run），Unjudged 列出原因。
+- **anchor 一樣的兩個 item 會互相蓋掉**：同一個 Component 內 anchor 一樣的 item 原本只留最後一個的結果，前一個的失敗會消失。現在視為同一句，合起來看（真實 ground truth 沒有這種情況，但載入器不該靠這個）。
+- **Judge 回的 `fact_id` 不是字串（例如清單）會讓 `judge` 崩潰**，而且那個請求沒有紀錄，重跑會在同一處再崩潰。現在記為無效。
+- **Amplification 只有一次標到時不能不見**：兩次的 verdict 一致但類型不一致時，Amplification 原本被丟掉。現在列出「兩次一致」與「只有一次標了」。
+- **原文瑕疵（`source_defects`）也驗證**（Component 存在、anchor 逐字），與 `render_ground_truth.py` 一致。真實 ground truth 的 59 處全部通過。
+- 報告開頭列出實驗內沒有 ground truth 的文章：id 打錯時看得到。
+- 沒有照 review 改的：**ground truth 內不在實驗裡的文章仍是略過，不報錯**（`render_ground_truth.py` 會報錯，因為它拿全部文章來源驗證；這裡只載入實驗內的文章，ground truth 檔本來就比實驗大，所以只能列出篇數）。**Qwen 與 Gemini 的比較（Q29）我讀成各 Approach 的 political 與 general 差距並列**（story 48 講的是被測模型，Judge 的比較是 Q31，屬於 ticket 17）；若 Pan 的意思是用 Qwen Judge 重算這個差距，要在 ticket 17 處理。
+- 其他是命名與測試的整理：函式改名避免與 `judge_report` 同名、測試共用的部分移進 `tests/gate_helpers.py`、幾個偏弱的斷言改強。
+

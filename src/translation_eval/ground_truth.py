@@ -1,7 +1,7 @@
 """Ground truth：讀入現有格式（articles → items → must_retain），驗證，並整理成 Sensitive sentence 與 Must-retain fact。
 
 驗證規則與 tools/render_ground_truth.py 相同：文章要找得到、Component id 要在該篇內、anchor 要是該 Component 文字的逐字子字串
-（不忽略空白）、kind 與 domain 在允許清單內、每個 item 至少一條事實、同一篇不能出現兩次；另外要求 Component 是要翻譯的類型，
+（不忽略空白）、原文瑕疵（source_defects）也一樣、kind 與 domain 在允許清單內、每個 item 至少一條事實、同一篇不能出現兩次；另外要求 Component 是要翻譯的類型，
 而且同一個 Component 內沒有兩條一樣的事實（事實的 key 是文字的 hash，兩條一樣的就分不開）。
 錯誤只列文章 id、Component id 和原因，不回顯 anchor 或事實的文字。不在實驗內的文章略過。
 
@@ -104,6 +104,12 @@ def load_ground_truth(ref: GroundTruthRef, articles: dict[str, Article]) -> Grou
             keys = [fact_key(f.fact) for f in item.must_retain]
             sentences.append(Sentence(entry.id, item.component_id, item.anchor,
                                       tuple(Fact(k, f.kind, f.fact) for k, f in zip(keys, item.must_retain))))
+        for defect in entry.source_defects:
+            where = f"ground truth：文章 {entry.id} 的 {defect.component_id}（原文瑕疵）"
+            if defect.component_id not in texts:
+                problems.append(f"{where}：component_id 不在該篇")
+            elif defect.anchor not in (texts[defect.component_id] or ""):
+                problems.append(f"{where}：anchor 不是逐字子字串")
         by_component = {}
         for sentence in (s for s in sentences if s.article_id == entry.id):
             by_component.setdefault(sentence.component_id, []).extend(f.key for f in sentence.facts)

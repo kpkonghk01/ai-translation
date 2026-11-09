@@ -1,14 +1,13 @@
 """Gate：淡化率、95% 信心上限、分母、分組、主 Judge、「未完成」。從 main(argv) 進入：translate → check → judge → report。只用虛構資料。"""
-import copy
 import json
 import os
 import shutil
 
 import gemini_samples
-from fake_transport import FakeTransport
-from fixtures import GROUND_TRUTH, JUDGE, Workspace, ok_response, source_article
+from fake_transport import FakeTransport, FunctionTransport
+from fixtures import GROUND_TRUTH, JUDGE, ok_response, source_article
+from gate_helpers import FactCase, ground_truth_for, translation_without
 from judge_helpers import fact_output, fact_transport, user_payload
-from test_gate_facts import FactCase
 
 S1_FACT = "工程延誤半年"   # 句 1（9000001-001）的兩條事實之一
 S1_OTHER = "預算超支"
@@ -64,19 +63,23 @@ class RateTest(GateCase):
 
     def test_a_weakened_fact_counts_by_type_and_kind_and_the_failed_facts_not_the_sentences(self):
         gate = self.section(self.gate(fact_transport(weakened(kind_type="e"))), "### a × trad-to-en ・ 分組 general")
-        self.assertIn("e 1", gate)
-        for other in ("a 0", "b 0", "c 0", "d 0", "f 0", "未標類型 0"):
-            self.assertIn(other, gate)
+        self.assertIn("失敗的事實按淡化類型：a 0、b 0、c 0、d 0、e 1、f 0、未標類型 0；其中 Absent 0", gate)
         self.assertIn("detail 1/1", gate)   # 失敗的事實／有結果的事實
         self.assertIn("act 0/1", gate)
         self.assertIn("attribution 0/1", gate)
 
     def test_a_weakened_fact_without_a_type_or_with_two_different_types_is_counted_as_untyped(self):
-        outputs = {("9000001-001", 1): lambda p: fact_output(p, {S1_FACT: {"verdict": "Weakened", "type": "e", "quote": "late"}}),
-                   ("9000001-001", 2): lambda p: fact_output(p, {S1_FACT: {"verdict": "Weakened", "type": "b", "quote": "late"}})}
-        gate = self.section(self.gate(fact_transport(outputs)), "### a × trad-to-en ・ 分組 general")
-        self.assertIn("淡化率：1/2（50.0%）", gate)   # 判定一致（都是 Weakened），類型不一致不影響 Gate
-        self.assertIn("未標類型 1", gate)
+        weak = {"verdict": "Weakened", "quote": "late"}
+        cases = {"no type": (weak | {"type": None}, weak | {"type": None}),
+                 "different types": (weak | {"type": "e"}, weak | {"type": "b"})}
+        for name, (first, second) in cases.items():
+            with self.subTest(name):
+                self.forget_calls()
+                outputs = {("9000001-001", 1): lambda p, c=first: fact_output(p, {S1_FACT: c}),
+                           ("9000001-001", 2): lambda p, c=second: fact_output(p, {S1_FACT: c})}
+                gate = self.section(self.gate(fact_transport(outputs)), "### a × trad-to-en ・ 分組 general")
+                self.assertIn("淡化率：1/2（50.0%）", gate)   # 判定一致（都是 Weakened），類型沒有或不一致不影響 Gate
+                self.assertIn("失敗的事實按淡化類型：a 0、b 0、c 0、d 0、e 0、f 0、未標類型 1", gate)
 
     def test_an_absent_fact_fails_the_sentence_and_is_listed_as_absent(self):
         change = {"verdict": "Absent", "type": "d", "quote": ""}
@@ -93,9 +96,7 @@ class RateTest(GateCase):
 
     def test_a_component_missing_from_the_translation_makes_all_its_facts_absent_without_asking_the_judge(self):
         shutil.rmtree(self.data_dir)
-        gone = json.loads(json.loads(ok_response().body)["candidates"][0]["content"]["parts"][0]["text"])
-        gone["components"] = [c for c in gone["components"] if c["id"] != "9000001-002"]
-        self.run_cli("translate", transport=FakeTransport(gemini_samples.ok(json.dumps(gone, ensure_ascii=False))))
+        self.run_cli("translate", transport=FakeTransport(translation_without("9000001-002")))
         transport = fact_transport()
         gate = self.section(self.gate(transport), "### a × trad-to-en ・ 分組 general")
         self.assertEqual({user_payload(r)["component"]["id"] for r in transport.requests}, {"9000001-001"})
@@ -144,24 +145,12 @@ class DenominatorTest(GateCase):
         self.article_ids = ("9000001", "9000002", "9000003")
         self.write_json(os.path.join(self.articles_dir, "9000002.json"), source_article("9000002"))
         self.write_json(os.path.join(self.articles_dir, "9000003.json"), source_article("9000003"))
-        self.use_ground_truth(self.gt_for(("9000001", "general"), ("9000002", "general"), ("9000003", "general")))
+        self.use_ground_truth(ground_truth_for(("9000001", "general"), ("9000002", "general"), ("9000003", "general")))
         self.rewrite_experiment(lambda e: e["articles"].update(ids=list(self.article_ids)))
         self.run_cli("translate", transport=FakeTransport(ok_response(), gemini_samples.prompt_blocked(), gemini_samples.refusal()))
         gate = self.section(self.gate(), "### a × trad-to-en ・ 分組 general")
         self.assertIn("淡化率：0/2（0.0%）", gate)   # 只有 9000001 的兩句
         self.assertIn("未計入的 Run：block 1、refusal 1、其他失敗 0", gate)
-
-    @staticmethod
-    def gt_for(*articles):
-        out = []
-        for article_id, domain in articles:
-            gt = copy.deepcopy(GROUND_TRUTH["articles"][0])
-            gt["article_id"], gt["domain"] = article_id, domain
-            for item in gt["items"]:
-                item["component_id"] = item["component_id"].replace("9000001", article_id)
-            out.append(gt)
-        return {"articles": out}
-
 
 class CompletenessTest(GateCase):
     def gate_section(self, transport):
@@ -213,8 +202,54 @@ class CompletenessTest(GateCase):
         self.assertIn("過期 1", gate)
         self.assertIn("狀態：未完成", gate)
 
+    def test_pending_counts_say_what_they_count_and_unjudged_lists_its_reasons(self):
+        self.gate_section(fact_transport({"9000001-001": gemini_samples.prompt_blocked()}))
+        gate = self.section(self.report(), "### a × trad-to-en ・ 分組 general")
+        self.assertIn("待審的事實（共 3 個事實 × Run）", gate)   # 句 1 的兩條加句 2 的一條，一個 Run
+        self.assertIn("Unjudged 的原因（請求數）：block 2", gate)
+
+    def test_a_gate_with_no_sentence_that_has_a_result_is_not_finished(self):
+        shutil.rmtree(self.data_dir)
+        self.run_cli("translate", transport=FakeTransport(gemini_samples.prompt_blocked()))
+        gate = self.section(self.gate(), "### a × trad-to-en ・ 分組 general")
+        self.assertIn("狀態：未完成；沒有任何句子有結果", gate)
+        self.assertNotIn("95% 上限", gate)
+        self.assertIn("未計入的 Run：block 1", gate)
+
+    def test_a_planned_run_that_has_no_record_yet_leaves_the_gate_unfinished(self):
+        shutil.rmtree(self.data_dir)
+        self.runs = 2
+        self.write_json(self.config_path, self.experiment())
+        self.run_cli("translate", "--limit", "1", transport=FakeTransport(ok_response()))
+        gate = self.section(self.gate(), "### a × trad-to-en ・ 分組 general")
+        self.assertIn("計畫的 Run 還缺 1 個", gate)
+        self.assertIn("狀態：未完成", gate)
+
+    def test_an_error_run_leaves_the_gate_unfinished_but_a_block_does_not_by_itself(self):
+        shutil.rmtree(self.data_dir)
+        self.runs = 2
+        self.write_json(self.config_path, self.experiment())
+        self.run_cli("translate", transport=FakeTransport(ok_response(), gemini_samples.client_error()))
+        gate = self.section(self.gate(), "### a × trad-to-en ・ 分組 general")
+        self.assertIn("error 的 Run 1 個", gate)
+        self.assertIn("狀態：未完成", gate)
+        shutil.rmtree(self.data_dir)
+        self.run_cli("translate", transport=FakeTransport(ok_response(), gemini_samples.prompt_blocked()))
+        gate = self.section(self.gate(), "### a × trad-to-en ・ 分組 general")
+        self.assertIn("狀態：完成", gate)   # block 是結果，在 Block 率呈報；Run 都有紀錄
+
     def test_the_gate_says_the_judge_recall_has_not_been_measured(self):
         self.assertIn("Judge recall 未量度", self.section(self.gate(), "### a × trad-to-en ・ 分組 general"))
+
+
+class SameSentenceTest(GateCase):
+    def test_two_items_with_the_same_component_and_anchor_are_one_sentence_that_fails_if_any_fact_fails(self):
+        gt = ground_truth_for(("9000001", "general"))
+        first = gt["articles"][0]["items"][0]
+        gt["articles"][0]["items"] = [first, {**first, "must_retain": [{"kind": "quantity", "fact": "超支的金額很大"}]}, gt["articles"][0]["items"][1]]
+        self.use_ground_truth(gt)
+        gate = self.section(self.gate(fact_transport(weakened(S1_FACT))), "### a × trad-to-en ・ 分組 general")
+        self.assertIn("淡化率：1/2（50.0%）", gate)   # 兩個 item 同一句：不是 1/3，也不是 0/2（第二個 item 通過，不能蓋掉第一個的失敗）
 
 
 class GroupingTest(GateCase):
@@ -227,7 +262,7 @@ class GroupingTest(GateCase):
         self.use_groups()
 
     def use_groups(self, **ground_truth):
-        self.use_ground_truth(DenominatorTest.gt_for(*self.groups), **ground_truth)
+        self.use_ground_truth(ground_truth_for(*self.groups), **ground_truth)
         self.rewrite_experiment(lambda e: e["articles"].update(ids=list(self.article_ids)))
 
     def translate_both(self):
@@ -268,7 +303,7 @@ class GroupingTest(GateCase):
         self.assertNotIn("暫定", self.section(report, "### a × trad-to-en ・ 分組 china-political"))
         self.assertIn("主 Judge j1", self.section(report, "### a × trad-to-en ・ 分組 china-political"))
 
-    def test_only_the_primary_judge_decides_the_gate_and_an_experiment_judge_is_reported_apart_from_it(self):
+    def test_only_the_primary_judge_decides_the_gate_an_experiment_judge_does_not(self):
         other = JUDGE | {"id": "j2", "role": "experiment", "model": "gemini-3.1-other"}
         self.translate_both()
         self.use_judging(judges=(JUDGE, other))
@@ -279,7 +314,6 @@ class GroupingTest(GateCase):
             model = request.url.split("/models/")[1].split(":")[0]
             output = fact_output(payload, {S1_FACT: change}) if model == "gemini-3.1-other" else fact_output(payload)
             return gemini_samples.ok(json.dumps(output, ensure_ascii=False))
-        from fake_transport import FunctionTransport
         report = self.gate(FunctionTransport(reply))
         self.assertIn("淡化率：0/2（0.0%）", self.section(report, "### a × trad-to-en ・ 分組 general"))   # j1 說沒有問題
 
@@ -294,6 +328,15 @@ class GroupingTest(GateCase):
 
 
 class ReportContextTest(GateCase):
+    def test_the_report_lists_the_experiment_articles_that_have_no_ground_truth(self):
+        self.assertIn("實驗內沒有 ground truth 的文章（不核對）：無", self.gate())
+        shutil.rmtree(self.data_dir)
+        self.article_ids = ("9000001", "9000002")
+        self.write_json(os.path.join(self.articles_dir, "9000002.json"), source_article("9000002"))
+        self.use_ground_truth(GROUND_TRUTH)   # 只有 9000001 有 ground truth
+        self.run_cli("translate", transport=FakeTransport(ok_response("9000001"), ok_response("9000002")))
+        self.assertIn("實驗內沒有 ground truth 的文章（不核對）：9000002", self.gate())
+
     def test_the_report_opens_with_the_ground_truth_status_hash_and_the_articles_it_left_out(self):
         report = self.gate()
         self.assertIn("ground truth：draft", report)
@@ -323,3 +366,17 @@ class ReportContextTest(GateCase):
         code, out, err = self.run_cli("report")
         self.assertNotEqual(code, 0)
         self.assertIn("anchor 不是逐字子字串", err)
+
+
+class AmplificationTest(GateCase):
+    def test_amplification_flagged_by_only_one_call_is_still_counted_and_marked_as_such(self):
+        amplified = {"verdict": "Present", "type": "amplification"}
+        outputs = {("9000001-001", 1): lambda p: fact_output(p, {S1_FACT: amplified}), ("9000001-001", 2): fact_output}
+        gate = self.section(self.gate(fact_transport(outputs)), "### a × trad-to-en ・ 分組 general")
+        self.assertIn("Amplification（另計，不計入淡化率）：1（兩次一致 0、只有一次標了 1）", gate)
+        self.assertIn("淡化率：0/2（0.0%）", gate)
+
+    def test_amplification_both_calls_flagged_is_counted_as_agreed(self):
+        amplified = {"verdict": "Present", "type": "amplification"}
+        gate = self.section(self.gate(fact_transport({"9000001-001": lambda p: fact_output(p, {S1_FACT: amplified})})), "### a × trad-to-en ・ 分組 general")
+        self.assertIn("Amplification（另計，不計入淡化率）：1（兩次一致 1、只有一次標了 0）", gate)
