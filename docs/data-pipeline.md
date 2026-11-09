@@ -93,6 +93,13 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
 
 - `translate` 可以中斷後重跑同一條指令：已有紀錄的 Run 會略過；`--redo-errors` 重做結果為 `error` 的 Run（`block`、`refusal`、`malformed`、`truncated` 是結果，不會重做）。`--article <id>`（可重覆）只跑指定文章，`--limit <N>` 最多執行 N 個 Run。
 - `check` 與 `report` 每次都從 `runs.jsonl` 整份重算。`report` 發現有 `ok` 的 Run 還沒有 `check` 結果，或 `check` 之後規則、Term List、長度比例範圍改了，會停止，不產生報告；先重新執行 `check`。`check` 另寫 `components.jsonl`（每個 Component 的 Finding 與警示）和 `check-meta.json`（check 當時用的規則版本與輸入，report 靠它判斷結果有沒有過期）。規則版本由實作規則的原始碼的 hash 決定：程式的規則有任何改動，舊的 check 結果就視為過期，重跑 `check` 即可（只要幾秒，不呼叫 API）。所有 Run 都沒有譯文（例如全被 Block）時不需要 `check`。
+- **輸入版本**：實驗設定裡每個 Approach 可以寫 `input_variants`（預設只有 `full`）。`main-only` 只送 title 和 Main component（highlight、heading、paragraph、quote），tags、圖說、code 等都不送，用來看周邊內容會不會誘發 Block：
+
+  ```json
+  "approaches": [{"config": "configs/approaches/a-gemini-flash-lite.json", "runs": 3, "input_variants": ["full", "main-only"]}]
+  ```
+
+  每個輸入版本是獨立的 Run（`runs` 是每個版本各跑幾次），所以中途加上 `main-only` 重跑，只會補跑新的那些。`--dry-run` 分開列出兩個版本的請求數。報告裡兩個版本各有一節，另有「Block 誘因實驗」一節：只比較兩個版本都有紀錄的文章，列出 Block 率（按 Run、按文章）和結果不同的文章 id。
 - **Term List**：實驗設定的 `term_list` 指向 Term List 檔（放在 `data/`，格式由程式驗證，重覆條目會令指令失敗）。翻譯 prompt 只注入原文出現過的條目；`check` 在原文出現條目、譯文卻找不到任何允許的譯法時，記一個 Terminology Finding。沒有設 `term_list` 就不注入，也不做 Terminology 檢查。每個 Run 記下模型看到的那部分 Term List（原文詞與譯法）的 hash，只換排版不會變。`check` 用的 Term List 必須與翻譯時的同一份：改了原文詞或譯法，`check` 會拒絕執行（模型沒看過新的譯法），要用新的實驗 id 重新翻譯；只改嚴重度、類別或備註不影響 prompt，只需重跑 `check`（嚴重度、類別會令舊的 check 結果過期，備註不會）。格式（以虛構條目為例）：
 
   ```json

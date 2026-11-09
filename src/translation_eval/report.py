@@ -11,7 +11,7 @@ from collections import Counter
 from .check import current_check_meta
 from .config import Experiment, PlannedApproach, length_ranges, load_experiment
 from .errors import InputError
-from .schemas import ComponentResult, Dimension, Outcome, RunKey, RunRecord, WarningKind
+from .schemas import ComponentResult, Dimension, InputVariant, Outcome, RunKey, RunRecord, WarningKind
 from .store import OutputDir
 
 MAX_LISTED = 20
@@ -57,13 +57,50 @@ def render(experiment: Experiment, records: list[RunRecord], rows: list[Componen
     lines += [f"- {prompt_id}：{prompt_hash}（{n} 個 Run）" for (prompt_id, prompt_hash), n in sorted(prompts.items())]
     lines.append("")
 
-    planned_runs = {(p.config.id, d): len(cfg.articles.ids) * p.runs for p in experiment.approaches for d in cfg.directions}
-    pairs = list(planned_runs) + sorted({(r.approach, r.direction) for r in records} - set(planned_runs))   # 紀錄裡有、設定裡沒有的也列出
-    for approach_id, direction in pairs:
-        section = [r for r in records if r.approach == approach_id and r.direction == direction]
-        section_rows = [r for r in rows if r.approach == approach_id and r.direction == direction]
-        lines += section_lines(approach_id, direction, planned_runs.get((approach_id, direction)), section, section_rows)
+    # 輸入版本不同的 Run 各有一節，不混在一起算
+    planned_runs = {(p.id, d, v): len(cfg.articles.ids) * p.runs
+                    for p in experiment.approaches for d in cfg.directions for v in p.input_variants}
+    recorded = {(r.approach, r.direction, r.input_variant) for r in records}
+    sections = list(planned_runs) + sorted(recorded - set(planned_runs))   # 紀錄裡有、設定裡沒有的也列出
+    for approach_id, direction, variant in sections:
+        def in_section(item):
+            return (item.approach, item.direction, item.input_variant) == (approach_id, direction, variant)
+        lines += section_lines(approach_id, direction, variant, planned_runs.get((approach_id, direction, variant)),
+                               [r for r in records if in_section(r)], [r for r in rows if in_section(r)])
+    lines += block_incentive_lines(records)
     return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def block_rates(records: list[RunRecord]) -> str:
+    """Block 率的兩個數字：按 Run 計；按文章計（文章只要有任何一個 Run 被 Block 就算）。"""
+    articles = {r.article_id for r in records}
+    blocked_articles = {r.article_id for r in records if r.outcome is Outcome.BLOCK}
+    blocked_runs = sum(1 for r in records if r.outcome is Outcome.BLOCK)
+    return f"按 Run {format_ratio(blocked_runs, len(records))}；按文章 {format_ratio(len(blocked_articles), len(articles))}"
+
+
+def block_incentive_lines(records: list[RunRecord]) -> list[str]:
+    """Block 誘因實驗：周邊內容會不會誘發 Block。只比較兩個輸入版本都有紀錄的文章。"""
+    if not any(r.input_variant is InputVariant.MAIN_ONLY for r in records):
+        return []
+    lines = ["## Block 誘因實驗（full 與 main-only）", "",
+             "只比較兩個輸入版本都有紀錄的文章；只有一個版本的不在內。「結果不同」指文章在兩個輸入版本下，有沒有任何 Run 被 Block 不一樣。", ""]
+    for approach_id, direction in sorted({(r.approach, r.direction) for r in records if r.input_variant is InputVariant.MAIN_ONLY}):
+        by_variant = {v: [r for r in records if (r.approach, r.direction, r.input_variant) == (approach_id, direction, v)]
+                      for v in (InputVariant.FULL, InputVariant.MAIN_ONLY)}
+        common = {r.article_id for r in by_variant[InputVariant.FULL]} & {r.article_id for r in by_variant[InputVariant.MAIN_ONLY]}
+        lines += [f"### {approach_id} × {direction}", ""]
+        if not common:
+            lines += ["沒有兩個輸入版本都有紀錄的文章。", ""]
+            continue
+        compared = {v: [r for r in rs if r.article_id in common] for v, rs in by_variant.items()}
+        blocked = {v: {r.article_id for r in rs if r.outcome is Outcome.BLOCK} for v, rs in compared.items()}
+        different = sorted(blocked[InputVariant.FULL] ^ blocked[InputVariant.MAIN_ONLY])
+        lines += [f"- 比較的文章：{len(common)} 篇",
+                  f"- full：{block_rates(compared[InputVariant.FULL])}",
+                  f"- main-only：{block_rates(compared[InputVariant.MAIN_ONLY])}",
+                  f"- 結果不同的文章：{'、'.join(different) or '無'}", ""]
+    return lines
 
 
 def term_list_text(experiment: Experiment) -> str:
@@ -93,8 +130,8 @@ def approach_lines(planned: PlannedApproach, records: list[RunRecord]) -> list[s
     ]
 
 
-def section_lines(approach_id: str, direction: str, planned: int | None, records: list[RunRecord],
-                  rows: list[ComponentResult]) -> list[str]:
+def section_lines(approach_id: str, direction: str, variant: InputVariant, planned: int | None,
+                  records: list[RunRecord], rows: list[ComponentResult]) -> list[str]:
     n = len(records)
     by_outcome = Counter(r.outcome for r in records)
     reasons = Counter(r.reason for r in records if r.outcome is Outcome.BLOCK)
@@ -112,9 +149,9 @@ def section_lines(approach_id: str, direction: str, planned: int | None, records
     warnings = "、".join(f"{WARNING_LABELS[k]} {warning_counts[k]}" for k in WarningKind)
     others = "、".join(f"{o.value} {format_ratio(by_outcome[o], n)}" for o in (Outcome.MALFORMED, Outcome.TRUNCATED, Outcome.ERROR))
     return [
-        f"## {approach_id} × {direction}", "",
+        f"## {approach_id} × {direction}" + ("" if variant is InputVariant.FULL else f"（{variant}）"), "",
         f"- Run：{recorded}",
-        f"- Block 率：{format_ratio(by_outcome[Outcome.BLOCK], n)}；原因分佈：{reason_text}",
+        f"- Block 率：{block_rates(records)}；原因分佈：{reason_text}",
         f"- Refusal 率：{format_ratio(by_outcome[Outcome.REFUSAL], n)}",
         f"- 其他失敗：{others}",
         f"- 漏段數：{omissions}（已檢查 {checked_runs} 個 ok 的 Run、共 {n_components} 個 Component）",

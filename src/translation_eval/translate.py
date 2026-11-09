@@ -15,14 +15,14 @@ from datetime import datetime, timezone
 
 from pydantic import ValidationError
 
-from .articles import article_text, field_problems, load_article, request_payload
+from .articles import apply_variant, article_text, field_problems, load_article, request_payload
 from .config import PlannedApproach, load_experiment
 from .errors import InputError
 from .exchange import send_with_retries
 from .outcome import Interpretation, refusal_or_malformed
 from .prompts import PromptTemplate, translation_template
 from .providers import adapter_for
-from .schemas import Article, Direction, InputVariant, Outcome, RunKey, RunRecord, Translation
+from .schemas import Article, Direction, Outcome, RunKey, RunRecord, Translation
 from .store import OutputDir
 from .terms import LoadedTermList, entries_in
 from .transport import Transport
@@ -33,10 +33,11 @@ def plan(experiment, article_ids):
     for article_id in article_ids:
         for planned in experiment.approaches:
             for direction in experiment.config.directions:
-                for run_index in range(1, planned.runs + 1):
-                    key = RunKey(article_id=article_id, approach=planned.id, direction=direction,
-                                 input_variant=InputVariant.FULL, run_index=run_index)
-                    yield key, planned
+                for variant in planned.input_variants:
+                    for run_index in range(1, planned.runs + 1):
+                        key = RunKey(article_id=article_id, approach=planned.id, direction=direction,
+                                     input_variant=variant, run_index=run_index)
+                        yield key, planned
 
 
 def select_articles(configured: list[str], requested: list[str]) -> list[str]:
@@ -93,17 +94,20 @@ def handle(args, transport: Transport) -> int:
 
 
 def dry_run(pending, skipped: int, articles, term_list: LoadedTermList) -> int:
-    chars = 0
+    chars_by_variant, requests_by_variant = Counter(), Counter()
     destinations = {}
     for key, planned in pending:
-        article = articles[key.article_id]
-        prompt = system_prompt(translation_template(key.direction), article, term_list, key.direction)
-        chars += len(prompt) + len(user_text(article))
+        sent = apply_variant(articles[key.article_id], key.input_variant)
+        prompt = system_prompt(translation_template(key.direction), sent, term_list, key.direction)
+        chars_by_variant[key.input_variant] += len(prompt) + len(user_text(sent))
+        requests_by_variant[key.input_variant] += 1
         destinations[planned.id] = (adapter_for(planned.config).endpoint(planned.config), planned.config.concurrency)
     print("dry-run：不送出任何請求，也不寫出任何檔案")
     print(f"Run：{len(pending)}（已有紀錄而略過：{skipped}）")
     print(f"請求數：{len(pending)}")
-    print(f"估計輸入字數：{chars}")
+    for variant in sorted(requests_by_variant):
+        print(f"輸入版本 {variant}：請求數 {requests_by_variant[variant]}、估計輸入字數 {chars_by_variant[variant]}")
+    print(f"估計輸入字數：{sum(chars_by_variant.values())}")
     for approach_id, (endpoint, concurrency) in destinations.items():
         print(f"endpoint：{approach_id} {endpoint}（併發：{concurrency}）")
     return 0
@@ -131,8 +135,9 @@ def translate_one(transport: Transport, key: RunKey, planned: PlannedApproach, a
     adapter = adapter_for(approach)
     template = translation_template(key.direction)
     api_key = os.environ[approach.api_key_env]
-    prompt = system_prompt(template, article, term_list, key.direction)
-    request = adapter.build_request(approach, prompt, user_text(article), api_key)
+    sent = apply_variant(article, key.input_variant)
+    prompt = system_prompt(template, sent, term_list, key.direction)
+    request = adapter.build_request(approach, prompt, user_text(sent), api_key)
 
     exchange = send_with_retries(transport, adapter, request, approach.retry)
     result = require_translation_shape(exchange.interpretation)

@@ -48,7 +48,7 @@ class BlockedOnlyTest(Workspace):
         code, _, err = self.run_cli("report")
         self.assertEqual(code, 0, err)
         with open(os.path.join(self.out_dir, "report.md"), encoding="utf-8") as f:
-            self.assertIn("- Block 率：1/1（100.0%）", f.read())
+            self.assertIn("- Block 率：按 Run 1/1（100.0%）；按文章 1/1（100.0%）", f.read())
 
 
 class HeaderTest(ContentCheckCase):

@@ -17,7 +17,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from .articles import TAGS_ID, TAGS_TYPE, TITLE_ID, TITLE_TYPE, expected_components, load_article, source_texts, text_of
+from .articles import (TAGS_ID, TAGS_TYPE, TITLE_ID, TITLE_TYPE, apply_variant, expected_components, load_article, source_texts,
+                       text_of)
 from .config import Experiment, length_ranges, load_experiment
 from .errors import InputError
 from .outcome import looks_like_refusal
@@ -184,8 +185,8 @@ def handle(args) -> int:
     for record in ok_records:
         if record.article_id not in articles:
             articles[record.article_id] = load_article(experiment.config.articles.dir, record.article_id)
-        rows += check_run(RunKey.of(record), articles[record.article_id], out.read_translation(record),
-                          experiment.term_list.entries, ranges)
+        sent = apply_variant(articles[record.article_id], record.input_variant)   # 只核對送出去的那一份
+        rows += check_run(RunKey.of(record), sent, out.read_translation(record), experiment.term_list.entries, ranges)
 
     out.write_components(rows)
     out.write_check_meta(current_check_meta(experiment))   # 結果寫好之後才寫：中途中斷時 report 會發現它不齊

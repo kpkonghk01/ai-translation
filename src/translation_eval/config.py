@@ -8,16 +8,17 @@ from dataclasses import dataclass
 
 from .errors import InputError
 from .loading import read_model
-from .schemas import ApproachConfig, Direction, ExperimentConfig, LengthRatioRange
+from .schemas import ApproachConfig, Direction, ExperimentConfig, InputVariant, LengthRatioRange
 from .terms import LoadedTermList, load_term_list
 
 
 @dataclass(frozen=True)
 class PlannedApproach:
-    """實驗裡的一個 Approach：設定、每篇文章每個 Direction 的 Run 次數，以及設定的 hash。"""
+    """實驗裡的一個 Approach：設定、每篇文章每個 Direction 每個輸入版本的 Run 次數，以及設定的 hash。"""
     config: ApproachConfig
     runs: int
     config_hash: str
+    input_variants: tuple[InputVariant, ...]
 
     @property
     def id(self) -> str:
@@ -54,7 +55,7 @@ def load_experiment(path: str) -> Experiment:
             problems.append(f"Approach id 重覆：{approach.id}")
             continue
         seen.add(approach.id)
-        approaches.append(PlannedApproach(approach, entry.runs, config_hash(approach)))
+        approaches.append(PlannedApproach(approach, entry.runs, config_hash(approach), tuple(entry.input_variants)))
     if problems:
         raise InputError(problems)
     term_list = load_term_list(config.term_list) if config.term_list else LoadedTermList.unused()

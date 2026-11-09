@@ -25,7 +25,8 @@ SUPPORTED_DIRECTIONS = frozenset({Direction.TRAD_TO_EN})
 
 
 class InputVariant(StrEnum):
-    FULL = "full"   # main-only 隨 ticket 02 加入
+    FULL = "full"   # 整篇
+    MAIN_ONLY = "main-only"   # 只有 Main component，用於 Block 誘因實驗
 
 
 class Outcome(StrEnum):
@@ -102,6 +103,13 @@ class ArticleSet(StrictModel):
 class ApproachEntry(StrictModel):
     config: str
     runs: int = Field(ge=1)
+    input_variants: list[InputVariant] = Field(default=[InputVariant.FULL], min_length=1)
+
+    @model_validator(mode="after")
+    def _unique_variants(self):
+        if len(set(self.input_variants)) != len(self.input_variants):
+            raise ValueError("input_variants 有重覆")
+        return self
 
 
 class LengthRatioRange(StrictModel):

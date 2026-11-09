@@ -8,13 +8,16 @@ from dataclasses import dataclass
 
 from .errors import InputError
 from .loading import read_model
-from .schemas import Article
+from .schemas import Article, InputVariant
 
 TITLE_ID = "title"   # title 與 tags 沒有 id，評核時用這兩個保留的 id；type 也是同名的保留值
 TAGS_ID = "tags"
 TITLE_TYPE = "title"
 TAGS_TYPE = "tags"
 MAX_LISTED_UNKNOWN = 5
+
+# Main component：承載文章內容的 Component（title 另外處理）。main-only 的輸入只送這些
+MAIN_TYPES = frozenset({"highlight", "heading", "paragraph", "quote"})
 
 # 不翻譯的 Component：原樣保留，內容不是要評核的譯文
 UNTRANSLATED_TYPES = frozenset({"code", "video", "faq", "table"})
@@ -97,6 +100,14 @@ def source_texts(article: Article) -> dict[str, str | None]:
 
 def article_text(article: Article) -> str:
     return "\n".join(t for t in source_texts(article).values() if t)
+
+
+def apply_variant(article: Article, variant: InputVariant) -> Article:
+    """送給模型的那一份：main-only 只有 title 和 Main component，tags 與其餘 Component 都不送。
+    送出的內容、注入的 Term List 條目、check 預期收到的 Component，都以這一份為準。"""
+    if variant is InputVariant.FULL:
+        return article
+    return article.model_copy(update={"tags": [], "components": [c for c in article.components if c.type in MAIN_TYPES]})
 
 
 def request_payload(article: Article) -> dict:

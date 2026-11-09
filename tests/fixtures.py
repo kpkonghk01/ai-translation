@@ -60,6 +60,17 @@ def ok_response(article_id: str = ARTICLE_ID):
     return gemini_samples.ok(json.dumps(good_translation(source_article(article_id)), ensure_ascii=False))
 
 
+MAIN_TYPES = ("highlight", "heading", "paragraph", "quote")
+
+
+def main_only_translation(article_id: str = ARTICLE_ID) -> dict:
+    """模型收到 main-only 輸入時應該回的譯文：只有 Main component，tags 是空的。"""
+    translation = good_translation(source_article(article_id))
+    translation["tags"] = []
+    translation["components"] = [c for c in translation["components"] if c["type"] in MAIN_TYPES]
+    return translation
+
+
 def translation_with(mutate):
     """good_translation 加上一處改動，用來造出結構有問題的譯文。"""
     translation = copy.deepcopy(good_translation(source_article(ARTICLE_ID)))
@@ -98,6 +109,7 @@ class Workspace(unittest.TestCase):
 
     article_ids = ("9000001",)
     runs = 1
+    input_variants: list | None = None   # 設了才寫進實驗設定；沒設就用預設（只有 full）
     extra_experiment: dict = {}   # 併入實驗設定的欄位（例如 term_list）
 
     def setUp(self):
@@ -123,7 +135,8 @@ class Workspace(unittest.TestCase):
             "id": "tracer",
             "articles": {"dir": self.articles_dir, "ids": list(self.article_ids)},
             "directions": ["trad-to-en"],
-            "approaches": [{"config": self.approach_path, "runs": self.runs}],
+            "approaches": [{"config": self.approach_path, "runs": self.runs,
+                            **({"input_variants": self.input_variants} if self.input_variants else {})}],
             **self.extra_experiment,
         }
 
