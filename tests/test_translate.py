@@ -69,7 +69,7 @@ class RequestTest(Workspace):
     def test_run_record_stores_the_id_and_hash_of_the_prompt_template(self):
         self.sent_request()
         [record] = self.read_runs()
-        self.assertEqual(record["prompt_id"], "translate-trad-to-en.v2")
+        self.assertEqual(record["prompt_id"], "translate-trad-to-en")
         template = Path(translation_eval.__file__).parent / "prompt_templates" / f"{record['prompt_id']}.txt"
         self.assertEqual(record["prompt_hash"], hashlib.sha256(template.read_bytes()).hexdigest())
         self.assertRegex(record["config_hash"], r"^[0-9a-f]{64}$")

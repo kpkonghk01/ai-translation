@@ -58,13 +58,13 @@ class ReportTest(Workspace):
 
     def test_header_lists_the_experiment_the_approach_the_prompt_hash_and_the_model_versions_actually_returned(self):
         self.mixed_runs()
-        template = Path(translation_eval.__file__).parent / "prompt_templates" / "translate-trad-to-en.v2.txt"
+        template = Path(translation_eval.__file__).parent / "prompt_templates" / "translate-trad-to-en.txt"
         text = self.report_text()
         self.assertIn("# 評核報告：tracer", text)
         self.assertIn("- Direction：trad-to-en", text)
         self.assertIn("- 模型家族：gemini；provider：gemini；模型：gemini-3.1-flash-lite", text)
         self.assertIn("- 每篇每個 Direction 的 Run 次數：5", text)
-        self.assertIn(f"- translate-trad-to-en.v2：{hashlib.sha256(template.read_bytes()).hexdigest()}（5 個 Run）", text)
+        self.assertIn(f"- translate-trad-to-en：{hashlib.sha256(template.read_bytes()).hexdigest()}（5 個 Run）", text)
         self.assertIn(f"- 實際回應的模型版本：{gemini_samples.MODEL_VERSION}（5 個 Run）", text)
         self.assertRegex(text, r"- 設定 hash：[0-9a-f]{64}（5 個 Run）")
 

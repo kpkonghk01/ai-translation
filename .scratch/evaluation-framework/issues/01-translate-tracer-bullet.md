@@ -11,7 +11,7 @@
 - [x] 實驗設定與 Approach 設定的 schema 和驗證；設定不合法時以非 0 結束，而且不產生任何輸出
 - [x] 只有一個可注入的 HTTP transport；另有一個測試 helper，產生 Gemini 格式的回應樣本：正常譯文、`promptFeedback.blockReason`、`finishReason: SAFETY` 加部分輸出、`MAX_TOKENS`、非 JSON 的拒絕語、非 JSON 但不是拒絕語、429、5xx、不認識的格式
 - [x] Gemini adapter：safety settings 全部調到最低；回應解讀為 `ok`／`block`（附原因）／`refusal`／`malformed`／`truncated`／`error`；不認識的格式一律為 `error`，絕不當作 `ok`
-- [x] `translate` 使用 `article-json` 模式和繁→英 prompt，prompt 的版本 id 和 hash 記入 Run 紀錄
+- [x] `translate` 使用 `article-json` 模式和繁→英 prompt，prompt 的 id 和 hash 記入 Run 紀錄（不帶版本號，以 hash 識別內容）
 - [x] Run key 為「文章 × Approach × Direction × 輸入版本 × Run 序號」，按設定的次數執行
 - [x] 寫出 Run 紀錄（JSONL）、譯文和原始回應；原始回應不含 request headers
 - [x] 續跑：已有紀錄的 Run 會略過；`error` 的 Run 可以用參數指定重做
@@ -37,7 +37,7 @@
 
 - `check` 對規格沒寫的情況：多出的 Component 與重覆的 id 記為 Locale & Format／major，type 被改記為 Locale & Format／minor。缺少的 Component 照規格記為 Accuracy／omission／major。
 - Gemini：`SPII` 與 `SAFETY`、`BLOCKLIST`、`PROHIBITED_CONTENT` 一樣記為 Block；`RECITATION`、`LANGUAGE`、`OTHER` 等其他 finishReason 記為 error。
-- 翻譯 prompt：**更正（2026-11-09）**：這裡原本寫「`translate-trad-to-en.v1` 只寫 spec 第 4 節列出的要求，沒有加『不可淡化』之類的指示」，這句是錯的。v1 有一節 Fidelity：不可刪走、淡化、概括或加強任何內容，保留法律狀態與歸因、不加也不刪 hedging。煙霧測試用的就是 v1。沒有這一節的是 ticket 03 的 v2（見 03 的留言）。
+- 翻譯 prompt 只寫 spec 第 4 節列出的結構、語域和 Term List 要求，不加防淡化的指示：要看的是模型本身的反應（Pan 的決定）。沒有版本號，Run 紀錄的 hash 就是內容的身分。煙霧測試那一次用的是較早的草稿（多了一節防淡化的指示），只是試通 API，不是量度數據。
 - 實驗設定的 `runs` 必須明確寫，沒有預設值，免得忘了寫就跑出多倍費用。
 - prompt 範本由 Direction 決定，不放在 Approach 設定裡，確保同一 Direction 的所有 Approach 用同一份。
 - 文章檔的 `meta.unknown` 不是空的就拒絕翻譯，要先檢視（現有的本機文章都是空的）。

@@ -1,6 +1,7 @@
 """翻譯 prompt 範本：每個 Direction 一份，所有 Approach 共用，以保證比較公平。
 
-範本的 id 帶版本（改範本就要改 id，舊版的檔案保留，才能重現舊紀錄），Run 紀錄存 id 與檔案內容的 hash。
+範本只寫 spec 要求的結構、語域和 Term List，不加任何防淡化的指示：要看的是模型本身的反應。
+Run 紀錄存範本的 id 和檔案內容的 hash，hash 才是範本內容的身分，所以 id 不帶版本號。
 範本以 TERMINOLOGY_MARKER 分成兩段：之前是固定的指示；之後是只在文章含有 Term List 條目時才加上的一節，
 其中的 {terms} 換成條目。
 """
@@ -12,7 +13,7 @@ from pathlib import Path
 from .schemas import Direction, TermEntry
 
 _DIR = Path(__file__).parent / "prompt_templates"
-_TEMPLATE_IDS = {Direction.TRAD_TO_EN: "translate-trad-to-en.v2"}
+_TEMPLATE_IDS = {Direction.TRAD_TO_EN: "translate-trad-to-en"}
 TERMINOLOGY_MARKER = "<<TERMINOLOGY>>"
 
 
