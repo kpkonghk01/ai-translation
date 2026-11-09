@@ -41,11 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
     cal.add_argument("--dry-run", action="store_true", help="不送出請求，只印出請求數和 endpoint")
     cal.add_argument("--limit", type=_positive_int, help="最多執行幾個請求")
     cal.add_argument("--redo-errors", action="store_true", help="重做結果為 error 的請求")
-    x = sub.add_parser("crosscheck", help="模型盲選最敏感的句子、盲抽事實，與 ground truth 對照（要 key）")
-    x.add_argument("--dry-run", action="store_true", help="不送出請求，只印出請求數和 endpoint")
-    x.add_argument("--article", action="append", default=[], help="只跑這篇文章（可重覆）")
-    x.add_argument("--limit", type=_positive_int, help="最多執行幾個請求")
-    x.add_argument("--redo-errors", action="store_true", help="重做結果為 error 的請求")
+    xc = sub.add_parser("crosscheck", help="模型盲選最敏感的句子、盲抽事實，與 ground truth 對照（要 key）")
+    xc.add_argument("--dry-run", action="store_true", help="不送出請求，只印出請求數和 endpoint")
+    xc.add_argument("--article", action="append", default=[], help="只跑這篇文章（可重覆）")
+    xc.add_argument("--limit", type=_positive_int, help="最多執行幾個請求")
+    xc.add_argument("--redo-errors", action="store_true", help="重做結果為 error 的請求")
     g = sub.add_parser("gold", help="Gold set：驗證並列出數量，或抽樣給 Pan 審閱")
     g_sub = g.add_subparsers(dest="gold_command", required=True)
     g_check = g_sub.add_parser("check", help="驗證 Gold set，列出各類別、Direction、domain 的數量")
@@ -58,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     m = sub.add_parser("import-cms", help="把 CMS 匯出（CSV）轉成文章檔")
     m.add_argument("--csv", required=True, help="CMS 匯出的 CSV")
     m.add_argument("--out", default="data/cms-articles", help="文章檔的輸出目錄（預設 data/cms-articles）")
-    for p in (t, j, b, c, r, v, cal, x, g_sample):
+    for p in (t, j, b, c, r, v, cal, xc, g_sample):
         p.add_argument("--config", required=True, help="實驗設定（JSON）")
         p.add_argument("--data-dir", default="data", help="輸出目錄（預設 data）")
     g_check.add_argument("--config", required=True, help="實驗設定（JSON）")   # 只驗證，不寫任何東西

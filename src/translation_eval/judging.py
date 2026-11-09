@@ -105,11 +105,11 @@ def mqm_message(direction: Direction, pairs: list[ComponentPair], index: int, te
 
 # ───────────── 輸出的驗證 ─────────────
 
-def _is_verbatim(span: str, text: str) -> bool:
+def is_verbatim(span: str, text: str) -> bool:
     return squash(span) in squash(text)
 
 
-def _raw_text(item) -> str:
+def raw_text(item) -> str:
     """無效的條目保留供審閱：存成 JSON 文字，超過上限就截斷；序列化不了（例如巢狀太深）就說明。"""
     try:
         text = json.dumps(item, ensure_ascii=False)
@@ -134,9 +134,9 @@ def _check_finding(item, pair: ComponentPair) -> tuple[JudgeFinding | None, str]
         return None, why
     if not finding.source_span.strip() and not finding.target_span.strip():
         return None, "兩個片段都是空的"
-    if finding.source_span.strip() and not _is_verbatim(finding.source_span, pair.source_text):
+    if finding.source_span.strip() and not is_verbatim(finding.source_span, pair.source_text):
         return None, "原文片段不是逐字子字串"
-    if finding.target_span.strip() and not _is_verbatim(finding.target_span, pair.translated_text or ""):
+    if finding.target_span.strip() and not is_verbatim(finding.target_span, pair.translated_text or ""):
         return None, "譯文片段不是逐字子字串"
     if finding.subtype.strip().casefold() == SOURCE_ERROR_CORRECTION and finding.dimension is not Dimension.ACCURACY:
         return None, "疑似修正原文錯誤必須是 Accuracy"   # spec：只靠 prompt 不夠，程式要擋
@@ -145,7 +145,7 @@ def _check_finding(item, pair: ComponentPair) -> tuple[JudgeFinding | None, str]
 
 def _check_defect(item, pair: ComponentPair) -> tuple[SourceDefect | None, str]:
     defect, why = _build(SourceDefect, item)
-    if defect is not None and not _is_verbatim(defect.source_span, pair.source_text):
+    if defect is not None and not is_verbatim(defect.source_span, pair.source_text):
         return None, "原文片段不是逐字子字串"
     return defect, why
 
@@ -165,13 +165,13 @@ def interpret_output(result: Interpretation, pair: ComponentPair):
         if finding:
             findings.append(finding)
         else:
-            invalid.append(InvalidItem(kind="finding", why=why, raw=_raw_text(item)))
+            invalid.append(InvalidItem(kind="finding", why=why, raw=raw_text(item)))
     for item in defects_raw:
         defect, why = _check_defect(item, pair)
         if defect:
             defects.append(defect)
         else:
-            invalid.append(InvalidItem(kind="source_defect", why=why, raw=_raw_text(item)))
+            invalid.append(InvalidItem(kind="source_defect", why=why, raw=raw_text(item)))
     return Outcome.OK, None, findings, defects, invalid
 
 
@@ -224,7 +224,7 @@ def _check_verdict(item: dict, fact: Fact, pair: ComponentPair) -> tuple[FactVer
         return verdict.model_copy(update={"quote": ""}), ""
     if not verdict.quote.strip():
         return None, "沒有引用"
-    if not _is_verbatim(verdict.quote, pair.translated_text or ""):
+    if not is_verbatim(verdict.quote, pair.translated_text or ""):
         return None, "引用不是譯文的逐字子字串"
     return verdict, ""
 
@@ -243,7 +243,7 @@ def interpret_facts(result: Interpretation, pair: ComponentPair, sentences):
         if isinstance(fact_id, str) and fact_id in ids:   # 不是字串的 id（例如清單）不能拿去查 dict
             grouped.setdefault(fact_id, []).append(item)
         else:
-            invalid.append(InvalidItem(kind="verdict", why="不是物件" if not isinstance(item, dict) else "不認識的 fact_id", raw=_raw_text(item)))
+            invalid.append(InvalidItem(kind="verdict", why="不是物件" if not isinstance(item, dict) else "不認識的 fact_id", raw=raw_text(item)))
     verdicts = []
     for fact_id, fact in ids.items():
         items = grouped.get(fact_id, [])
@@ -254,7 +254,7 @@ def interpret_facts(result: Interpretation, pair: ComponentPair, sentences):
                 continue
         else:
             why = "沒有這條事實的 verdict" if not items else f"同一條事實有 {len(items)} 個 verdict"
-        invalid.append(InvalidItem(kind="verdict", why=why, raw=_raw_text(items[0] if len(items) == 1 else items) if items else "", fact=fact.key))
+        invalid.append(InvalidItem(kind="verdict", why=why, raw=raw_text(items[0] if len(items) == 1 else items) if items else "", fact=fact.key))
     return Outcome.OK, None, verdicts, invalid
 
 
@@ -280,14 +280,14 @@ def _check_screen_item(item, pairs: list[ComponentPair]) -> tuple[ScreenItem | N
     if type_contradicts(screened.verdict is ScreenVerdict.AMPLIFICATION, screened.weakening_type):
         return None, "verdict 與類型矛盾"
     target = screened.target_span.strip()
-    holders = [p for p in pairs if _is_verbatim(screened.source_span, p.source_text)]
+    holders = [p for p in pairs if is_verbatim(screened.source_span, p.source_text)]
     if not holders:
         return None, "原文片段不是任何一個 Component 原文的逐字子字串"
     # 標題常重覆內文的用語：原文片段在好幾個 Component 時，優先選譯文片段也在它的譯文裡的那一個
-    owner = next((p for p in holders if target and p.translated_text and _is_verbatim(target, p.translated_text)), holders[0])
+    owner = next((p for p in holders if target and p.translated_text and is_verbatim(target, p.translated_text)), holders[0])
     if screened.verdict is not ScreenVerdict.ABSENT and not target:
         return None, "Weakened 與 Amplification 要有譯文片段"
-    if target and not any(p.translated_text and _is_verbatim(target, p.translated_text) for p in pairs):
+    if target and not any(p.translated_text and is_verbatim(target, p.translated_text) for p in pairs):
         return None, "譯文片段不是逐字子字串"
     update = {"component_id": owner.id}
     if screened.verdict is ScreenVerdict.ABSENT:   # Absent 沒有譯文片段（與事實 verdict 的引用一樣）：有寫的驗證過就不留，兩次才比得起來
@@ -308,7 +308,7 @@ def interpret_screen(result: Interpretation, pairs: list[ComponentPair]):
         if screened:
             items.append(screened)
         else:
-            invalid.append(InvalidItem(kind="screening", why=why, raw=_raw_text(entry)))
+            invalid.append(InvalidItem(kind="screening", why=why, raw=raw_text(entry)))
     return Outcome.OK, None, items, invalid
 
 
@@ -385,26 +385,12 @@ def handle(args, transport: Transport) -> int:
 
     plan = plan_calls(experiment, records, articles, out, truth, tasks)
     require_allowed_families(experiment, plan)
-    pending, skipped = [], 0
-    for call in plan:
-        done = existing.get(call.key)
-        if done is None or (args.redo_errors and done.outcome is Outcome.ERROR) or call.is_stale(done):
-            pending.append(call)
-        else:
-            skipped += 1
-    if args.limit is not None:
-        pending = pending[: args.limit]
+    pending, skipped = select_pending(plan, existing, redo_errors=args.redo_errors, limit=args.limit, is_stale=lambda recorded, call: call.is_stale(recorded))
 
     if args.dry_run:
         return dry_run(pending, skipped)
 
-    judges_used = {c.judge.id: c.judge for c in pending}.values()
-    missing = sorted({j.config.api_key_env for j in judges_used if not os.environ.get(j.config.api_key_env)})
-    if missing:
-        raise InputError([f"缺少環境變數 {name}" for name in missing])
-    not_ready = sorted({p for j in judges_used for p in adapter_for(j.config).problems(j.config)})
-    if not_ready:
-        raise InputError(not_ready)
+    require_judges_ready([c.judge for c in pending])
 
     templates, outcomes = task_templates(), Counter()
     for call in pending:
@@ -431,9 +417,7 @@ def dry_run(pending: list[PlannedCall], skipped: int) -> int:
     for judge_id, n in per_judge.items():
         judge = next(c.judge for c in pending if c.judge.id == judge_id)
         print(f"Judge {judge_id}：請求數 {n}、估計輸入字數約 {chars[judge_id]}")
-        print(f"endpoint：{judge_id} {adapter_for(judge.config).endpoint(judge.config)}")
-        for line in adapter_for(judge.config).describe(judge.config):
-            print(line)
+        print_endpoint(judge)
     return 0
 
 
@@ -451,6 +435,38 @@ def interpret_call(call: PlannedCall, result: Interpretation):
 
 
 MESSAGE_BUILDERS = {"mqm": user_message, "fact": fact_message, "screen": screen_message}
+
+
+def select_pending(plan: list, existing: dict, *, redo_errors: bool, limit: int | None, is_stale) -> tuple[list, int]:
+    """plan 裡還沒有新紀錄的請求，和已有新紀錄而略過的數量（正式評核、校準、交叉檢驗共用）。plan 的每一項有 key；existing 是 key → 紀錄。
+    error 的請求只在 redo_errors 時重做；is_stale(紀錄, 請求) 為真（輸入、prompt 或設定改了）的重送；limit 只限制要送的數量。"""
+    pending, skipped = [], 0
+    for call in plan:
+        done = existing.get(call.key)
+        if done is None or (redo_errors and done.outcome is Outcome.ERROR) or is_stale(done, call):
+            pending.append(call)
+        else:
+            skipped += 1
+    return (pending if limit is None else pending[:limit]), skipped
+
+
+def require_judges_ready(judges: list[PlannedJudge]) -> None:
+    """送出任何請求之前：key 的環境變數都在、設定都沒有問題（例如 OpenRouter 的允許清單還沒確認）。只列變數名稱，不列內容。"""
+    unique = {j.id: j for j in judges}.values()
+    missing = sorted({j.config.api_key_env for j in unique if not os.environ.get(j.config.api_key_env)})
+    if missing:
+        raise InputError([f"缺少環境變數 {name}" for name in missing])
+    not_ready = sorted({p for j in unique for p in adapter_for(j.config).problems(j.config)})
+    if not_ready:
+        raise InputError(not_ready)
+
+
+def print_endpoint(judge: PlannedJudge) -> None:
+    """dry-run：資料會送到哪裡（endpoint、併發、routing）。"""
+    adapter = adapter_for(judge.config)
+    print(f"endpoint：{judge.id} {adapter.endpoint(judge.config)}（併發：{judge.config.concurrency}）")
+    for line in adapter.describe(judge.config):
+        print(line)
 
 
 def send_judge_request(transport: Transport, judge: PlannedJudge, template: PromptTemplate, message: str) -> tuple[Exchange, str]:

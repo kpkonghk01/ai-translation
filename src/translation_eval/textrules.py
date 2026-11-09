@@ -12,19 +12,6 @@ def squash(text: str) -> str:
     return re.sub(r"\s+", "", text)
 
 
-_QUOTE_SPAN = re.compile(r"[「『“]([^」』”]{2,})[」』”]")
-
-
-def digit_strings(text: str) -> set[str]:
-    """文字裡的阿拉伯數字（去掉千分位的逗號）。中文數字（三名、十年）不在內。"""
-    return {token.replace(",", "") for token in _DIGIT_TOKEN.findall(text)}
-
-
-def quoted_phrases(text: str) -> set[str]:
-    """引號（「」『』“”）裡的文字，忽略空白。"""
-    return {squash(m) for m in _QUOTE_SPAN.findall(text)}
-
-
 def quoted(text: str) -> str:
     """Markdown 的引用區塊（接在「- 標籤：」後面）：每一行都加 >，原文與譯文放進清單用。"""
     return "\n  > " + text.replace("\n", "\n  > ")
@@ -74,6 +61,19 @@ def residual_traditional(text: str, exempt: frozenset[str] = frozenset()) -> lis
 # ───────────── 數字 ─────────────
 
 _DIGIT_TOKEN = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def digit_strings(text: str) -> set[str]:
+    """文字裡的阿拉伯數字（去掉千分位的逗號）。"""
+    return {token.replace(",", "") for token in _DIGIT_TOKEN.findall(text)}
+
+
+_CHINESE_QUANTITY = re.compile(r"([零〇一二兩三四五六七八九十百千萬億]+)(?=[名人宗個年月日歲次元倍成間件項位起批度])")
+
+
+def chinese_numbers(text: str) -> set[str]:
+    """文字裡接著量詞或單位的中文數字（三名、十年、兩宗）。「兩」與「二」視為同一個。沒有量詞的（統一、唯一）不算，免得把詞的一部分當數字。"""
+    return {token.replace("兩", "二") for token in _CHINESE_QUANTITY.findall(text)}
 
 
 def missing_digit_tokens(source_text: str, translated_text: str) -> list[str]:
@@ -207,6 +207,21 @@ def missing_numbers(source_text: str, translated_text: str) -> list[str]:
 # ───────────── 直接引語 ─────────────
 
 _QUOTE_OPEN, _QUOTE_CLOSE = "「『“", "」』”"
+
+
+def quoted_phrases(text: str) -> set[str]:
+    """中文引號（「」『』“”）最外層的一對裡的文字（至少 2 字），忽略空白；巢狀的引號留在外層那一段裡。沒有閉合的不算。"""
+    phrases, depth, start = set(), 0, 0
+    for i, ch in enumerate(text):
+        if ch in _QUOTE_OPEN:
+            if depth == 0:
+                start = i + 1
+            depth += 1
+        elif ch in _QUOTE_CLOSE and depth:
+            depth -= 1
+            if depth == 0 and len(squash(text[start:i])) >= 2:
+                phrases.add(squash(text[start:i]))
+    return phrases
 _SINGLE_QUOTES = "'‘’"
 
 

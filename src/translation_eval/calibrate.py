@@ -10,7 +10,6 @@
 calibration-disagreements.md（Judge 對標註、Judge 對 Judge 的分歧，含原文與譯文，只在本機看）。Gold set 驗證不合就停止，什麼也不送、不寫。
 Judge 的角色（primary／experiment）不限：候選的 Judge 都要校準，才選得出主 Judge。校準不涉及被評的 Approach，所以沒有同家族的限制。
 """
-import os
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,11 +20,11 @@ from .config import Experiment, PlannedJudge
 from .errors import InputError
 from .gold import GoldSet, count_lines, item_hash, item_pair, item_sentences, load_gold_for
 from .ground_truth import GroundTruth, Sentence, input_hash
-from .judging import fact_request_message, interpret_facts, interpret_output, mqm_message, provider_violation_stop, send_judge_request, task_templates
+from .judging import (fact_request_message, interpret_facts, interpret_output, mqm_message, print_endpoint, provider_violation_stop, require_judges_ready,
+                      select_pending, send_judge_request, task_templates)
 from .pairs import ComponentPair
-from .providers import adapter_for
 from .prompts import PromptTemplate
-from .schemas import GoldCall, GoldItem, Outcome
+from .schemas import GoldCall, GoldItem
 from .store import OutputDir, gold_call_key
 from .terms import LoadedTermList
 from .transport import Transport
@@ -105,25 +104,11 @@ def handle(args, transport: Transport) -> int:
     templates, existing = task_templates(), {gold_call_key(c): c for c in out.read_gold_calls()}
     template_hashes = {task: template.hash for task, template in templates.items()}
 
-    pending, skipped = [], 0
-    for call in (plan_gold_calls(gold, truth, judge) if judge else []):
-        done = existing.get(call.key)
-        if done is None or (args.redo_errors and done.outcome is Outcome.ERROR) or not is_current(done, call.item_hash, call.judge, template_hashes):
-            pending.append(call)
-        else:
-            skipped += 1
-    if args.limit is not None:
-        pending = pending[: args.limit]
-
+    pending, skipped = select_pending(plan_gold_calls(gold, truth, judge) if judge else [], existing, redo_errors=args.redo_errors, limit=args.limit,
+                                      is_stale=lambda recorded, call: not is_current(recorded, call.item_hash, call.judge, template_hashes))
     if args.dry_run:
         return dry_run(pending, skipped, judge, templates)
-    if pending:
-        key_env = judge.config.api_key_env
-        if not os.environ.get(key_env):
-            raise InputError(f"缺少環境變數 {key_env}")
-        not_ready = adapter_for(judge.config).problems(judge.config)
-        if not_ready:
-            raise InputError(not_ready)
+    require_judges_ready([judge] if pending else [])
     outcomes = Counter()
     for call in pending:
         record, violation = run_gold_call(transport, call, templates[call.task], experiment.term_list, out, replaces_existing=call.key in existing)
@@ -159,7 +144,5 @@ def dry_run(pending: list[PlannedGoldCall], skipped: int, judge: PlannedJudge | 
                     + sum(len(x.source) + len(x.translation) for x in (c.item.context_before, c.item.context_after) if x)
                     + sum(len(f.text) for s in c.sentences for f in s.facts) for c in pending)
         print(f"Judge {judge.id}：估計輸入字數約 {chars}")
-        print(f"endpoint：{judge.id} {adapter_for(judge.config).endpoint(judge.config)}")
-        for line in adapter_for(judge.config).describe(judge.config):
-            print(line)
+        print_endpoint(judge)
     return 0

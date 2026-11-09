@@ -142,40 +142,14 @@ class OutputDir:
         return calls if task is None else [c for c in calls if c.task == task]
 
     def _read_all_judge_calls(self) -> list[JudgeCall]:
-        if not self.judge_calls_path.exists():
-            return []
-        calls = []
-        with open(self.judge_calls_path, encoding="utf-8") as f:
-            for n, line in enumerate(f, 1):
-                if not line.strip():
-                    continue
-                try:
-                    calls.append(JudgeCall.model_validate_json(line))
-                except ValidationError as e:
-                    raise InputError(f"{self.judge_calls_path}：第 {n} 行不是合法的 Judge 紀錄（{e.error_count()} 個錯誤）") from e
-        return calls
+        return self._read_records(self.judge_calls_path, JudgeCall, "Judge 紀錄")
 
     def write_judge_call(self, call: JudgeCall, raw: bytes | None, *, secrets: tuple[str, ...] = (), replaces_existing: bool = False) -> JudgeCall:
         """原始回應按 Run 與 Judge 存成 jsonl（每個請求一行，重做的不蓋掉舊的），最後才寫 Judge 紀錄。"""
-        stem = f"{run_stem(call)}.{call.judge}"
-        if raw is not None:
-            line = json.dumps({"task": call.task, "component": call.component_id, "call": call.call_index,
-                               "body": raw.decode("utf-8", errors="replace")}, ensure_ascii=False)
-            path = self.root / "judge-raw" / f"{stem}.jsonl"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(_scrub(line, secrets) + "\n")
-            call = call.model_copy(update={"raw_response": f"judge-raw/{stem}.jsonl"})
-        text = _scrub(call.model_dump_json(), secrets) + "\n"
-        if replaces_existing:
-            key = judge_call_key(call)
-            kept = "".join(c.model_dump_json() + "\n" for c in self.read_judge_calls(None) if judge_call_key(c) != key)
-            self._replace(self.judge_calls_path, kept + text)
-        else:
-            self.root.mkdir(parents=True, exist_ok=True)
-            with open(self.judge_calls_path, "a", encoding="utf-8") as f:
-                f.write(text)
-        return call
+        raw_path = self._append_raw(f"judge-raw/{run_stem(call)}.{call.judge}.jsonl", raw, secrets,
+                                    {"task": call.task, "component": call.component_id, "call": call.call_index})
+        return self._write_record(self.judge_calls_path, call.model_copy(update={"raw_response": raw_path}) if raw_path else call, judge_call_key,
+                                  lambda: self.read_judge_calls(None), secrets, replaces_existing)
 
     def read_translation(self, record: RunRecord) -> Translation:
         if record.translation is None:
@@ -214,70 +188,22 @@ class OutputDir:
         self._replace(self.report_path, text)
 
     def read_gold_calls(self) -> list[GoldCall]:
-        if not self.gold_calls_path.exists():
-            return []
-        calls = []
-        with open(self.gold_calls_path, encoding="utf-8") as f:
-            for n, line in enumerate(f, 1):
-                if not line.strip():
-                    continue
-                try:
-                    calls.append(GoldCall.model_validate_json(line))
-                except ValidationError as e:
-                    raise InputError(f"{self.gold_calls_path}：第 {n} 行不是合法的校準紀錄（{e.error_count()} 個錯誤）") from e
-        return calls
+        return self._read_records(self.gold_calls_path, GoldCall, "校準紀錄")
 
     def write_gold_call(self, call: GoldCall, raw: bytes | None, *, secrets: tuple[str, ...] = (), replaces_existing: bool = False) -> GoldCall:
         """原始回應按 Judge 存成 jsonl（每個請求一行，重做的不蓋掉舊的），最後才寫校準紀錄。"""
-        if raw is not None:
-            line = json.dumps({"item": call.item_id, "task": call.task, "call": call.call_index, "body": raw.decode("utf-8", errors="replace")}, ensure_ascii=False)
-            path = self.root / "gold-raw" / f"{call.judge}.jsonl"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(_scrub(line, secrets) + "\n")
-            call = call.model_copy(update={"raw_response": f"gold-raw/{call.judge}.jsonl"})
-        text = _scrub(call.model_dump_json(), secrets) + "\n"
-        if replaces_existing:
-            kept = "".join(c.model_dump_json() + "\n" for c in self.read_gold_calls() if gold_call_key(c) != gold_call_key(call))
-            self._replace(self.gold_calls_path, kept + text)
-        else:
-            self.root.mkdir(parents=True, exist_ok=True)
-            with open(self.gold_calls_path, "a", encoding="utf-8") as f:
-                f.write(text)
-        return call
+        raw_path = self._append_raw(f"gold-raw/{call.judge}.jsonl", raw, secrets, {"item": call.item_id, "task": call.task, "call": call.call_index})
+        return self._write_record(self.gold_calls_path, call.model_copy(update={"raw_response": raw_path}) if raw_path else call, gold_call_key,
+                                  self.read_gold_calls, secrets, replaces_existing)
 
     def read_crosscheck_calls(self) -> list[CrosscheckCall]:
-        if not self.crosscheck_calls_path.exists():
-            return []
-        calls = []
-        with open(self.crosscheck_calls_path, encoding="utf-8") as f:
-            for n, line in enumerate(f, 1):
-                if not line.strip():
-                    continue
-                try:
-                    calls.append(CrosscheckCall.model_validate_json(line))
-                except ValidationError as e:
-                    raise InputError(f"{self.crosscheck_calls_path}：第 {n} 行不是合法的交叉檢驗紀錄（{e.error_count()} 個錯誤）") from e
-        return calls
+        return self._read_records(self.crosscheck_calls_path, CrosscheckCall, "交叉檢驗紀錄")
 
     def write_crosscheck_call(self, call: CrosscheckCall, raw: bytes | None, *, secrets: tuple[str, ...] = (), replaces_existing: bool = False) -> CrosscheckCall:
         """原始回應按模型存成 jsonl（每個請求一行，重做的不蓋掉舊的），最後才寫紀錄。"""
-        if raw is not None:
-            line = json.dumps({"article": call.article_id, "body": raw.decode("utf-8", errors="replace")}, ensure_ascii=False)
-            path = self.root / "crosscheck-raw" / f"{call.judge}.jsonl"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(_scrub(line, secrets) + "\n")
-            call = call.model_copy(update={"raw_response": f"crosscheck-raw/{call.judge}.jsonl"})
-        text = _scrub(call.model_dump_json(), secrets) + "\n"
-        if replaces_existing:
-            kept = "".join(c.model_dump_json() + "\n" for c in self.read_crosscheck_calls() if crosscheck_call_key(c) != crosscheck_call_key(call))
-            self._replace(self.crosscheck_calls_path, kept + text)
-        else:
-            self.root.mkdir(parents=True, exist_ok=True)
-            with open(self.crosscheck_calls_path, "a", encoding="utf-8") as f:
-                f.write(text)
-        return call
+        raw_path = self._append_raw(f"crosscheck-raw/{call.judge}.jsonl", raw, secrets, {"article": call.article_id})
+        return self._write_record(self.crosscheck_calls_path, call.model_copy(update={"raw_response": raw_path}) if raw_path else call, crosscheck_call_key,
+                                  self.read_crosscheck_calls, secrets, replaces_existing)
 
     def write_crosscheck(self, text: str) -> None:
         self._replace(self.crosscheck_path, text)
@@ -317,6 +243,44 @@ class OutputDir:
             self.root.mkdir(parents=True, exist_ok=True)
             with open(self.runs_path, "a", encoding="utf-8") as f:
                 f.write(line)
+        return record
+
+    def _read_records(self, path: Path, model, what: str) -> list:
+        """JSONL 的紀錄檔。壞掉的一行令指令失敗，不略過：略過就會重送請求，或漏算結果。"""
+        if not path.exists():
+            return []
+        records = []
+        with open(path, encoding="utf-8") as f:
+            for n, line in enumerate(f, 1):
+                if not line.strip():
+                    continue
+                try:
+                    records.append(model.model_validate_json(line))
+                except ValidationError as e:
+                    raise InputError(f"{path}：第 {n} 行不是合法的{what}（{e.error_count()} 個錯誤）") from e
+        return records
+
+    def _append_raw(self, relative: str, raw: bytes | None, secrets: tuple[str, ...], fields: dict) -> str | None:
+        """原始回應加一行到 jsonl（key 先換成 [REDACTED]）；沒有回應（例如 timeout）就不寫。回傳寫入的相對路徑。"""
+        if raw is None:
+            return None
+        line = json.dumps({**fields, "body": raw.decode("utf-8", errors="replace")}, ensure_ascii=False)
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(_scrub(line, secrets) + "\n")
+        return relative
+
+    def _write_record(self, path: Path, record, key, read_all, secrets: tuple[str, ...], replaces_existing: bool):
+        """寫一筆紀錄（key 先換成 [REDACTED]）。replaces_existing：整份重寫，換掉同一個請求的舊紀錄；否則附加在檔案後面。"""
+        text = _scrub(record.model_dump_json(), secrets) + "\n"
+        if replaces_existing:
+            kept = "".join(c.model_dump_json() + "\n" for c in read_all() if key(c) != key(record))
+            self._replace(path, kept + text)
+        else:
+            self.root.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(text)
         return record
 
     def _write(self, relative: str, data: bytes) -> str:

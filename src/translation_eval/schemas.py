@@ -733,17 +733,12 @@ class GoldCall(JudgeRecord):
 
 # ───────────── 交叉檢驗 ─────────────
 
-class CrosscheckFact(StrictModel):
-    kind: FactKind
-    fact: NonBlank
-
-
 class CrosscheckSentence(StrictModel):
     """模型盲選的一個最敏感的句子，連同它抽的事實。sentence 已通過逐字驗證（連續空白忽略後是 component_id 那個 Component 的子字串）。"""
     component_id: NonBlank
     sentence: NonBlank
     why: str = ""
-    facts: list[CrosscheckFact] = Field(min_length=1)
+    facts: list[GtFact] = Field(min_length=1)   # 事實的格式與 ground truth 的一樣
 
 
 class CrosscheckCall(RequestRecord):

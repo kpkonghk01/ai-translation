@@ -3,12 +3,18 @@
 import copy
 import json
 import os
+import shutil
+import tempfile
+from pathlib import Path
+from unittest import mock
 
 import gemini_samples
 import openrouter_samples
 from fake_transport import FakeTransport, FunctionTransport
-from fixtures import FAKE_KEY, JUDGE, Workspace, source_article
-from unittest import mock
+from fixtures import FAKE_KEY, JUDGE, KEY_ENV, Workspace, source_article
+from translation_eval import prompts
+from translation_eval.crosscheck import MAX_SENTENCES
+from translation_eval.schemas import FactKind
 
 QWEN = JUDGE | {"id": "q1", "role": "experiment", "family": "qwen", "model": "qwen-fake"}
 GEMINI = JUDGE | {"id": "g1", "role": "primary", "family": "gemini", "model": "gemini-fake"}
@@ -71,8 +77,6 @@ class CrosscheckCase(Workspace):
 
     def setUp(self):
         super().setUp()
-        for article_id in self.article_ids:
-            self.write_json(os.path.join(self.articles_dir, f"{article_id}.json"), source_article(article_id))
         self.use_judging(judges=(QWEN, GEMINI))
         self.truth_path = self.use_ground_truth(TRUTH)
         self.extra_experiment["crosscheck"] = {"judge": "q1", "reference_judge": "g1"}
@@ -116,24 +120,44 @@ class RequestTest(CrosscheckCase):
             self.assertEqual(set(payload), {"title", "components"})
             self.assertEqual([c["id"] for c in payload["components"]][:2], [f"{article_of(request)}-001", f"{article_of(request)}-002"])
             self.assertEqual(payload["components"][0]["text"], SENTENCE_001)
-            everything = request.body.decode("utf-8")
-            for text in GT_ONLY_TEXTS:
+            everything = json.dumps(payload, ensure_ascii=False)   # 使用者訊息；系統 prompt 另外在 prompt 的測試檢查
+            for text in [*GT_ONLY_TEXTS, "china-political", "sensitive", "control", "domain", "general", "must_retain", "anchor"]:
                 self.assertNotIn(text, everything, text)
             self.assertNotIn("embed", everything)   # code 不翻譯，不給模型看
 
-    def test_the_prompt_asks_for_verbatim_sentences_and_defines_the_kinds_without_naming_any_ground_truth(self):
+    def test_the_prompt_asks_for_verbatim_sentences_defines_every_kind_and_does_not_mention_a_ground_truth(self):
         transport = routed()
         self.run_ok(transport=transport)
         prompt = json.loads(transport.requests[0].body)["systemInstruction"]["parts"][0]["text"]
-        for term in ("verbatim", "most sensitive", "actor", "legal_status", "attribution", "at most 10"):
+        for term in ("verbatim", "most sensitive", f"at most {MAX_SENTENCES}", *(k.value for k in FactKind)):   # 每一種 kind 都定義了；上限與程式的常數一致
             self.assertIn(term, prompt)
+        self.assertNotIn("ground truth", prompt.lower())
 
-    def test_a_rerun_skips_current_records_and_a_changed_article_or_judge_setup_resends_them(self):
+    def resent(self) -> list[tuple[str, str]]:
+        transport = routed()
+        self.run_ok(transport=transport)
+        return sorted((r.url.split("/models/")[1].split(":")[0], article_of(r)) for r in transport.requests)
+
+    def test_a_rerun_skips_current_records_and_a_changed_prompt_or_judge_setup_resends_them(self):
         self.run_ok()
         transport = routed()
         out = self.run_ok(transport=transport)
         self.assertEqual(transport.requests, [])
         self.assertIn("已有新的紀錄而略過：3", out)
+        with tempfile.TemporaryDirectory() as templates:   # prompt 改了：全部重送
+            shutil.copytree(prompts._DIR, os.path.join(templates, "t"))
+            with open(os.path.join(templates, "t", "crosscheck.txt"), "a", encoding="utf-8") as f:
+                f.write("\nAn extra sentence in the prompt.\n")
+            with mock.patch.object(prompts, "_DIR", Path(templates) / "t"):
+                self.assertEqual(len(self.resent()), 3)
+        self.run_ok()   # 先讓全部回到新的狀態
+        self.use_judging(judges=(QWEN | {"timeout_seconds": 31}, GEMINI))   # 只有 q1 的設定改了：q1 的兩個請求重送
+        self.extra_experiment["crosscheck"] = {"judge": "q1", "reference_judge": "g1"}
+        self.write_json(self.config_path, self.experiment())
+        self.assertEqual(self.resent(), [("qwen-fake", "9000001"), ("qwen-fake", "9000002")])
+
+    def test_a_changed_article_resends_only_that_articles_requests(self):
+        self.run_ok()
         article = source_article("9000001")
         article["components"][0]["text"] = "翻新工程延誤半年，預算超支。另加一句。"
         self.write_json(os.path.join(self.articles_dir, "9000001.json"), article)
@@ -172,7 +196,7 @@ class RequestTest(CrosscheckCase):
         transport = FakeTransport()
         code, out, err = self.crosscheck(transport=transport)
         self.assertNotEqual(code, 0)
-        self.assertIn("缺少環境變數 GEMINI_API_KEY", err)
+        self.assertIn(f"缺少環境變數 {KEY_ENV}", err)
         self.assertEqual(transport.requests, [])
         self.assertFalse(os.path.exists(os.path.join(self.out_dir, "crosscheck.md")))
 
@@ -184,11 +208,15 @@ class RequestTest(CrosscheckCase):
 
 
 class ValidationTest(CrosscheckCase):
-    def first(self, picks):
+    def first_raw(self, output):
+        """盲抽的模型對 9000001 回 output（picks 的 dict 或整個回應）：回傳它的紀錄。每次重跑，不沿用上一個子測試的紀錄。"""
         if os.path.exists(self.out_dir):
-            os.remove(os.path.join(self.out_dir, "crosscheck-calls.jsonl"))   # 每個子測試重跑，不沿用上一個的紀錄
-        self.run_ok(transport=routed(qwen=lambda article_id: {"sentences": picks} if article_id == "9000001" else qwen_picks(article_id)))
+            os.remove(os.path.join(self.out_dir, "crosscheck-calls.jsonl"))
+        self.run_ok(transport=routed(qwen=lambda article_id: output if article_id == "9000001" else qwen_picks(article_id)))
         return next(c for c in self.calls() if (c["judge"], c["article_id"]) == ("q1", "9000001"))
+
+    def first(self, picks):
+        return self.first_raw({"sentences": picks})
 
     def test_a_sentence_taken_from_the_source_is_kept_with_its_facts(self):
         call = self.first([pick("9000001-001", SENTENCE_001, [("quantity", "工程延誤 6 個月")])])
@@ -217,19 +245,14 @@ class ValidationTest(CrosscheckCase):
         self.assertEqual(len(call["invalid"]), 1)
         call = self.first([pick("9000001-001", SENTENCE_001, [("rumour", "傳聞")]), {"component_id": "9000001-002", "sentence": SENTENCE_002, "facts": []}])
         self.assertEqual(call["sentences"], [])
-        self.assertGreaterEqual(len(call["invalid"]), 2)
+        self.assertEqual(len(call["invalid"]), 3)   # 壞事實 1、那一句因為沒有有效的事實被丟 1、第二句沒有事實被丟 1
 
     def test_an_output_that_is_not_the_expected_shape_is_malformed_and_a_block_is_recorded_as_such(self):
-        for output, expected in (({"sentences": "no"}, "malformed"), ({"picks": []}, "malformed"), (gemini_samples.prompt_blocked(), "block")):
+        for output, expected in (({"sentences": "no"}, "malformed"), ({"picks": []}, "malformed"), (gemini_samples.prompt_blocked(), "block"),
+                                 (gemini_samples.refusal(), "refusal")):
             with self.subTest(expected):
                 call = self.first_raw(output)
                 self.assertEqual((call["outcome"], call["sentences"]), (expected, []))
-
-    def first_raw(self, output):
-        if os.path.exists(self.out_dir):
-            os.remove(os.path.join(self.out_dir, "crosscheck-calls.jsonl"))
-        self.run_ok(transport=routed(qwen=lambda article_id: output if article_id == "9000001" else qwen_picks(article_id)))
-        return next(c for c in self.calls() if (c["judge"], c["article_id"]) == ("q1", "9000001"))
 
 
 class ComparisonTest(CrosscheckCase):
@@ -266,7 +289,7 @@ class ComparisonTest(CrosscheckCase):
         self.assertNotIn("差異", both)
 
     def test_a_ground_truth_anchor_that_is_only_part_of_the_models_sentence_still_matches(self):
-        self.assertIn("兩邊都有 1", self.article("9000002"))   # anchor「延誤半年」是模型選的整句的一段
+        self.assertIn("- 兩邊都有 1、只有模型選了 0、只有 ground truth 有 0", self.article("9000002"))   # anchor「延誤半年」是模型選的整句的一段
 
     def test_the_reference_model_section_lists_what_it_found_and_the_blind_model_did_not_and_says_it_is_reference_only(self):
         political = self.article("9000002")
@@ -277,26 +300,39 @@ class ComparisonTest(CrosscheckCase):
         self.assertIn("attribution：不滿的是陳虛構本人", reference)
         self.assertNotIn("參考", self.article("9000001"))   # general 的文章不跑對照
 
-    def test_the_summary_counts_and_the_header_say_the_ground_truth_is_read_only(self):
-        self.assertIn("- 兩邊都有的句子：2", self.text)
-        self.assertIn("- 只有模型選了的句子：1", self.text)
-        self.assertIn("- 只有 ground truth 有的句子：1", self.text)
+    def test_the_counts_are_listed_per_domain_and_the_political_group_is_marked_reference_only(self):
+        self.assertIn("- general：兩邊都有的句子 1；只有模型選了的句子 1；只有 ground truth 有的句子 1；丟掉的句子 0；丟掉的事實 0", self.text)
+        political = next(line for line in self.text.splitlines() if line.startswith("- china-political"))
+        self.assertIn("（只作參考，不用來改 ground truth）", political)
+        self.assertIn("兩邊都有的句子 1；只有模型選了的句子 0；只有 ground truth 有的句子 0", political)
+        self.assertIn("參考：對照模型抽到而盲抽的模型沒抽到的句子 2", political)
+
+    def test_the_header_says_the_ground_truth_is_read_only_and_names_the_models_and_the_sentence_limit(self):
         self.assertIn("只讀，crosscheck 不改動它", self.text)
         self.assertRegex(self.text, r"hash [0-9a-f]{64}")
+        self.assertIn("盲抽的模型：Judge q1（qwen-fake）；對照：Judge g1（gemini-fake），只在 china-political 的文章跑", self.text)
+        self.assertIn(f"每篇最多選 {MAX_SENTENCES} 句", self.text)
+
+    def test_every_political_article_says_it_is_reference_only_but_the_general_article_does_not(self):
+        caveat = "這一組只作參考，不用來改 ground truth"
+        self.assertIn(caveat, self.article("9000002"))
+        self.assertNotIn(caveat, self.article("9000001"))
 
     def test_an_article_without_a_result_says_so_instead_of_being_left_out(self):
         os.remove(os.path.join(self.out_dir, "crosscheck-calls.jsonl"))
         self.run_ok("--article", "9000001", transport=routed())   # 只重跑 9000001
         text = self.output_text("crosscheck.md")
-        self.assertIn("盲抽的模型：還沒有結果", text.split("## 文章 9000002")[1])
-        self.assertIn("- 沒有結果的文章：1", text)
+        political = text.split("## 文章 9000002")[1]
+        self.assertIn("盲抽的模型 Judge q1：還沒有結果", political)
+        self.assertIn("對照的模型 Judge g1：還沒有結果", political)   # 對照模型沒結果也要說，不能和「抽到的都被涵蓋了」看起來一樣
+        self.assertIn("沒有結果的文章 還沒有跑 1", text)
 
     def test_a_result_for_an_article_that_changed_since_is_not_used(self):
         article = source_article("9000002")
         article["components"][0]["text"] = "翻新工程延誤半年，預算超支。又多一句。"
         self.write_json(os.path.join(self.articles_dir, "9000002.json"), article)
         self.run_ok("--article", "9000001", transport=routed())   # 只重畫清單：9000002 的舊結果過期
-        self.assertIn("盲抽的模型：還沒有結果", self.output_text("crosscheck.md").split("## 文章 9000002")[1])
+        self.assertIn("盲抽的模型 Judge q1：還沒有結果", self.output_text("crosscheck.md").split("## 文章 9000002")[1])
 
 
 class CoverageTest(CrosscheckCase):
@@ -304,16 +340,130 @@ class CoverageTest(CrosscheckCase):
         self.run_ok(transport=routed(qwen=qwen, gemini=gemini))
         return self.section(self.output_text("crosscheck.md").split("## 文章 9000002")[1], "### 參考：Judge g1 抽到、Judge q1 沒抽到的事實（只作參考，不用來改 ground truth）")
 
-    def test_a_reference_fact_counts_as_covered_only_when_the_same_kind_has_the_same_numbers_and_quotes(self):
-        same_sentence = lambda fact, kind="act": {"sentences": [pick("9000002-001", SENTENCE_001, [(kind, fact)])]}   # noqa: E731
-        # 同一種 kind、數字也一樣：涵蓋了
-        self.assertIn("沒有。", self.reference_section(lambda a: same_sentence("預算超支 30 萬元"), lambda a: same_sentence("預算超支 30 萬元")))
+    def gaps(self, blind_fact, reference_fact, blind_kind="act", reference_kind="act") -> str:
+        """兩個模型對 9000002 的同一句各抽一條事實：回傳「參考」一節。每次重跑。"""
+        if os.path.exists(self.out_dir):
+            os.remove(os.path.join(self.out_dir, "crosscheck-calls.jsonl"))
+        one = lambda kind, fact: {"sentences": [pick("9000002-001", SENTENCE_001, [(kind, fact)])]}   # noqa: E731
+        return self.reference_section(lambda a: one(blind_kind, blind_fact), lambda a: one(reference_kind, reference_fact))
+
+    def test_a_reference_fact_is_covered_when_the_blind_model_has_a_fact_with_the_same_numbers_quotes_and_wording(self):
+        self.assertIn("沒有。", self.gaps("預算超支 30 萬元", "預算超支 30 萬元"))
+        self.assertIn("沒有。", self.gaps("市政廳的預算超支 30 萬元", "預算超支 30 萬元"))   # 說得更長也涵蓋
+
+    def test_a_reference_fact_is_not_covered_when_the_numbers_the_quotes_or_the_whole_wording_differ(self):
+        self.assertIn("act：預算超支 30 萬元", self.gaps("預算超支 300 萬元", "預算超支 30 萬元"))   # 數字 30 對 300
+        self.assertIn("quote：稱「預算超支」", self.gaps("稱「延誤」", "稱「預算超支」", "quote", "quote"))   # 引語不同
+        self.assertIn("detail：施工單位疏忽職守", self.gaps("預算超支", "施工單位疏忽職守", "detail", "detail"))   # 兩條講的是不同的事
+        self.assertIn("act：三名男子被捕", self.gaps("兩名男子被捕", "三名男子被捕"))   # 中文數字不同
+
+    def test_the_kind_does_not_matter_because_two_models_may_label_the_same_fact_differently(self):
+        self.assertIn("沒有。", self.gaps("預算超支 30 萬元", "預算超支 30 萬元", blind_kind="detail", reference_kind="act"))
+
+
+class ReferenceAndFailureTest(CrosscheckCase):
+    def political(self) -> str:
+        return self.output_text("crosscheck.md").split("## 文章 9000002")[1]
+
+    def test_a_blocked_blind_model_is_a_result_of_its_own_and_the_reference_model_is_still_listed(self):
+        self.run_ok(transport=routed(qwen=lambda article_id: gemini_samples.prompt_blocked() if article_id == "9000002" else qwen_picks(article_id)))
+        political = self.political()
+        self.assertIn("盲抽的模型 Judge q1：請求結果是 block", political)
+        self.assertIn("這本身就是結果，與「評了但漏看」不同", political)
+        reference = self.section(political, "### 參考：Judge g1 抽到、Judge q1 沒抽到的事實（盲抽的模型 Judge q1 沒有結果，所以對照模型的全部事實都列出）（只作參考，不用來改 ground truth）")
+        self.assertIn("盲抽的模型沒有選這一句", reference)
+        self.assertIn("act：預算超支 30 萬元", reference)
+        self.assertIn("沒有結果的文章 block 1", self.output_text("crosscheck.md"))   # 與「還沒有跑」分開計
+
+    def test_a_reference_model_that_has_no_result_says_so_and_one_that_ran_with_nothing_missing_says_none(self):
+        self.run_ok(transport=routed(gemini=lambda article_id: gemini_samples.client_error()))
+        political = self.political()
+        self.assertIn("對照的模型 Judge g1：請求結果是 error", political)
+        self.assertNotIn("### 參考", political)   # 沒有對照的結果：不寫「沒有」，免得和「Gemini 抽到的都被涵蓋」一樣
         os.remove(os.path.join(self.out_dir, "crosscheck-calls.jsonl"))
-        # 同一種 kind、數字不同（30 對 300）：沒涵蓋
-        self.assertIn("act：預算超支 30 萬元", self.reference_section(lambda a: same_sentence("預算超支 300 萬元"), lambda a: same_sentence("預算超支 30 萬元")))
-        os.remove(os.path.join(self.out_dir, "crosscheck-calls.jsonl"))
-        # 引語不同：沒涵蓋
-        self.assertIn("quote：稱「預算超支」", self.reference_section(lambda a: same_sentence("稱「延誤」", "quote"), lambda a: same_sentence("稱「預算超支」", "quote")))
+        same = lambda a: {"sentences": [pick("9000002-001", SENTENCE_001, [("detail", "延誤半年")])]}   # noqa: E731
+        self.run_ok(transport=routed(qwen=same, gemini=same))
+        self.assertIn("沒有。", self.section(self.political(), "### 參考：Judge g1 抽到、Judge q1 沒抽到的事實（只作參考，不用來改 ground truth）"))
+
+    def test_the_dropped_sentences_and_facts_are_shown_for_each_model_separately(self):
+        bad_gemini = lambda a: {"sentences": [pick("9000002-001", "翻新工程嚴重延誤", [("act", "x")]), pick("9000002-001", SENTENCE_001, [("act", "預算超支"), ("rumour", "傳聞")])]}   # noqa: E731
+        self.run_ok(transport=routed(gemini=bad_gemini))
+        political = self.political()
+        self.assertIn("對照的模型 Judge g1：選了 1 句；丟掉的句子 1、丟掉的事實 1", political)
+        self.assertIn("盲抽的模型 Judge q1：選了 1 句；丟掉的句子 0、丟掉的事實 0", political)
+
+    def test_a_sentence_chosen_twice_is_kept_once_with_the_facts_merged(self):
+        twice = lambda a: {"sentences": [pick("9000002-001", SENTENCE_001, [("detail", "延誤半年")]), pick("9000002-001", " 翻新工程延誤半年，預算超支。 ", [("detail", "延誤半年"), ("act", "預算超支")])]}   # noqa: E731
+        self.run_ok(transport=routed(qwen=twice))
+        call = next(c for c in self.calls() if (c["judge"], c["article_id"]) == ("q1", "9000002"))
+        self.assertEqual(len(call["sentences"]), 1)
+        self.assertEqual([f["fact"] for f in call["sentences"][0]["facts"]], ["延誤半年", "預算超支"])
+
+    def test_a_model_that_filled_the_limit_is_flagged_because_the_ground_truth_only_list_may_be_cut_off_by_it(self):
+        pieces = ["翻新工程", "延誤半年", "預算超支", "翻新", "工程", "延誤", "半年", "預算", "超支", "工程延誤"]
+        full = lambda a: {"sentences": [pick("9000001-001", piece, [("detail", piece)]) for piece in pieces]}   # noqa: E731
+        self.run_ok(transport=routed(qwen=full))
+        self.assertIn(f"選滿 {MAX_SENTENCES} 句（ground truth 的句子更多時，「只有 ground truth 有」可能是上限造成的）", self.output_text("crosscheck.md"))
+
+
+class MatchingTest(CrosscheckCase):
+    """句子的配對與事實的差異：一個模型句子蓋住兩個 anchor、同一個詞出現兩次、跨欄位、中文數字、巢狀引號。"""
+
+    def article_with(self, article_id: str, mutate) -> None:
+        article = source_article(article_id)
+        mutate(article)
+        self.write_json(os.path.join(self.articles_dir, f"{article_id}.json"), article)
+
+    def crosscheck_with(self, qwen) -> str:
+        self.run_ok(transport=routed(qwen=qwen))
+        return self.output_text("crosscheck.md").split("## 文章 9000001")[1].split("\n## 文章 ", 1)[0]
+
+    def test_one_model_sentence_that_covers_two_ground_truth_anchors_is_one_group_and_the_differences_are_computed_on_the_whole_group(self):
+        self.edited_truth(lambda a: a[0]["items"].insert(1, {"component_id": "9000001-001", "anchor": "翻新工程", "why": "虛構", "must_retain": [{"kind": "quantity", "fact": "翻新 2 棟樓"}]}))
+        whole = lambda a: {"sentences": [pick("9000001-001", SENTENCE_001, [("quantity", "工程延誤 6 個月"), ("act", "預算超支 30 萬元"), ("quantity", "翻新 2 棟樓")])]}   # noqa: E731
+        article = self.crosscheck_with(whole)
+        both = self.section(article, "### 兩邊都有的句子")
+        self.assertEqual(sum(1 for line in both.splitlines() if line.startswith("- `")), 1)   # 一組，一個項目
+        self.assertIn("ground truth 的句子：「預算超支」 ・ ground truth 的句子：「翻新工程」", both)
+        self.assertNotIn("差異", both)   # 兩邊事實的數字合起來一樣
+        self.assertIn("- 兩邊都有 1、只有模型選了 0、只有 ground truth 有 1", article)   # 002 那句模型沒選
+
+    def test_two_model_sentences_that_overlap_the_same_anchor_are_listed_in_the_same_group(self):
+        article = self.crosscheck_with(lambda a: {"sentences": [pick("9000001-001", SENTENCE_001, [("quantity", "工程延誤 6 個月")]), pick("9000001-001", "預算超支", [("act", "預算超支 30 萬元")])]})
+        both = self.section(article, "### 兩邊都有的句子")
+        self.assertEqual(sum(1 for line in both.splitlines() if line.startswith("- `")), 1)
+        self.assertEqual(both.count("模型選的句子："), 2)
+        self.assertIn("- 兩邊都有 1、只有模型選了 0、只有 ground truth 有 1", article)
+
+    def test_a_phrase_that_occurs_twice_in_a_component_still_matches_when_any_occurrence_overlaps(self):
+        self.article_with("9000001", lambda article: article["components"][0].update(text="預算超支，工程延誤，預算超支。"))
+        article = self.crosscheck_with(lambda a: {"sentences": [pick("9000001-001", "工程延誤，預算超支。", [("act", "預算超支")])]})   # anchor「預算超支」出現兩次，第二次與這句重疊
+        self.assertIn("- 兩邊都有 1、只有模型選了 0、只有 ground truth 有 1", article)
+
+    def test_a_sentence_that_only_touches_an_anchor_without_overlapping_it_does_not_match(self):
+        article = self.crosscheck_with(lambda a: {"sentences": [pick("9000001-001", "翻新工程延誤半年，", [("detail", "延誤半年")])]})   # 緊接在 anchor「預算超支」之前
+        self.assertIn("- 兩邊都有 0、只有模型選了 1、只有 ground truth 有 2", article)
+
+    def test_a_sentence_that_runs_across_two_fields_of_one_component_is_dropped(self):
+        self.article_with("9000001", lambda article: article["components"].append({"id": "9000001-005", "type": "quote", "text": "他說會調查", "source": "市政署發言人"}))
+        call = self.first_call(lambda a: {"sentences": [pick("9000001-005", "他說會調查市政署發言人", [("quote", "x")]), pick("9000001-005", "他說會調查", [("quote", "x")])]})
+        self.assertEqual([s["sentence"] for s in call["sentences"]], ["他說會調查"])
+        self.assertEqual(len(call["invalid"]), 1)
+
+    def first_call(self, qwen) -> dict:
+        self.run_ok(transport=routed(qwen=qwen))
+        return next(c for c in self.calls() if (c["judge"], c["article_id"]) == ("q1", "9000001"))
+
+    def test_chinese_numbers_with_a_measure_word_are_compared_but_words_that_merely_contain_a_numeral_are_not(self):
+        self.edited_truth(lambda a: a[0]["items"][0].update(must_retain=[{"kind": "quantity", "fact": "三名男子被捕，統一行動"}]))
+        article = self.crosscheck_with(lambda a: {"sentences": [pick("9000001-001", SENTENCE_001, [("quantity", "兩名男子被捕，唯一行動")])]})
+        self.assertIn("中文數字差異：只有 ground truth 有 三；只有模型有 二", article)   # 統一、唯一的「一」沒有量詞，不算
+        self.assertNotIn("數字差異：只有 ground truth 有 一", article)
+
+    def test_a_nested_quote_is_taken_as_a_whole_so_a_difference_after_the_inner_quote_is_found(self):
+        self.edited_truth(lambda a: a[0]["items"][0].update(must_retain=[{"kind": "quote", "fact": "他說「他講『不』然後走了」"}]))
+        article = self.crosscheck_with(lambda a: {"sentences": [pick("9000001-001", SENTENCE_001, [("quote", "他說「他講『不』然後留下」")])]})
+        self.assertIn("引語差異：只有 ground truth 有 他講『不』然後走了；只有模型有 他講『不』然後留下", article)
 
 
 class ScopeTest(CrosscheckCase):
@@ -323,16 +473,19 @@ class ScopeTest(CrosscheckCase):
         transport = routed()
         self.run_ok(transport=transport)
         self.assertNotIn("9000003", {article_of(r) for r in transport.requests})
-        self.assertNotIn("9000003", self.output_text("crosscheck.md"))
+        text = self.output_text("crosscheck.md")
+        self.assertIn("實驗內沒有 ground truth 的文章（不送給模型）：9000003", text)   # 不送，但要看得到：id 打錯時才發現得了
+        self.assertNotIn("## 文章 9000003", text)
 
 
 class GroundTruthSafetyTest(CrosscheckCase):
     def test_crosscheck_never_writes_the_ground_truth_file(self):
-        before = (open(self.truth_path, "rb").read(), os.stat(self.truth_path).st_mtime_ns)
+        snapshot = lambda: (Path(self.truth_path).read_bytes(), os.stat(self.truth_path).st_mtime_ns)   # noqa: E731
+        before = snapshot()
         self.run_ok()
         self.run_ok("--redo-errors")
         self.crosscheck("--dry-run")
-        self.assertEqual((open(self.truth_path, "rb").read(), os.stat(self.truth_path).st_mtime_ns), before)
+        self.assertEqual(snapshot(), before)
 
     def test_a_ground_truth_that_fails_validation_stops_before_any_request(self):
         self.edited_truth(lambda a: a[0]["items"][0].update(anchor="不存在的片段"))
@@ -346,9 +499,12 @@ class GroundTruthSafetyTest(CrosscheckCase):
 
 class ConfigTest(CrosscheckCase):
     def assert_rejected(self, needle):
-        code, out, err = self.crosscheck(transport=FakeTransport())
+        transport = FakeTransport()
+        code, out, err = self.crosscheck(transport=transport)
         self.assertNotEqual(code, 0)
         self.assertIn(needle, err)
+        self.assertEqual(transport.requests, [])
+        self.assertFalse(os.path.exists(self.out_dir))   # 先驗證，後寫入：什麼也沒寫
 
     def test_unknown_judges_the_same_judge_twice_and_a_missing_ground_truth_are_rejected(self):
         for crosscheck, needle in (({"judge": "zz"}, "crosscheck.judge 不在 judging.judges 裡：zz"),
@@ -421,7 +577,7 @@ class OpenRouterTest(CrosscheckCase):
         code, _, err = self.crosscheck(transport=transport)
         self.assertNotEqual(code, 0)
         self.assertEqual(len(transport.requests), 1)
-        self.assertIn("provider", err)
+        self.assertIn("不在允許清單內的 provider", err)
         [call] = self.calls()
         self.assertEqual((call["outcome"], call["served_provider"]), ("error", "SomewhereElse"))
 
