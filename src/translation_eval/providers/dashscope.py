@@ -1,23 +1,21 @@
 """阿里雲 DashScope（Model Studio）的 OpenAI 相容 chat completions，只用 International（新加坡）endpoint。
 
 解讀規則照官方文件的 response body 與錯誤碼表（2026-11-09 核對）。內容審查的錯誤是 DataInspectionFailed
-（OpenAI 相容模式寫作 data_inspection_failed）：HTTP 400，沒有任何譯文，記為 block。文件沒有寫錯誤 body 的格式，
-所以 error 物件和頂層 code 兩種寫法都認。不認識的回應格式一律是 error，絕不當作 ok。
+（OpenAI 相容模式寫作 data_inspection_failed）：沒有任何譯文，記為 block。文件寫的是 HTTP 400，但不論狀態碼是什麼，
+body 裡有這些錯誤碼就是 block：Block 率不能因為狀態碼不如預期而少算。文件沒有寫錯誤 body 的格式，所以 error 物件和
+頂層 code 兩種寫法都認。不認識的回應格式一律是 error，絕不當作 ok。
 """
 import json
 import re
 
-from ..outcome import Interpretation, UnrecognisedResponse, classify_text, token_count
+from ..outcome import Interpretation, UnrecognisedResponse, classify_text, lenient, token_count
 from ..schemas import ApproachConfig, DASHSCOPE_DEFAULT_BASE_URL, Outcome
 from ..transport import Request, Response
 
-# 平台因為內容而拒絕處理的錯誤碼（官方錯誤碼文件），比對時不分大小寫、不計底線與點
-BLOCK_CODES = {"datainspectionfailed", "faqruleblocked", "customroleblocked", "ipinfringementsuspect"}
+# 平台因為內容而拒絕處理的錯誤碼（官方錯誤碼文件）：比對時不分大小寫、不計底線與點，報告裡一律寫成官方的寫法
+BLOCK_CODES = {"datainspectionfailed": "DataInspectionFailed", "faqruleblocked": "FaqRuleBlocked",
+               "customroleblocked": "CustomRoleBlocked", "ipinfringementsuspect": "IPInfringementSuspect"}
 _CODE = re.compile(r"[A-Za-z][A-Za-z0-9_.]{2,60}")
-
-
-def _normalised(code: str) -> str:
-    return re.sub(r"[_.]", "", code).lower()
 
 
 def _error_codes(body) -> list[str]:
@@ -28,6 +26,10 @@ def _error_codes(body) -> list[str]:
     candidates = [error.get("code"), error.get("type")] if isinstance(error, dict) else []
     candidates.append(body.get("code"))
     return [c for c in candidates if isinstance(c, str) and _CODE.fullmatch(c)]
+
+
+def _block_code(body) -> str | None:
+    return next((BLOCK_CODES[key] for c in _error_codes(body) if (key := re.sub(r"[_.]", "", c).lower()) in BLOCK_CODES), None)
 
 
 class DashscopeAdapter:
@@ -43,7 +45,7 @@ class DashscopeAdapter:
         if approach.temperature is not None:
             body["temperature"] = approach.temperature
         if approach.max_output_tokens is not None:
-            body["max_completion_tokens"] = approach.max_output_tokens
+            body["max_tokens"] = approach.max_output_tokens   # 每個 Qwen 模型都支援；max_completion_tokens 只有較新的模型有文件
         headers = {"content-type": "application/json", "Authorization": f"Bearer {api_key}"}
         if approach.data_inspection is not None:   # 只有 Approach 設定明確寫了才送；值照設定原樣送出
             headers["X-DashScope-DataInspection"] = approach.data_inspection
@@ -52,8 +54,11 @@ class DashscopeAdapter:
     def interpret(self, response: Response) -> Interpretation:
         try:
             body = json.loads(response.body)
-        except ValueError:
+        except (ValueError, RecursionError):
             body = None
+        blocked = _block_code(body)
+        if blocked:   # 內容審查：不重試，重複嘗試要靠增加 Run 次數
+            return Interpretation(Outcome.BLOCK, blocked)
         if response.status != 200:
             return self._http_error(response.status, body)
         try:
@@ -62,47 +67,53 @@ class DashscopeAdapter:
             return Interpretation(Outcome.ERROR, "回應格式不認識")
 
     @staticmethod
-    def _interpret_completion(body) -> Interpretation:
-        if not isinstance(body, dict):
-            raise UnrecognisedResponse
+    def _meta(body: dict) -> dict:
         usage = body.get("usage") if body.get("usage") is not None else {}
         details = usage.get("completion_tokens_details") if isinstance(usage, dict) else None
         model_version = body.get("model")
         if not isinstance(usage, dict) or not (model_version is None or isinstance(model_version, str)):
             raise UnrecognisedResponse
-        meta = {
+        return {
             "input_tokens": token_count(usage.get("prompt_tokens")),
             "output_tokens": token_count(usage.get("completion_tokens")),
             "thought_tokens": token_count(details.get("reasoning_tokens")) if isinstance(details, dict) else None,
             "model_version": model_version,
         }
+
+    def _interpret_completion(self, body) -> Interpretation:
+        if not isinstance(body, dict):
+            raise UnrecognisedResponse
         choices = body.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
             raise UnrecognisedResponse
-        message, finish = choices[0].get("message"), choices[0].get("finish_reason")
-        if not isinstance(message, dict):
-            raise UnrecognisedResponse
+        finish = choices[0].get("finish_reason")
+        # 只有 ok 的 Run 才要求 token 數和模型版本正確；其他結果類別不能因為這些附帶資料怪怪的而變成 error
+        meta = lenient(self._meta, body)
         if finish == "content_filter":   # OpenAI 相容的標準值；官方文件沒有列，但意思就是被過濾，不能當成正常結束
             return Interpretation(Outcome.BLOCK, "output:content_filter", **meta)
         if finish == "length":
             return Interpretation(Outcome.TRUNCATED, "length", **meta)
         if finish != "stop":
             return Interpretation(Outcome.ERROR, f"finish_reason {str(finish)[:40]}", **meta)
+        message = choices[0].get("message")
+        if not isinstance(message, dict):
+            raise UnrecognisedResponse
         refusal = message.get("refusal")
-        if isinstance(refusal, str) and refusal.strip():   # OpenAI 相容的 refusal 欄位：模型自己拒絕
+        if refusal is not None and not isinstance(refusal, str):
+            raise UnrecognisedResponse
+        if refusal and refusal.strip():   # OpenAI 相容的 refusal 欄位：模型自己拒絕
             return Interpretation(Outcome.REFUSAL, "message.refusal 有內容", **meta)
         content = message.get("content")
         if not isinstance(content, str):
             raise UnrecognisedResponse
         outcome, reason, payload = classify_text(content)
+        if outcome is Outcome.OK:
+            meta = self._meta(body)
         return Interpretation(outcome, reason, payload, **meta)
 
     @staticmethod
     def _http_error(status: int, body) -> Interpretation:
         codes = _error_codes(body)
-        blocked = next((c for c in codes if _normalised(c) in BLOCK_CODES), None)
-        if blocked:   # 內容審查：即使狀態碼是 429 或 5xx 也不重試，重複嘗試要靠增加 Run 次數
-            return Interpretation(Outcome.BLOCK, blocked)
         if status == 429 or status >= 500:
             return Interpretation(Outcome.ERROR, f"HTTP {status}", retryable=True)
         return Interpretation(Outcome.ERROR, f"HTTP {status}" + (f" {codes[0]}" if codes else ""))

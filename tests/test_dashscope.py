@@ -61,7 +61,7 @@ class RequestTest(DashscopeCase):
     def test_temperature_and_output_limit_are_sent_only_when_configured(self):
         self.assertNotIn("temperature", json.loads(self.sent().body))
         body = json.loads(self.sent({**APPROACH, "temperature": 0, "max_output_tokens": 4000}).body)
-        self.assertEqual((body["temperature"], body["max_completion_tokens"]), (0, 4000))
+        self.assertEqual((body["temperature"], body["max_tokens"]), (0, 4000))
 
     def test_the_workspace_specific_singapore_domain_is_accepted(self):
         url = "https://ws123abc.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
@@ -89,6 +89,17 @@ class ConfigTest(DashscopeCase):
             ("a port", "https://dashscope-intl.aliyuncs.com:8443/compatible-mode/v1"),
             ("another path", "https://dashscope-intl.aliyuncs.com/api/v1"),
             ("a query", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1?x=1"),
+            # 下面這些 urlsplit 解析後看起來沒問題，但原樣送出就是另一個網址，所以要對原始字串驗證
+            ("a trailing question mark", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1?"),
+            ("a trailing hash", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1#"),
+            ("a line break", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1\n"),
+            ("a tab inside", "https://dashscope-intl.aliyuncs.com/compatible-mode/\tv1"),
+            ("port zero", "https://dashscope-intl.aliyuncs.com:0/compatible-mode/v1"),
+            ("empty credentials", "https://@dashscope-intl.aliyuncs.com/compatible-mode/v1"),
+            ("an uppercase scheme", "HTTPS://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
+            ("an uppercase host", "https://DASHSCOPE-INTL.aliyuncs.com/compatible-mode/v1"),
+            ("a leading space", " https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
+            ("a trailing dot in the host", "https://dashscope-intl.aliyuncs.com./compatible-mode/v1"),
         ):
             with self.subTest(name):
                 self.use_approach({**APPROACH, "base_url": url})
@@ -113,8 +124,11 @@ class ResultClassTest(DashscopeCase):
         partial = '{"title": "Fictional'
         cases = {
             "ok": (ok_response(), "ok", None),
-            "content moderation, error object": (samples.data_inspection_failed("object"), "block", "data_inspection_failed"),
+            "content moderation, error object": (samples.data_inspection_failed("object"), "block", "DataInspectionFailed"),
             "content moderation, top-level code": (samples.data_inspection_failed("top"), "block", "DataInspectionFailed"),
+            "content moderation with throttling status": (samples.error(429, "DataInspectionFailed"), "block", "DataInspectionFailed"),
+            "content moderation with server error status": (samples.error(503, "data_inspection_failed"), "block", "DataInspectionFailed"),
+            "content moderation sent with status 200": (samples.error(200, "DataInspectionFailed"), "block", "DataInspectionFailed"),
             "faq rule": (samples.error(400, "FaqRuleBlocked"), "block", "FaqRuleBlocked"),
             "custom rule": (samples.error(400, "CustomRoleBlocked"), "block", "CustomRoleBlocked"),
             "ip infringement": (samples.error(400, "IPInfringementSuspect"), "block", "IPInfringementSuspect"),
@@ -129,6 +143,11 @@ class ResultClassTest(DashscopeCase):
             "unknown format": (samples.unknown_format(), "error", None),
             "html with 200": (samples.not_json(), "error", None),
             "tool calls finish": (samples.finished("", "tool_calls"), "error", None),
+            "no finish reason": (samples.finished("{}", None), "error", None),
+            "refusal that is not a string": (samples.malformed_message({"content": "{}", "refusal": {"x": 1}}), "error", None),
+            "html with a 400 status": (samples.not_json(400), "error", "HTTP 400"),
+            "deeply nested json": (samples.deeply_nested(), "error", None),
+            "deeply nested json with an error status": (samples.deeply_nested(400), "error", "HTTP 400"),
             "no content": (samples.malformed_message({"content": None}), "error", None),
             "content is a list": (samples.malformed_message({"content": ["x"]}), "error", None),
             "message is not an object": (samples.malformed_message("x"), "error", None),
@@ -149,6 +168,25 @@ class ResultClassTest(DashscopeCase):
                 with open(os.path.join(self.out_dir, record["raw_response"]), "rb") as f:
                     self.assertEqual(f.read(), sample.body)
 
+    def test_a_filtered_response_is_a_block_even_when_the_rest_of_it_is_malformed(self):
+        partial = '{"title": "Fictional'
+        for name, mutate in (
+            ("message is null", {"message": None}),
+            ("usage is a list", {"usage": []}),
+            ("a token count is a float", {"usage": {"prompt_tokens": 1.5}}),
+            ("model is a number", {"model": 5}),
+        ):
+            with self.subTest(name):
+                shutil.rmtree(self.data_dir, ignore_errors=True)
+                sample = samples.finished(partial, "content_filter")
+                body = json.loads(sample.body)
+                if "message" in mutate:
+                    body["choices"][0]["message"] = mutate["message"]
+                else:
+                    body.update(mutate)
+                self.translate(samples._response(200, body))
+                self.assertEqual(self.read_runs()[0]["outcome"], "block")
+
     def test_tokens_and_the_model_version_come_from_the_response(self):
         self.translate(ok_response())
         [record] = self.read_runs()
@@ -167,7 +205,7 @@ class ResultClassTest(DashscopeCase):
         self.assertEqual(self.run_cli("report")[0], 0)
         with open(os.path.join(self.out_dir, "report.md"), encoding="utf-8") as f:
             text = f.read()
-        self.assertIn("- Block 率：按 Run 2/3（66.7%）；按文章 1/1（100.0%）；原因分佈：DataInspectionFailed 1、data_inspection_failed 1", text)
+        self.assertIn("- Block 率：按 Run 2/3（66.7%）；按文章 1/1（100.0%）；原因分佈：DataInspectionFailed 2", text)
         self.assertIn("error 1/3（33.3%）", text)
 
 

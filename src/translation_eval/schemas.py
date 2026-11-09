@@ -5,7 +5,6 @@
 import re
 from enum import StrEnum
 from typing import Annotated, Literal
-from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -63,9 +62,11 @@ class StrictModel(BaseModel):
 PROVIDER_KEY_ENV = {"gemini": "GEMINI_API_KEY", "dashscope": "DASHSCOPE_API_KEY"}
 
 # 阿里雲只用 International（新加坡）：舊的共用網域，或各 workspace 自己的 ap-southeast-1 網域。大陸版的條款寫明
-# 紀錄會保留並報告當局，政治敏感文章不能送，所以其他 endpoint 一律不接受
+# 紀錄會保留並報告當局，政治敏感文章不能送，所以其他 endpoint 一律不接受。對原始字串整個比對，不先解析：
+# 解析會吃掉換行、空的 ? 和 #，驗證通過的網址原樣送出就變成另一個網址
 DASHSCOPE_DEFAULT_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-_DASHSCOPE_SINGAPORE_HOST = re.compile(r"dashscope-intl\.aliyuncs\.com|[a-z0-9-]+\.ap-southeast-1\.maas\.aliyuncs\.com")
+_DASHSCOPE_BASE_URL = re.compile(
+    r"https://(?:dashscope-intl\.aliyuncs\.com|[a-z0-9-]+\.ap-southeast-1\.maas\.aliyuncs\.com)/compatible-mode/v1/?")
 
 
 class RetryConfig(StrictModel):
@@ -96,10 +97,9 @@ class ApproachConfig(StrictModel):
         if self.concurrency != 1:
             raise ValueError("目前只支援循序執行（concurrency 必須是 1）")
         if self.provider == "dashscope":
-            parts = urlsplit(self.base_url or DASHSCOPE_DEFAULT_BASE_URL)
-            if (parts.scheme != "https" or not _DASHSCOPE_SINGAPORE_HOST.fullmatch(parts.hostname or "") or parts.username
-                    or parts.password or parts.port or parts.path.rstrip("/") != "/compatible-mode/v1" or parts.query or parts.fragment):
-                raise ValueError("base_url 只能是阿里雲 International（新加坡）的 https 網址，路徑是 /compatible-mode/v1")
+            if not _DASHSCOPE_BASE_URL.fullmatch(self.base_url or DASHSCOPE_DEFAULT_BASE_URL):
+                raise ValueError("base_url 只能是阿里雲 International（新加坡）的網址：https://dashscope-intl.aliyuncs.com/compatible-mode/v1，"
+                                 "或 https://<workspace>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1（全小寫，不能有空白、帳號、埠號、? 或 #）")
         elif self.base_url is not None or self.data_inspection is not None:
             raise ValueError("base_url 和 data_inspection 只有 dashscope 用")
         return self

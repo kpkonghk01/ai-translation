@@ -22,6 +22,15 @@ class UnrecognisedResponse(Exception):
     """回應的某個欄位型別不符：provider 的 adapter 把它記為 error，不是讓程式拋出例外。"""
 
 
+def lenient(read_meta, body) -> dict:
+    """token 數和模型版本只是附帶的資料：讀不出來就沒有這些資料，但不能因此改變結果類別。
+    尤其是 block：回應的其他部分怪怪的，Block 率也不能因此少算。"""
+    try:
+        return read_meta(body)
+    except UnrecognisedResponse:
+        return {}
+
+
 def token_count(value) -> int | None:
     if value is None:
         return None
@@ -58,7 +67,7 @@ def classify_text(text: str) -> tuple[Outcome, str | None, dict | None]:
     fenced = _FENCE.match(stripped)
     try:
         payload = json.loads(fenced.group(1) if fenced else stripped)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):   # 括號層數多到解析器超出遞迴上限，也是壞掉的輸出
         attempted_json = stripped.startswith(("{", "[", "```"))   # 想輸出 JSON 但壞了，不是拒絕
         if attempted_json:
             return Outcome.MALFORMED, "輸出不是 JSON", None

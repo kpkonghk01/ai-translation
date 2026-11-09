@@ -105,6 +105,12 @@ class ResultClassTest(Workspace):
             "http 200 with a body that is not json": (gemini_samples.not_json(), "error", None),
             "token count is not a number": (gemini_samples.with_fields(ok_response(), usageMetadata={"promptTokenCount": "many"}), "error", None),
             "model version is not a string": (gemini_samples.with_fields(ok_response(), modelVersion=["x"]), "error", None),
+            "deeply nested json body": (gemini_samples.deeply_nested(), "error", None),
+            "model text that is deeply nested": (gemini_samples.ok("[" * 200000), "malformed", None),
+            "prompt blocked with a malformed usageMetadata": (gemini_samples.with_fields(gemini_samples.prompt_blocked(), usageMetadata=[]), "block", "prompt:PROHIBITED_CONTENT"),
+            "prompt blocked with a bad model version": (gemini_samples.with_fields(gemini_samples.prompt_blocked(), modelVersion=5), "block", "prompt:PROHIBITED_CONTENT"),
+            "safety stop with a malformed usageMetadata": (gemini_samples.with_fields(gemini_samples.safety_stopped(partial), usageMetadata="x"), "block", "output:SAFETY"),
+            "max tokens with a malformed usageMetadata": (gemini_samples.with_fields(gemini_samples.max_tokens(partial), usageMetadata=[]), "truncated", None),
             "translated text is a number": (gemini_samples.ok(json.dumps(
                 translation_with(lambda t: component(t, "002").update(text=123)))), "malformed", None),
             "translated caption is a list": (gemini_samples.ok(json.dumps(

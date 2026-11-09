@@ -7,7 +7,7 @@
 import json
 import re
 
-from ..outcome import Interpretation, UnrecognisedResponse, classify_text, token_count
+from ..outcome import Interpretation, UnrecognisedResponse, classify_text, lenient, token_count
 from ..schemas import ApproachConfig, Outcome
 from ..transport import Request, Response
 
@@ -65,7 +65,7 @@ class GeminiAdapter:
     def interpret(self, response: Response) -> Interpretation:
         try:
             body = json.loads(response.body)
-        except ValueError:
+        except (ValueError, RecursionError):
             body = None
         if response.status != 200:
             return self._http_error(response.status, body)
@@ -76,19 +76,24 @@ class GeminiAdapter:
         except UnrecognisedResponse:
             return UNRECOGNISED
 
-    def _interpret_ok_status(self, body: dict) -> Interpretation:
+    @staticmethod
+    def _meta(body: dict) -> dict:
         usage = body.get("usageMetadata")
         if usage is None:
             usage = {}
         model_version = body.get("modelVersion")
         if not isinstance(usage, dict) or not (model_version is None or isinstance(model_version, str)):
             raise UnrecognisedResponse
-        meta = {
+        return {
             "input_tokens": token_count(usage.get("promptTokenCount")),
             "output_tokens": token_count(usage.get("candidatesTokenCount")),
             "thought_tokens": token_count(usage.get("thoughtsTokenCount")),
             "model_version": model_version,
         }
+
+    def _interpret_ok_status(self, body: dict) -> Interpretation:
+        # 只有 ok 的 Run 才要求 token 數和模型版本正確；其他結果類別不能因為這些附帶資料怪怪的而變成 error
+        meta = lenient(self._meta, body)
         feedback = body.get("promptFeedback")
         block_reason = feedback.get("blockReason") if isinstance(feedback, dict) else None
         if isinstance(block_reason, str) and block_reason != "BLOCK_REASON_UNSPECIFIED":
@@ -105,6 +110,8 @@ class GeminiAdapter:
         if finish != "STOP":
             return Interpretation(Outcome.ERROR, f"finishReason {str(finish)[:40]}", **meta)
         outcome, reason, payload = classify_text(_output_text(candidate))
+        if outcome is Outcome.OK:
+            meta = self._meta(body)
         return Interpretation(outcome, reason, payload, **meta)
 
     @staticmethod

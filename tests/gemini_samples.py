@@ -80,6 +80,11 @@ def not_json(status: int = 200) -> Response:
     return Response(status=status, headers={"content-type": "text/html"}, body=b"<html>proxy page</html>")
 
 
+def deeply_nested(status: int = 200) -> Response:
+    """括號層數多到 json 解析器會超出遞迴上限。"""
+    return Response(status=status, headers={"content-type": "application/json"}, body=b"[" * 200000)
+
+
 def client_error(status: int = 400) -> Response:
     """不會因重試而好轉的 4xx（例如請求本身不合法）。"""
     return _response(status, {"error": {"code": status, "message": "Invalid value.", "status": "INVALID_ARGUMENT"}})

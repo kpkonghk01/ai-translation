@@ -73,6 +73,11 @@ def invalid_key() -> Response:
     return error(401, "invalid_api_key")
 
 
+def deeply_nested(status: int = 200) -> Response:
+    """括號層數多到 json 解析器會超出遞迴上限。"""
+    return Response(status=status, headers={"content-type": "application/json"}, body=b"[" * 200000)
+
+
 def unknown_format() -> Response:
     return _response(200, {"result": "something else entirely"})
 
