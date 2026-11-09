@@ -13,7 +13,8 @@
 | `data/web-articles*-raw/` | 頁面 `__NEXT_DATA__` 裡的原始 article 物件，用來離線重轉與驗證 |
 | `data/web-articles*-global/` | `global.hk01.com` 的簡體版文字，只用來驗證 baseline 重現 |
 | `data/candidates*.tsv`、`candidates-screened.tsv`、`china-screened.tsv` | 篩選結果 |
-| `data/baseline-service/`、`baseline-service-china/` | 主簡體 baseline（服務 HEAD 290bf22 + opencc 1.4.2） |
+| `data/baseline-service/`、`baseline-service-china/`、`baseline-service-cms/` | 主簡體 baseline（服務 HEAD 290bf22 + opencc 1.4.2） |
+| `data/cms-articles/` | CMS 匯出的 15 篇轉成的文章檔（`import-cms` 產生，與網上文章同一結構，`meta.source` 是 `cms`） |
 | `data/baseline-service-prod-v1.12.0/` | prod 現行版本的輸出，對照用 |
 | `data/baseline-env/` | 重現服務用的固定環境（見下文） |
 | `data/experiments/<實驗 id>/` | 評核框架的輸出：`runs.jsonl`（每行一個 Run）、`translations/`、`raw/`（原始回應）、`components.jsonl`（check 結果）、`report.md` |
@@ -71,7 +72,15 @@ python3 -I tools/screen_china.py --web data/web-articles-china --glob data/web-a
 
 驗證結果（2026-10-28）：global 簡體版對應服務 v1.12.0 + opencc 1.3.1，161 篇吻合 1893/1943 段；唯一殘留的字元差異是 1 篇的 `雪糕`（疑似人工校正）。其餘不吻合的段落來自 quote 與部分 highlight 沒有被簡體頁解析到，不是轉換差異。服務 HEAD 與 v1.12.0 的差異集中在 `舖`、`擡` 與 `雪櫃` → `冰箱`。更早的 v1.7.0–v1.10.1 用 `hk01-digital/media-opencc` 的 fork（1.1.9），沒有重現。
 
-現有 15 篇 CMS 文章還沒有 baseline：CMS 匯出是 CSV，需要先寫載入。
+CMS 的 15 篇：先轉成文章檔，再用同一個工具產生 baseline（標籤與其他 baseline 一致）：
+
+```bash
+uv run --locked python -I -m translation_eval import-cms --csv data-prohibited.csv --out data/cms-articles
+.venv/bin/python -I tools/service_baseline.py --service refs/opencc-service --stock-dir data/baseline-env/opencc-1.4.2-assets \
+  convert --trad data/cms-articles --out data/baseline-service-cms --label "service-HEAD-290bf22+opencc-1.4.2"
+```
+
+`import-cms` 取每列對話紀錄裡第一個 user turn 的 JSON，session id 當文章 id。只保留已知的欄位：不認識的欄位若有文字、或有不認識的 Component type，指令失敗並列出，不會靜默丟掉；全部通過才寫出。`tools/check.sh` 在本機有 `data-prohibited.csv` 時，會把它轉到暫存目錄檢查覆蓋，並與 `data/cms-articles` 比對。baseline 工具遇到檔名不是文章 id（數字或 24 位 hex）的 `.json` 會失敗，不會略過。匯入成 Run 見「翻譯評測」的 `import-baseline`。
 
 ## 翻譯評測（評核框架）
 

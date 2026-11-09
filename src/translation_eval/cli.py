@@ -2,6 +2,7 @@
 
 用法（在 repo 根目錄）：
   uv run --locked python -I -m translation_eval translate --config <實驗設定> [--dry-run] [--article <id>] [--limit <N>] [--redo-errors]
+  uv run --locked python -I -m translation_eval import-cms --csv <CMS 匯出> [--out data/cms-articles]
   uv run --locked python -I -m translation_eval import-baseline --config <實驗設定>
   uv run --locked python -I -m translation_eval check --config <實驗設定>
   uv run --locked python -I -m translation_eval report --config <實驗設定>
@@ -10,7 +11,7 @@
 import argparse
 import sys
 
-from . import baselines, check, report, translate
+from . import baselines, check, cms, report, translate
 from .errors import InputError
 from .transport import Transport, TransportForbidden, UrllibTransport
 
@@ -22,6 +23,9 @@ def build_parser() -> argparse.ArgumentParser:
     b = sub.add_parser("import-baseline", help="把方案 E 等 baseline 目錄匯入成 Run")
     c = sub.add_parser("check", help="對 ok 的 Run 做 Deterministic check")
     r = sub.add_parser("report", help="產生 Block／Refusal 報告")
+    m = sub.add_parser("import-cms", help="把 CMS 匯出（CSV）轉成文章檔")
+    m.add_argument("--csv", required=True, help="CMS 匯出的 CSV")
+    m.add_argument("--out", default="data/cms-articles", help="文章檔的輸出目錄（預設 data/cms-articles）")
     for p in (t, b, c, r):
         p.add_argument("--config", required=True, help="實驗設定（JSON）")
         p.add_argument("--data-dir", default="data", help="輸出目錄（預設 data）")
@@ -44,6 +48,8 @@ def main(argv=None, transport: Transport | None = None) -> int:
     try:
         if args.command == "translate":
             return translate.handle(args, transport or UrllibTransport())
+        if args.command == "import-cms":
+            return cms.handle(args)
         if args.command == "import-baseline":
             return baselines.handle(args)
         if args.command == "check":

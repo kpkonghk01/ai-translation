@@ -14,6 +14,7 @@ import argparse
 import collections
 import json
 import os
+import re
 import sys
 import tempfile
 
@@ -83,11 +84,17 @@ class ServiceConverter:
         return apply_to_article(article, self.hk_to_s)
 
 
+ARTICLE_ID = re.compile(r"^(?:\d+|[0-9a-f]{24})$")   # 網上文章的數字 id，或 CMS 匯出的 24 位 hex session id
+
+
 def load_articles(trad_dir):
-    for name in sorted(os.listdir(trad_dir)):
-        if name.endswith(".json") and name[:-5].isdigit():
-            with open(os.path.join(trad_dir, name), encoding="utf-8") as f:
-                yield name[:-5], json.load(f)
+    names = sorted(n for n in os.listdir(trad_dir) if n.endswith(".json"))
+    bad = [n for n in names if not ARTICLE_ID.match(n[:-5])]
+    if bad:   # 靜默略過會令整批少轉了文章，卻看不出來
+        raise ValueError(f"不是文章 id 的檔名（{len(bad)} 個）：{', '.join(bad[:5])}")
+    for name in names:
+        with open(os.path.join(trad_dir, name), encoding="utf-8") as f:
+            yield name[:-5], json.load(f)
 
 
 def cmd_validate(a):

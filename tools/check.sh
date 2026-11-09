@@ -66,6 +66,12 @@ if [ -f data-prohibited.csv ] && [ -f data/ground-truth-draft.json ] && [ -f dat
 else
   echo "  略過 cms-ground-truth-unchanged：本機沒有 data/ground-truth-draft.* 或 data-prohibited.csv"
 fi
+# CMS 匯出轉成文章檔：看得見的文字都要出現在轉換結果（不認識的欄位或 type 會令轉換失敗），而且與存檔的 data/cms-articles 相同
+cms_conversion_covers_export() {
+  uv run --locked python -I -m translation_eval import-cms --csv data-prohibited.csv --out "$logdir/cms-articles" || return 1
+  [ ! -d data/cms-articles ] || diff -r "$logdir/cms-articles" data/cms-articles
+}
+
 # 每個抓取保存的原始物件目錄（data/web-articles*-raw），轉換結果都不可以漏掉原文
 n_raw=0
 for raw in data/web-articles*-raw; do
@@ -75,6 +81,11 @@ for raw in data/web-articles*-raw; do
 done
 if [ "$n_raw" -eq 0 ]; then
   echo "  略過 verify：本機沒有 data/web-articles*-raw"
+fi
+if [ -f data-prohibited.csv ] && command -v uv >/dev/null 2>&1; then
+  run cms-conversion-covers-export cms_conversion_covers_export
+else
+  echo "  略過 cms-conversion-covers-export：本機沒有 data-prohibited.csv，或找不到 uv"
 fi
 
 echo

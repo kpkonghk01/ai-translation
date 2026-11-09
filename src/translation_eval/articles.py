@@ -29,6 +29,9 @@ _TEXT_FIELDS = {
     TITLE_TYPE: ("title",), TAGS_TYPE: ("tags",),
 }
 _LIST_FIELDS = frozenset({"captions", "titles", "tags"})   # 其餘的文字欄位都是字串
+# 各 type 除了 id 與 type 以外的結構欄位（文字欄位另外在 _TEXT_FIELDS）
+_STRUCTURE_FIELDS = {"heading": ("level",), "code": ("code",), "video": ("caption",), "faq": ("items",),
+                     "table": ("name", "description", "caption", "rows")}
 KNOWN_TYPES = UNTRANSLATED_TYPES | {t for t in _TEXT_FIELDS if t not in (TITLE_TYPE, TAGS_TYPE)}
 
 
@@ -39,7 +42,11 @@ class ExpectedComponent:
 
 
 def load_article(directory: str, article_id: str) -> Article:
-    article = read_model(os.path.join(directory, f"{article_id}.json"), Article)
+    return check_article(read_model(os.path.join(directory, f"{article_id}.json"), Article), article_id)
+
+
+def check_article(article: Article, article_id: str) -> Article:
+    """文章的結構要完整、已知：id 不重覆、type 認識、文字欄位的型別對，轉換器沒有記下不完整的地方。"""
     ids = [c.id for c in article.components]
     duplicated = sorted({i for i in ids if ids.count(i) > 1} | ({TITLE_ID, TAGS_ID} & set(ids)))
     if duplicated:
@@ -57,6 +64,11 @@ def load_article(directory: str, article_id: str) -> Article:
         listed = ", ".join(str(u)[:40] for u in unknown[:MAX_LISTED_UNKNOWN])
         raise InputError(f"文章 {article_id}：轉換器在 meta.unknown 記了 {len(unknown)} 項（{listed}），先檢視再翻譯")
     return article
+
+
+def kept_fields(component_type: str) -> tuple[str, ...]:
+    """這個 type 的 Component 除了 id 與 type 以外保留的欄位。匯入 CMS 時，其他欄位若有文字，就不能靜默丟掉。"""
+    return _TEXT_FIELDS.get(component_type, ()) + _STRUCTURE_FIELDS.get(component_type, ())
 
 
 def field_problems(component_type: str, fields: Mapping) -> list[str]:

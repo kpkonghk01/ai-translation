@@ -1,6 +1,9 @@
 """service_baseline 的測試（不需要 OpenCC）。用法：python3 -I tools/test_service_baseline.py"""
+import json
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -56,6 +59,28 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(out["components"][0]["text"], "戊")
         self.assertEqual(out["meta"], {"articleId": 1})
         self.assertEqual(art["components"][0]["text"], "丁")  # 原物件不變
+
+
+class LoadArticlesTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+
+    def write(self, name):
+        with open(os.path.join(self.dir, name), "w", encoding="utf-8") as f:
+            json.dump({"title": name}, f)
+
+    def test_reads_web_articles_and_cms_session_ids(self):
+        for name in ("123.json", "a0a0a0a0a0a0a0a0a0a0a0a0.json", "fetch-log.tsv"):
+            self.write(name)
+        self.assertEqual([aid for aid, _ in S.load_articles(self.dir)], ["123", "a0a0a0a0a0a0a0a0a0a0a0a0"])
+
+    def test_a_json_file_that_is_not_an_article_id_fails_instead_of_being_skipped(self):
+        for name in ("123.json", "notes.json"):
+            self.write(name)
+        with self.assertRaises(ValueError) as caught:
+            list(S.load_articles(self.dir))
+        self.assertIn("notes.json", str(caught.exception))
 
 
 if __name__ == "__main__":
