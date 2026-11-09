@@ -265,6 +265,11 @@ class GroundTruthRef(StrictModel):
     group_overrides: dict[Slug, Slug] = {}
 
 
+class CalibrationConfig(StrictModel):
+    """Judge 校準：Gold set 檔的位置。合格線（recall、precision）不寫在這裡也不寫在程式裡，等第一批數字出來才訂。"""
+    gold_set: str
+
+
 class ComparisonConfig(StrictModel):
     """分數與 baseline 的比較。baseline：質素的 baseline（方案 A）的 id，所有 Approach 與它比；also_against：某個 Direction 另外要比的
     baseline（繁→簡另外與方案 E 比）。id 可以是 Approach 或 baseline（import-baseline）的 id。"""
@@ -295,6 +300,7 @@ class ExperimentConfig(StrictModel):
     ground_truth: GroundTruthRef | None = None
     review: ReviewConfig = ReviewConfig()
     comparison: ComparisonConfig | None = None
+    calibration: CalibrationConfig | None = None
     weights: Weights = Weights()
     term_list: str | None = None   # Term List 檔的路徑；不設就不注入、也不做 Terminology 檢查
     length_ratio: dict[Direction, LengthRatioRange] = {}   # 覆寫預設的長度比例範圍（見 config.py）
@@ -613,6 +619,110 @@ class ReviewDecision(StrictModel):
 
 class ReviewDecisionFile(StrictModel):
     decisions: list[ReviewDecision]
+
+
+# ───────────── Gold set 與校準 ─────────────
+
+class GoldCategory(StrEnum):
+    ANNOTATED = "annotated"   # 真實候選譯文的人手標註（標註要完整：沒有標到的 Finding 就是 Judge 多報）
+    VARIANT = "variant"       # 人手寫的 Softening 變體：指向 ground truth 的事實，預期 verdict 與淡化類型
+    CLEAN = "clean"           # 無錯樣本：Judge 不應該報任何 Finding，事實都是 Present
+
+
+class GoldContext(StrictModel):
+    source: NonBlank
+    translation: NonBlank
+
+
+class GoldFinding(StrictModel):
+    """預期的 Finding。配對規則與 Judge 兩次結果的一致性相同：同一 Dimension、譯文片段重疊（譯文片段是空的就看原文片段）。"""
+    dimension: Dimension
+    severity: Severity
+    source_span: str = ""
+    target_span: str = ""
+    note: str = ""
+
+
+class GoldRef(StrictModel):
+    """指向 ground truth 的一個含 Sensitive sentence 的 Component。"""
+    article_id: Slug
+    component_id: NonBlank
+
+
+class GoldFact(StrictModel):
+    """對一條 Must-retain fact 的預期 verdict；fact 是 ground truth 那條事實的文字。同一個 Sensitive sentence 的其他事實沒有列的，不計分。"""
+    fact: NonBlank
+    verdict: Verdict
+    weakening_type: WeakeningType | None = None
+
+    @model_validator(mode="after")
+    def _type_fits_verdict(self):
+        amplified = self.weakening_type is WeakeningType.AMPLIFICATION
+        if self.weakening_type is not None and (amplified != (self.verdict is Verdict.PRESENT)):
+            raise ValueError("Weakened／Absent 的類型是 a–f；Present 只能標 amplification")
+        return self
+
+
+class GoldItem(StrictModel):
+    id: Slug
+    direction: Direction
+    domain: Domain
+    category: GoldCategory
+    component_type: Slug = "paragraph"   # 原文 Component 的 type：Judge 的請求寫它
+    source: NonBlank
+    translation: NonBlank
+    context_before: GoldContext | None = None
+    context_after: GoldContext | None = None
+    findings: list[GoldFinding] = []
+    ground_truth: GoldRef | None = None
+    facts: list[GoldFact] = []
+    note: str = ""
+
+    @model_validator(mode="after")
+    def _category_rules(self):
+        if self.facts and self.ground_truth is None:
+            raise ValueError("facts 要有 ground_truth：事實指向 ground truth 的 Sensitive sentence")
+        if self.ground_truth is not None and not self.facts:
+            raise ValueError("ground_truth 要和 facts 一起寫")
+        failing = [f for f in self.facts if f.verdict is not Verdict.PRESENT]
+        if self.category is GoldCategory.CLEAN and (self.findings or failing):
+            raise ValueError("clean 沒有預期的 Finding，事實都是 Present")
+        if self.category is GoldCategory.VARIANT and not any(f.verdict in (Verdict.WEAKENED, Verdict.ABSENT) for f in self.facts):
+            raise ValueError("variant 要有至少一條預期是 Weakened 或 Absent 的事實")
+        if self.category is GoldCategory.ANNOTATED and not (self.findings or self.facts):
+            raise ValueError("annotated 要有預期的 Finding 或事實")
+        return self
+
+
+class GoldFile(StrictModel):
+    items: list[GoldItem]
+
+
+class GoldCall(StrictModel):
+    """校準時 Judge 對一個 Gold set 項目的一次請求（兩個任務各兩次）。結構與 JudgeCall 相同的部分（call_index、outcome、findings、verdicts、
+    input_hash）可以直接餵給一致性判定；item_hash 是項目內容的 hash，項目改了舊的請求就過期。"""
+    item_id: Slug
+    judge: Slug
+    task: Literal["mqm", "fact"]
+    call_index: int = Field(ge=1, le=2)
+    outcome: Outcome
+    reason: str | None = None
+    attempts: list[Attempt]
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    thought_tokens: int | None = None
+    model_version: str | None = None
+    served_provider: str | None = None
+    prompt_hash: str
+    config_hash: str
+    item_hash: str
+    input_hash: str | None = None   # fact 任務：送出的事實與 anchor 的 hash（與 JudgeCall 一樣）
+    findings: list[JudgeFinding] = []
+    source_defects: list[SourceDefect] = []
+    verdicts: list[FactVerdict] = []
+    invalid: list[InvalidItem] = []
+    raw_response: str | None = None
+    created_at: str
 
 
 # ───────────── Component 結果 ─────────────

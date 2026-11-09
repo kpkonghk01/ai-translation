@@ -15,6 +15,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
 from .articles import apply_variant
+from .calibration import JudgeEvaluation, recall_text
 from .config import Experiment
 from .consistency import Status
 from .facts import FAILING_VERDICTS, FactResult, FactStatus, judge_facts
@@ -128,7 +129,7 @@ def rate_of(gate: GroupGate) -> tuple[int, int]:
     return sum(1 for runs in gate.sentence_runs.values() if "failed" in runs.values()), len(gate.sentence_runs)
 
 
-def gate_group_lines(heading: str, judge_text: str, gate: GroupGate, skipped: Counter, missing_runs: int) -> list[str]:
+def gate_group_lines(heading: str, judge_text: str, recall: str, gate: GroupGate, skipped: Counter, missing_runs: int) -> list[str]:
     sentences = gate.sentence_runs
     failed, evaluated = rate_of(gate)
     articles = {sid[0] for sid in sentences}
@@ -157,7 +158,7 @@ def gate_group_lines(heading: str, judge_text: str, gate: GroupGate, skipped: Co
         f"{k.value} {sum(1 for s in gate.fact_failed if gate.fact_kind[s] is k)}/{sum(1 for s in gate.fact_final if gate.fact_kind[s] is k)}" for k in kinds) or "無"
     return [
         heading, "",
-        f"- 主 Judge {judge_text}；Judge recall 未量度（還沒有校準結果）",
+        f"- 主 Judge {judge_text}；{recall}",
         f"- 狀態：{status}",
         f"- 淡化率：{ratio(failed, evaluated)}個不重覆的句子{upper}；涉及的文章 {len(failed_articles)}/{len(articles)}",
         f"- 每個 Run 的淡化率：{per_run}",
@@ -213,7 +214,8 @@ def planned_runs(experiment: Experiment, approach: str, direction, variant: Inpu
     return None
 
 
-def gate_lines(experiment: Experiment, out: OutputDir, records: list[RunRecord], articles, truth: GroundTruth | None, decisions: Decisions) -> list[str]:
+def gate_lines(experiment: Experiment, out: OutputDir, records: list[RunRecord], articles, truth: GroundTruth | None, decisions: Decisions,
+               evaluations: dict[str, JudgeEvaluation]) -> list[str]:
     if truth is None:
         return []
     with_sentences = {s.article_id for s in truth.sentences}   # control 文章可以沒有任何敏感句，沒有東西可以核對
@@ -242,6 +244,7 @@ def gate_lines(experiment: Experiment, out: OutputDir, records: list[RunRecord],
             per_article = planned_runs(experiment, approach, direction, variant)
             expected = None if per_article is None else per_article * sum(1 for a in with_sentences if truth.group_of(a) == group)
             missing = max(0, expected - len(in_group)) if expected is not None else 0
-            lines += gate_group_lines(heading, judge.id + ("（主 Judge 暫定）" if provisional else ""), gate, skipped, missing)
+            lines += gate_group_lines(heading, judge.id + ("（主 Judge 暫定）" if provisional else ""), recall_text(evaluations.get(judge.id), direction, group),
+                                      gate, skipped, missing)
             rates[(approach, direction, variant)][group] = (judge.id, *rate_of(gate))
     return lines + gap_lines(rates)

@@ -18,7 +18,9 @@ from .config import Experiment, PlannedApproach, length_ranges, load_experiment
 from .articles import load_article
 from .gate_report import gate_lines, ground_truth_settings_lines
 from .ground_truth import GroundTruth, load_ground_truth
+from .calibration import evaluate_judge, summary_lines
 from .comparison import comparison_lines
+from .gold import load_gold_set
 from .judge_report import judge_context, judge_lines, judge_settings_lines
 from .review import completion_lines
 from .review_decisions import apply_check_decisions, check_decisions, load_decisions
@@ -232,10 +234,16 @@ def handle(args) -> int:
     check_decisions(decisions, items)   # 決定過期或指向不存在的項目：停止，不產生報告
     rows = apply_check_decisions(rows, decisions)
     ctx = judge_context(experiment, out, records, rows, articles, decisions)
+    evaluations, calibration = {}, []
+    if cfg.calibration:   # Gold set 不合（驗證失敗）也在這裡停止；校準只看實驗設定裡的 Judge 的新紀錄
+        gold = load_gold_set(cfg.calibration.gold_set, truth)
+        gold_calls = out.read_gold_calls()
+        evaluations = {j.id: evaluate_judge(gold, truth, gold_calls, j) for j in experiment.judges}
+        calibration = summary_lines(gold, list(evaluations.values()))
 
     def build(summary: bool) -> str:
-        extra = (judge_lines(experiment, out, ctx, summary=summary) + comparison_lines(experiment, ctx, records)
-                 + gate_lines(experiment, out, records, articles, truth, decisions))
+        extra = (judge_lines(experiment, out, ctx, summary=summary) + comparison_lines(experiment, ctx, records) + calibration
+                 + gate_lines(experiment, out, records, articles, truth, decisions, evaluations))
         return render(experiment, out, records, rows, extra, truth, completion_lines(items, decisions), summary=summary)
 
     report_text, summary_text = build(False), build(True)   # 兩份都建好才寫：中途失敗不會留下新的完整版配舊的摘要版

@@ -15,7 +15,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from .errors import InputError
-from .schemas import CheckMeta, ComponentResult, JudgeCall, RunKey, RunRecord, Translation
+from .schemas import CheckMeta, ComponentResult, GoldCall, JudgeCall, RunKey, RunRecord, Translation
 
 REDACTED = "[REDACTED]"
 
@@ -64,6 +64,22 @@ class OutputDir:
     @property
     def check_meta_path(self) -> Path:
         return self.root / "check-meta.json"
+
+    @property
+    def gold_calls_path(self) -> Path:
+        return self.root / "gold-calls.jsonl"
+
+    @property
+    def gold_sample_path(self) -> Path:
+        return self.root / "gold-sample.md"
+
+    @property
+    def calibration_path(self) -> Path:
+        return self.root / "calibration.md"
+
+    @property
+    def disagreements_path(self) -> Path:
+        return self.root / "calibration-disagreements.md"
 
     @property
     def summary_path(self) -> Path:
@@ -178,6 +194,47 @@ class OutputDir:
 
     def write_report(self, text: str) -> None:
         self._replace(self.report_path, text)
+
+    def read_gold_calls(self) -> list[GoldCall]:
+        if not self.gold_calls_path.exists():
+            return []
+        calls = []
+        with open(self.gold_calls_path, encoding="utf-8") as f:
+            for n, line in enumerate(f, 1):
+                if not line.strip():
+                    continue
+                try:
+                    calls.append(GoldCall.model_validate_json(line))
+                except ValidationError as e:
+                    raise InputError(f"{self.gold_calls_path}：第 {n} 行不是合法的校準紀錄（{e.error_count()} 個錯誤）") from e
+        return calls
+
+    def write_gold_call(self, call: GoldCall, raw: bytes | None, *, secrets: tuple[str, ...] = (), replaces_existing: bool = False) -> GoldCall:
+        """原始回應按 Judge 存成 jsonl（每個請求一行，重做的不蓋掉舊的），最後才寫校準紀錄。"""
+        if raw is not None:
+            line = json.dumps({"item": call.item_id, "task": call.task, "call": call.call_index, "body": raw.decode("utf-8", errors="replace")}, ensure_ascii=False)
+            path = self.root / "gold-raw" / f"{call.judge}.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(_scrub(line, secrets) + "\n")
+            call = call.model_copy(update={"raw_response": f"gold-raw/{call.judge}.jsonl"})
+        text = _scrub(call.model_dump_json(), secrets) + "\n"
+        if replaces_existing:
+            same = lambda c: (c.item_id, c.judge, c.task, c.call_index) == (call.item_id, call.judge, call.task, call.call_index)   # noqa: E731
+            kept = "".join(c.model_dump_json() + "\n" for c in self.read_gold_calls() if not same(c))
+            self._replace(self.gold_calls_path, kept + text)
+        else:
+            self.root.mkdir(parents=True, exist_ok=True)
+            with open(self.gold_calls_path, "a", encoding="utf-8") as f:
+                f.write(text)
+        return call
+
+    def write_gold_sample(self, text: str) -> None:
+        self._replace(self.gold_sample_path, text)
+
+    def write_calibration(self, text: str, disagreements: str) -> None:
+        self._replace(self.calibration_path, text)
+        self._replace(self.disagreements_path, disagreements)
 
     def write_summary(self, text: str) -> None:
         self._replace(self.summary_path, text)

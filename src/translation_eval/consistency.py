@@ -43,7 +43,8 @@ def _interval(text: str, span: str) -> tuple[int, int] | None:
     return None if start < 0 else (start, start + len(wanted))
 
 
-def _same_finding(a: JudgeFinding, b: JudgeFinding, pair: ComponentPair) -> bool:
+def same_finding(a: JudgeFinding, b: JudgeFinding, pair: ComponentPair) -> bool:
+    """兩個 Finding 是不是同一處：同一 Dimension，譯文片段重疊（譯文片段都是空的就看原文片段）。校準用它對照標註。"""
     if a.dimension != b.dimension:
         return False
     a_target, b_target = bool(a.target_span.strip()), bool(b.target_span.strip())
@@ -60,7 +61,7 @@ def _same_finding(a: JudgeFinding, b: JudgeFinding, pair: ComponentPair) -> bool
 def _merge(first: list[JudgeFinding], second: list[JudgeFinding], pair: ComponentPair) -> list[MergedFinding]:
     unmatched, merged = list(second), []
     for a in first:
-        partner = next((b for b in unmatched if _same_finding(a, b, pair)), None)
+        partner = next((b for b in unmatched if same_finding(a, b, pair)), None)
         if partner is None:
             merged.append(MergedFinding(a, consistent=False, severity_mismatch=False))
             continue

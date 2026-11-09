@@ -135,6 +135,31 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
 
   `report` 的「與 baseline 比較」一節，把每個 Approach 和 baseline（`import-baseline` 匯入的也算）的 MQM 分數對質素 baseline 比，繁→簡另外對 `also_against` 的 baseline 比（自己不與自己比；A 對 E 與 E 對 A 都會列，各自以被當作 baseline 的那一邊篩選文章；某個 Direction 沒有 Run 的組合，例如 E 的繁→英，不列）。每個 `primary` 的 Judge 各比一次。只比 `full` 的 Run，而且只在三種文章上比：baseline 這個 Direction 的所有 Run 都有紀錄而且都是 `ok`（被 Block 或有失敗的文章不比；紀錄比計畫少也不比）、被比的一邊至少有一個在 MQM 評核範圍內的 `ok` 的 Run（沒有譯文的文章沒有分數，不當零分；它的 Block 在 Block 率呈報）、兩邊都評完。多個 Run 時每篇文章取 `ok` 的 Run 的平均，並列出平均用了幾個 Run、計畫幾個（不夠就標示）。每個比較列出比較了幾篇文章、沒比的文章 id（全部列出）和原因、Main 與 Peripheral 的每千字罰分（只計一致的／連 uncertain 一起計）與差（被比的 − baseline，正數是罰分較多）、Unjudged 的 Component 數。`comparison` 指向不存在的 Approach 或 baseline、不在實驗內的 Direction、在要比的 Direction 沒有 `full` 的 Run 的對象，或質素 baseline 不是 API 跑的 Approach，會在載入設定時失敗，不會悄悄什麼也不列。
   `report` 同時寫 `summary.md`（摘要版）：內容與完整版一樣的數字，但沒有原文、譯文、事實文字、Judge 寫的理由、Source defect 的片段與說明、同家族例外的理由和審閱備註；Source defect 只列文章 id 與 Component id，provider 或檔案裡的字串（Block 原因、模型版本、baseline 標籤等）只放得出是代碼的（字母、數字和 `_:.-`，不含空白，60 字以內），其他寫「（其他）」；Source defect 在摘要版每個 Component 一行（有幾處、哪些 Judge）。摘要版可以交給 Ivan／Stephen，是否外傳由 Pan 決定。報告開頭有實驗設定、各 Approach 的模型版本與 provider、各任務的 prompt hash、Judge 設定、權重、正規化方式、同家族的例外、ground truth 的狀態與 hash、baseline 標籤和審閱完成度。
+- **Gold set 與 Judge 校準**：實驗設定寫 `"calibration": {"gold_set": "data/gold-set.json"}`（Gold set 是 Pan 手寫的，放在 `data/`）。格式：
+
+  ```json
+  {"items": [
+    {"id": "g01", "category": "annotated", "direction": "trad-to-en", "domain": "general", "source": "…", "translation": "…",
+     "context_before": {"source": "…", "translation": "…"}, "context_after": null,
+     "findings": [{"dimension": "Accuracy", "severity": "major", "source_span": "…", "target_span": "…"}]},
+    {"id": "g02", "category": "variant", "direction": "trad-to-en", "domain": "china-political", "source": "…", "translation": "…（人手寫的 Softening 變體）",
+     "ground_truth": {"article_id": "<文章 id>", "component_id": "<Component id>"},
+     "facts": [{"fact": "<ground truth 那條事實的文字>", "verdict": "Weakened", "weakening_type": "c"}]},
+    {"id": "g03", "category": "clean", "direction": "trad-to-en", "domain": "general", "source": "…", "translation": "…"}
+  ]}
+  ```
+
+  類別：`annotated`（真實候選譯文的人手標註，標註要完整：沒標到的 Finding 算 Judge 多報）、`variant`（人手寫的 Softening 變體：指向 ground truth 的 Component，列出預期 verdict 與類型；至少一條預期是 Weakened 或 Absent）、`clean`（無錯樣本：沒有預期的 Finding，事實預期都是 Present）。目標約 50／25／25（Q14，只用來提醒）。`gold check` 驗證並列出各類別、Direction、domain 的數量；驗證規則：預期 Finding 的片段是原文或譯文的逐字子字串（連續空白忽略）；`facts` 指向的 Component 在 ground truth 有 Sensitive sentence、事實文字是那個 Component 的事實、原文含那句的 anchor；項目 id 不重覆。錯誤只列項目 id 與原因。`gold sample --count 30 --seed 1` 以固定種子抽項目，寫成 `gold-sample.md`（含原文與譯文，只在本機看）給 Pan 審閱。
+
+  ```bash
+  # 會呼叫 API、需要 key：只由 Pan 在自己的終端機執行。--dry-run 先看請求數
+  uv run --locked --env-file .env python -I -m translation_eval calibrate --config <實驗設定> --judge <id> [--dry-run] [--limit <N>] [--redo-errors]
+  # 不寫 --judge：不送請求，只重算結果
+  uv run --locked python -I -m translation_eval calibrate --config <實驗設定>
+  ```
+
+  `calibrate --judge` 對每個項目的 MQM 任務、每個有 `facts` 的項目的 fact 任務，各送兩個獨立的請求，格式與正式評核完全相同（項目自己的前後文、ground truth 那句的全部事實）。已有新紀錄的請求略過；prompt、Judge 設定或項目內容改了，舊紀錄過期，會重送。結果寫在 `gold-calls.jsonl`，並重寫 `calibration.md`（各 Judge 的指標，只有數字）和 `calibration-disagreements.md`（Judge 對標註、Judge 對 Judge 的分歧，含原文與譯文）。每個 Judge（不分 primary 或 experiment）都可以校準；選主 Judge 要先把候選的都跑過。指標（全部、按 Direction、按 domain 各一組，分子分母都列）：預期 Finding 的 recall（只計一致的／連 uncertain 一起計）與 Severity 一致率；驗證後 precision（只看 annotated 項目）；clean 項目上的誤報；無效 Finding 率；兩次一致率（Finding、事實 verdict）；uncertain 與一致兩組 Finding 的錯誤率（檢驗「跑兩次」：uncertain 的錯誤率若沒有比較高，不一致就沒有提供資訊）；事實 verdict 的準確率、Weakened 與 Absent 各自的 recall、失敗的事實（Weakened 或 Absent）的 recall（uncertain 算沒有抓到）、預期 Present 被判成失敗的誤報數。合格線（recall、precision）要等第一批數字出來才訂，程式不判合格與否。Q31 比較 1（Gemini 與 Qwen 在 political 與 general 變體上的 recall）就是 `calibration.md` 裡兩個 Judge 的 domain 分組。
+  `report` 讀最新的校準結果：Gate 每個分組旁邊列主 Judge 的 recall（Gold set 上預期失敗的事實，按該 Gate 的 Direction 與 domain 取；Q34 這類覆寫分組不分 domain）；沒有校準、校準的請求都過期、或 Gold set 在這一格沒有預期失敗的事實，就明確寫「Judge recall 未量度」。報告另有「Judge 校準摘要」一節（只有數字，摘要版也有）。Gold set 驗證不合時 `report` 也停止。
 - **全文篩查**：`judge` 預設連全文篩查一起跑（`--task screen` 只跑它；`judging.screening: false` 可以關掉預設，`--task screen` 仍可明講要跑）。每個 ok 的 Run、每個 Judge 發兩個獨立請求，輸入是整篇的原文與譯文（逐 Component，譯文缺少的 Component 是 null），Judge 先列出關鍵事實再逐條核對，只輸出 Weakened、Absent 或 Amplification 的條目（附類型）。原文片段必須是某一個 Component 原文的逐字子字串（也決定條目屬於哪個 Component），譯文片段必須是譯文某處的逐字子字串；Weakened 與 Amplification 要有譯文片段，Absent 可以沒有。不合格的條目丟掉，記為無效並保留原文。兩次的條目若 verdict 相同而且譯文片段重疊（Absent 看原文片段），就是同一處、一致，否則 uncertain；只有一次成功時全部是 uncertain；兩次都失敗是 Unjudged。結果寫在 `judge-calls.jsonl`（Component 欄是 `*`）。篩查的結果**不決定 Gate，也不計分**，全部進審閱清單的必看（和 MQM 產生的 Fidelity-of-force Finding 是同一組必看，分兩個小節）。報告的 Judge 評核一節列出篩查評完幾個 Run、Unjudged 率和條目數；Judge 設定一節列出各任務的 prompt hash。Fidelity-of-force Finding 不計分，審閱決定只表示看過了，不改變報告裡的數量。
 - **人手審閱**：`review` 產生審閱清單 `data/experiments/<實驗 id>/review.md`（含原文和譯文，只在本機；終端只印數量），要先有最新的 `check` 結果：
 

@@ -99,6 +99,9 @@ Judge 或人手對一條 Must-retain fact 的判定：Present（保留）、Weak
 Deterministic check 標出、交人手看但不計分的提示，例如長度比例異常、數字或引語疑似遺失、疑似 Refusal。Finding 計分，Warning 不計分。中文寫作「警示」。
 _Avoid_: flag；把 Warning 叫作 Finding
 
+**Calibration**:
+對 Gold set 跑一個 Judge，量度它的 recall、precision、誤報等，用來選主 Judge，並把主 Judge 的 recall 列在 Gate 旁邊。prompt、Judge 設定或 Gold set 項目改了，舊的結果就過期。中文寫作「校準」。
+
 **Summary report**:
 `report` 同時寫出的、只含數字、文章 id 和 Component id 的報告，沒有原文、譯文和事實文字，可以交給 Ivan／Stephen。中文寫作「摘要版」。
 

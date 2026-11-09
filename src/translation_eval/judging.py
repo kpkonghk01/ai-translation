@@ -84,19 +84,19 @@ def _context(pair: ComponentPair | None) -> dict | None:
     return None if pair is None else {"id": pair.id, "source": pair.source_text, "translation": pair.translated_text}
 
 
-def _envelope(call: PlannedCall, term_list: LoadedTermList, text: str) -> dict:
+def _envelope(direction: Direction, term_list: LoadedTermList, text: str) -> dict:
     """每個任務的請求都有的前三項：Direction、語域要求，和 text 裡出現的 Term List 條目。"""
-    direction = call.record.direction
     terms = [f"{e.source} -> {' / '.join(e.renderings(direction))}" for e in entries_in(term_list.entries, text, direction)]
     return {"direction": direction.value, "requirements": DIRECTION_REQUIREMENTS[direction], "term_list": terms}
 
 
-def user_message(call: PlannedCall, term_list: LoadedTermList) -> str:
-    pair = call.pairs[call.index]
-    before = call.pairs[call.index - 1] if call.index > 0 else None
-    after = call.pairs[call.index + 1] if call.index + 1 < len(call.pairs) else None
+def mqm_message(direction: Direction, pairs: list[ComponentPair], index: int, term_list: LoadedTermList) -> str:
+    """MQM 的請求：pairs[index] 是要評的 Component，前後各一個當前後文。校準用同一個函式，Judge 看到的格式才與正式評核一樣。"""
+    pair = pairs[index]
+    before = pairs[index - 1] if index > 0 else None
+    after = pairs[index + 1] if index + 1 < len(pairs) else None
     return json.dumps({
-        **_envelope(call, term_list, pair.source_text),
+        **_envelope(direction, term_list, pair.source_text),
         "context_before": _context(before),
         "component": {"id": pair.id, "type": pair.type, "source": pair.source_text, "translation": pair.translated_text},
         "context_after": _context(after),
@@ -182,16 +182,24 @@ def fact_ids(sentences) -> dict[str, Fact]:
     return {f"F{n}": fact for n, fact in enumerate((f for s in sentences for f in s.facts), 1)}
 
 
-def fact_message(call: PlannedCall, term_list: LoadedTermList) -> str:
-    pair = call.pairs[call.index]
-    numbered, sentences = iter(fact_ids(call.sentences)), []
-    for sentence in call.sentences:
+def user_message(call: PlannedCall, term_list: LoadedTermList) -> str:
+    return mqm_message(call.record.direction, call.pairs, call.index, term_list)
+
+
+def fact_request_message(direction: Direction, pair: ComponentPair, sentence_list, term_list: LoadedTermList) -> str:
+    """Must-retain fact 的請求：pair 是含這些 Sensitive sentence 的 Component。校準也用它。"""
+    numbered, sentences = iter(fact_ids(sentence_list)), []
+    for sentence in sentence_list:
         sentences.append({"anchor": sentence.anchor, "facts": [{"id": next(numbered), "kind": f.kind.value, "fact": f.text} for f in sentence.facts]})
     return json.dumps({
-        **_envelope(call, term_list, pair.source_text),
+        **_envelope(direction, term_list, pair.source_text),
         "component": {"id": pair.id, "type": pair.type, "source": pair.source_text, "translation": pair.translated_text},
         "sentences": sentences,
     }, ensure_ascii=False)
+
+
+def fact_message(call: PlannedCall, term_list: LoadedTermList) -> str:
+    return fact_request_message(call.record.direction, call.pairs[call.index], call.sentences, term_list)
 
 
 def _read_type(value) -> WeakeningType | None:
@@ -264,7 +272,7 @@ def interpret_facts(result: Interpretation, pair: ComponentPair, sentences):
 
 def screen_message(call: PlannedCall, term_list: LoadedTermList) -> str:
     return json.dumps({
-        **_envelope(call, term_list, "\n".join(p.source_text for p in call.pairs)),
+        **_envelope(call.record.direction, term_list, "\n".join(p.source_text for p in call.pairs)),
         "components": [{"id": p.id, "type": p.type, "source": p.source_text, "translation": p.translated_text} for p in call.pairs],
     }, ensure_ascii=False)
 
