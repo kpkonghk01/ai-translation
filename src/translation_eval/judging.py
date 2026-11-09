@@ -355,7 +355,7 @@ def require_allowed_families(experiment, plan: list[PlannedCall]) -> None:
         if approach is None:
             if not call.record.is_baseline:   # baseline 不是 LLM，沒有家族；其他的沒辦法確認家族，不能放行
                 unknown.add(call.record.approach)
-        elif _family(approach.family) == _family(call.judge.config.family) and (approach.id, call.judge.id) not in excepted:
+        elif same_family(approach.family, call.judge.config.family) and (approach.id, call.judge.id) not in excepted:
             clashes.add((approach.id, call.judge.id, approach.family))
     problems = [f"Judge {j} 與 Approach {a} 同家族（{f}）：要在 judging.same_family_exceptions 針對這個組合寫明例外和理由"
                 for a, j, f in sorted(clashes)]
@@ -364,8 +364,9 @@ def require_allowed_families(experiment, plan: list[PlannedCall]) -> None:
         raise InputError(problems)
 
 
-def _family(name: str) -> str:
-    return name.strip().casefold()
+def same_family(first: str, second: str) -> bool:
+    """模型家族的比對：不分大小寫、不計前後空白。"""
+    return first.strip().casefold() == second.strip().casefold()
 
 
 def handle(args, transport: Transport) -> int:

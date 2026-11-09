@@ -105,6 +105,9 @@ Gold set 項目的三類：annotated（真實候選譯文的人手標註，標�
 **Crosscheck**:
 讓模型在沒看過 ground truth 的情況下，盲選最敏感的句子、盲抽 Must-retain fact，再與 ground truth 對照，找出 ground truth 可能漏了或寫錯的地方。產生分歧清單，由人決定要不要改 ground truth；指令本身從不改它。中文寫作「交叉檢驗」。
 
+**Suspected miss**:
+Judge 實驗裡，主 Judge 判一條 Must-retain fact 為 Weakened 或 Absent、experiment 的 Judge（Qwen）判為 Present 的情況。只在 experiment 的 Judge 有最終 Verdict 時才算；它被擋、uncertain 或無效，與「評了但漏看」分開。中文寫作「疑似漏看」。
+
 **Calibration**:
 對 Gold set 跑一個 Judge，量度它的 recall、precision、誤報等，用來選主 Judge，並把主 Judge 的 recall 列在 Gate 旁邊。prompt、Judge 設定或 Gold set 項目改了，舊的結果就過期。中文寫作「校準」。
 

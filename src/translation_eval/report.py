@@ -10,7 +10,6 @@
 
 每個比率都附分子和分母。還有 ok 的 Run 沒有 check 結果時不產生報告：否則漏段數會靜默地少算。
 """
-import re
 from collections import Counter, defaultdict
 
 from .check import require_checked
@@ -21,8 +20,10 @@ from .ground_truth import GroundTruth, load_ground_truth
 from .calibration import evaluate_judge
 from .calibration_report import summary_lines
 from .comparison import comparison_lines
+from .experiment_report import experiment_lines
 from .gold import load_gold_set
 from .judge_report import judge_context, judge_lines, judge_settings_lines
+from .report_text import shown
 from .review import completion_lines
 from .review_decisions import apply_check_decisions, check_decisions, load_decisions
 from .review_items import build_items
@@ -48,16 +49,6 @@ def format_ratio(numerator: int, denominator: int) -> str:
     if denominator == 0:
         return f"{numerator}/{denominator}（—）"
     return f"{numerator}/{denominator}（{100 * numerator / denominator:.1f}%）"
-
-
-_SAFE_CODE = re.compile(r"[A-Za-z0-9_:.\-]{1,60}")   # 沒有空白：一句英文不會通過
-
-
-def shown(value, summary: bool):
-    """摘要版只放得出是代碼的字串（Block 原因、模型版本、baseline 標籤等：字母、數字和 _:.-，60 字以內）：provider 或檔案裡的其他文字不外傳。"""
-    if not summary or value is None or _SAFE_CODE.fullmatch(str(value)):
-        return value
-    return "（其他）"
 
 
 def _counts(values, none_label: str = "未回報", summary: bool = False) -> str:
@@ -242,13 +233,16 @@ def handle(args) -> int:
         evaluations = {j.id: evaluate_judge(gold, truth, gold_calls, j) for j in experiment.judges}
         calibration = summary_lines(gold, list(evaluations.values()))
 
-    def build(summary: bool) -> str:
+    def build(summary: bool) -> tuple[str, str]:
+        experiment_section, misses = experiment_lines(experiment, out, records, articles, truth, evaluations, summary=summary)
         extra = (judge_lines(experiment, out, ctx, summary=summary) + comparison_lines(experiment, ctx, records) + calibration
-                 + gate_lines(experiment, out, records, articles, truth, decisions, evaluations))
-        return render(experiment, out, records, rows, extra, truth, completion_lines(items, decisions), summary=summary)
+                 + gate_lines(experiment, out, records, articles, truth, decisions, evaluations) + experiment_section)
+        return render(experiment, out, records, rows, extra, truth, completion_lines(items, decisions), summary=summary), misses
 
-    report_text, summary_text = build(False), build(True)   # 兩份都建好才寫：中途失敗不會留下新的完整版配舊的摘要版
+    (report_text, misses), (summary_text, _) = build(False), build(True)   # 兩份都建好才寫：中途失敗不會留下新的完整版配舊的摘要版
     out.write_report(report_text)
     out.write_summary(summary_text)
+    if misses:
+        out.write_experiment_misses(misses)
     print(f"已寫入 {out.report_path} 和 {out.summary_path}（{len(records)} 個 Run）")
     return 0

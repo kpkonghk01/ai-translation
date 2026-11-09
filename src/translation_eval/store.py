@@ -84,6 +84,10 @@ class OutputDir:
         return self.root / "crosscheck-calls.jsonl"
 
     @property
+    def experiment_misses_path(self) -> Path:
+        return self.root / "experiment-judge-misses.md"
+
+    @property
     def crosscheck_path(self) -> Path:
         return self.root / "crosscheck.md"
 
@@ -204,6 +208,9 @@ class OutputDir:
         raw_path = self._append_raw(f"crosscheck-raw/{call.judge}.jsonl", raw, secrets, {"article": call.article_id})
         return self._write_record(self.crosscheck_calls_path, call.model_copy(update={"raw_response": raw_path}) if raw_path else call, crosscheck_call_key,
                                   self.read_crosscheck_calls, secrets, replaces_existing)
+
+    def write_experiment_misses(self, text: str) -> None:
+        self._replace(self.experiment_misses_path, text)
 
     def write_crosscheck(self, text: str) -> None:
         self._replace(self.crosscheck_path, text)
