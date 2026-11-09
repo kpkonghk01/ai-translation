@@ -1,10 +1,11 @@
 """校準測試共用：很小的虛構 Gold set、Judge 的假回應，和 CalibrationCase。只用虛構資料。
 
-Gold set 有 6 條，指向 GROUND_TRUTH 的 9000001（001 有兩條事實，002 有一條）：
+實驗有兩篇文章：9000001（general，ground truth 有 001 的兩條事實）和 9000002（china-political，ground truth 有 002 的一條事實）。
+Gold set 有 6 條：
   g01 annotated 繁→英 general：預期一個 Accuracy／major（預算超支 → over budget）
   g02 variant   繁→英 general：001 的變體，預期「工程延誤半年」Weakened (c)、「預算超支」Absent (d)
   g03 clean     繁→英 general：001 的原譯，「預算超支」預期 Present
-  g04 variant   繁→簡 china-political：002 的變體，預期「不滿的是市民陳虛構本人」Weakened (a)
+  g04 variant   繁→簡 china-political：9000002 的 002 的變體，預期「不滿的是市民陳虛構本人」Weakened (a)
   g05 clean     繁→簡 china-political
   g06 annotated 繁→簡 general：有前文；預期一個 Fluency／minor（目標片段「延误半年」）
 """
@@ -14,11 +15,10 @@ import io
 import json
 import os
 
+from fake_transport import FakeTransport, FunctionTransport
+from fixtures import GROUND_TRUTH, JUDGE, Workspace, ok_response
+from judge_helpers import fact_output, fact_transport, finding, judge_transport, user_payload
 from translation_eval import cli
-from fake_transport import FunctionTransport
-from fixtures import JUDGE
-from gate_helpers import ReviewCase
-from judge_helpers import fact_output, finding, user_payload
 
 GOOD_EN = "The renovation is six months late and over budget."
 SOURCE_001 = "翻新工程延誤半年，預算超支。"
@@ -42,7 +42,7 @@ GOLD = {"items": [
     gold_item("g03", "clean", "trad-to-en", "general", SOURCE_001, GOOD_EN,
               ground_truth={"article_id": "9000001", "component_id": "9000001-001"}, facts=[{"fact": FACT_BUDGET, "verdict": "Present"}]),
     gold_item("g04", "variant", "trad-to-simplified", "china-political", SOURCE_002, "市民陈虚构表示，工程有点延迟。",
-              ground_truth={"article_id": "9000001", "component_id": "9000001-002"},
+              ground_truth={"article_id": "9000002", "component_id": "9000002-002"},
               facts=[{"fact": FACT_WHO, "verdict": "Weakened", "weakening_type": "a"}]),
     gold_item("g05", "clean", "trad-to-simplified", "china-political", SOURCE_002, "市民陈虚构表示，工程拖延令他十分不满。"),
     gold_item("g06", "annotated", "trad-to-simplified", "general", SOURCE_001, GOOD_ZH,
@@ -51,13 +51,17 @@ GOLD = {"items": [
 ]}
 
 
+def calibration_ground_truth() -> dict:
+    """GROUND_TRUTH 的 9000001（general），加一篇 china-political 的 9000002：002 的一個敏感句，一條事實。"""
+    political = {"article_id": "9000002", "role": "sensitive", "domain": "china-political", "note": "虛構的敏感文章",
+                 "items": [{"component_id": "9000002-002", "anchor": "十分不滿", "why": "虛構的理由", "must_retain": [{"kind": "attribution", "fact": FACT_WHO}]}],
+                 "source_defects": []}
+    return {"status": "draft，虛構", "articles": [copy.deepcopy(GROUND_TRUTH["articles"][0]), political]}
+
+
 def mqm(items: dict) -> dict:
     """{(項目 id, 第幾次): Finding 的清單}（也可以是 dict 輸出）→ judge_transport 用的 outputs。"""
     return {key: value if isinstance(value, dict) else {"findings": value, "source_defects": []} for key, value in items.items()}
-
-
-def verdict_changes(**by_item) -> dict:
-    return by_item
 
 
 def j1_mqm() -> dict:
@@ -89,7 +93,6 @@ def j1_facts() -> dict:
 
 def routed(by_model: dict) -> FunctionTransport:
     """按請求網址裡的模型名分派給不同的假 Judge：{模型名: (mqm outputs, fact outputs)}。MQM 請求的 Component id 是 Gold set 項目的 id。"""
-    from judge_helpers import fact_transport, judge_transport
     sides = {model: (judge_transport(m), fact_transport(f)) for model, (m, f) in by_model.items()}
 
     def reply(request):
@@ -104,13 +107,17 @@ def j1_transport() -> FunctionTransport:
     return routed({"gemini-3.1-pro": (j1_mqm(), j1_facts())})
 
 
-class CalibrationCase(ReviewCase):
+class CalibrationCase(Workspace):
+    """Gold set 與校準的測試：兩篇文章、ground truth、兩個 Judge（j1 primary、j2 experiment）。Run 要用的測試自己 translate。"""
     gold = GOLD
+    article_ids = ("9000001", "9000002")
 
     def setUp(self):
         super().setUp()
         self.gold_path = os.path.join(self.tmp, "gold.json")
         self.write_gold(self.gold)
+        self.ground_truth = calibration_ground_truth()
+        self.use_ground_truth(self.ground_truth)
         self.use_judging(judges=(JUDGE, J2))
         self.extra_experiment["calibration"] = {"gold_set": self.gold_path}
         self.write_json(self.config_path, self.experiment())
@@ -123,11 +130,25 @@ class CalibrationCase(ReviewCase):
         mutate(gold["items"])
         self.write_gold(gold)
 
+    def edited_ground_truth(self, mutate) -> None:
+        ground_truth = copy.deepcopy(self.ground_truth)
+        mutate(ground_truth["articles"])
+        self.use_ground_truth(ground_truth)
+
+    def translate_both(self) -> None:
+        self.assertEqual(self.run_cli("translate", transport=FakeTransport(ok_response("9000001"), ok_response("9000002")))[0], 0)
+
+    def report_text(self) -> str:
+        self.assertEqual(self.run_cli("check")[0], 0)
+        code, _, err = self.run_cli("report")
+        self.assertEqual(code, 0, err)
+        return self.output_text("report.md")
+
     def run_gold(self, sub: str, *extra: str):
         """gold 的子命令的 --config 要放在子命令之後：回傳 (結束碼, stdout, stderr)。"""
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = cli.main(["gold", sub, "--config", self.config_path, "--data-dir", self.data_dir, *extra])
+            code = cli.main(["gold", sub, "--config", self.config_path, *(["--data-dir", self.data_dir] if sub == "sample" else []), *extra])   # check 不寫任何東西，沒有 --data-dir
         return code, out.getvalue(), err.getvalue()
 
     def calibrate(self, *args, transport=None):

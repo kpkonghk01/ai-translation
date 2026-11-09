@@ -1,11 +1,18 @@
 """Gold set 與校準：格式與驗證、gold sample、calibrate 的請求與續跑、各項指標（手算）、分歧清單、報告裡的 recall。從 main(argv) 進入，
 transport 注入假的。只用虛構資料。指標的預期數字見 calibration_helpers 的說明，都是手算的。"""
+import json
 import os
+import shutil
+import tempfile
+from unittest import mock
 
 import gemini_samples
+import openrouter_samples
 from calibration_helpers import FACT_BUDGET, FACT_DELAY, GOLD, J2, SOURCE_001, CalibrationCase, gold_item, j1_transport, mqm, routed
-from fake_transport import FakeTransport
-from judge_helpers import fact_output, finding, system_text, user_payload
+from fake_transport import FakeTransport, FunctionTransport
+from fixtures import FAKE_KEY
+from judge_helpers import NO_PROBLEMS, fact_output, finding, system_text, user_payload
+from translation_eval import prompts
 
 
 class GoldSetTest(CalibrationCase):
@@ -16,7 +23,8 @@ class GoldSetTest(CalibrationCase):
             self.assertIn(needle, err)
             for text in (SOURCE_001, "虛構"):
                 self.assertNotIn(text, err + out)
-        self.assertFalse(os.path.exists(os.path.join(self.out_dir, "gold-calls.jsonl")))
+        for name in ("gold-calls.jsonl", "calibration.md", "calibration-disagreements.md", "gold-sample.md"):
+            self.assertFalse(os.path.exists(os.path.join(self.out_dir, name)), name)   # 先驗證，後寫入
 
     def test_check_lists_the_counts_by_category_direction_and_domain_and_nothing_else(self):
         code, out, err = self.run_gold("check")
@@ -47,8 +55,14 @@ class GoldSetTest(CalibrationCase):
         self.assert_rejected("沒有 Sensitive sentence")
         self.edited_gold(lambda items: items[1]["facts"].append(dict(items[1]["facts"][0])))
         self.assert_rejected("預期的事實有重覆")
-        self.edited_gold(lambda items: items[1].update(source="完全不同的原文，沒有 anchor。"))
-        self.assert_rejected("原文不含 ground truth 那句的 anchor")
+        self.edited_gold(lambda items: items[1].update(source="翻新工程延誤半年，預算超支。另外多了一句。"))
+        self.assert_rejected("原文與 ground truth 指向的 Component 不同")
+
+    def test_the_domain_has_to_be_the_domain_of_the_ground_truth_article_the_item_points_at(self):
+        self.edited_gold(lambda items: items[1].update(domain="china-political"))   # g02 指向 9000001（general）
+        self.assert_rejected("domain 是 china-political，但 ground truth 的文章 9000001 是 general")
+        self.edited_gold(lambda items: items[3].update(domain="general"))   # g04 指向 9000002（china-political）
+        self.assert_rejected("domain 是 general，但 ground truth 的文章 9000002 是 china-political")
 
     def test_the_category_rules_are_enforced(self):
         cases = [(lambda items: items[2].update(findings=[{"dimension": "Fluency", "severity": "minor", "target_span": "late"}]), "clean 沒有預期的 Finding"),
@@ -59,7 +73,7 @@ class GoldSetTest(CalibrationCase):
                  (lambda items: items[1].update(facts=[]), "ground_truth 要和 facts 一起寫"),
                  (lambda items: items[1]["facts"][0].update(weakening_type="amplification"), "Weakened／Absent 的類型是 a–f"),
                  (lambda items: items[2]["facts"][0].update(weakening_type="a"), "Present 只能標 amplification"),
-                 (lambda items: items[0].update(category="mystery"), "category")]
+                 (lambda items: items[0].update(category="mystery"), "items.0.category")]
         for mutate, needle in cases:
             with self.subTest(needle):
                 self.edited_gold(mutate)
@@ -154,7 +168,12 @@ class RunTest(CalibrationCase):
         self.assertEqual(code, 0)
         self.assertNotIn("完成", out)
 
-    def test_changing_an_item_or_the_ground_truth_it_points_at_resends_only_that_items_requests(self):
+    def resent(self, *args) -> list[str]:
+        transport = j1_transport()
+        self.assertEqual(self.calibrate("--judge", "j1", *args, transport=transport)[0], 0)
+        return sorted({user_payload(r)["component"]["id"] for r in transport.requests})
+
+    def test_changing_what_is_sent_for_an_item_resends_only_that_items_requests_and_replaces_the_old_ones(self):
         self.calibrate_j1()
         self.edited_gold(lambda items: items[1].update(translation="The renovation ran slightly behind schedule."))
         transport = j1_transport()
@@ -162,12 +181,35 @@ class RunTest(CalibrationCase):
         self.assertEqual(sorted({user_payload(r)["component"]["id"] for r in transport.requests}), ["g02"])
         self.assertEqual(len(transport.requests), 4)   # g02：MQM 2、fact 2
         self.assertEqual(len(self.gold_calls()), 18)   # 舊的被換掉，不是疊上去
-        self.edited_ground_truth(lambda a: a["items"][1]["must_retain"][0].update(fact="不滿的是市民本人"))   # g04 指向的事實改了
-        self.write_gold(GOLD)
+
+    def test_changing_the_ground_truth_sentence_an_item_points_at_makes_that_items_requests_stale_even_when_the_item_is_unchanged(self):
+        self.calibrate_j1()
+        self.edited_ground_truth(lambda a: a[1]["items"][0].update(anchor="不滿"))   # g04 指向的句子的 anchor 改了；事實與 Gold set 都沒變
+        self.assertEqual(self.resent(), ["g04"])
+
+    def test_changing_the_ground_truth_fact_text_resends_the_items_that_point_at_it(self):
+        self.calibrate_j1()
+        self.edited_ground_truth(lambda a: a[1]["items"][0]["must_retain"][0].update(fact="不滿的是市民本人"))
         self.edited_gold(lambda items: items[3]["facts"][0].update(fact="不滿的是市民本人"))
-        transport = j1_transport()
-        self.calibrate("--judge", "j1", transport=transport)
-        self.assertEqual(sorted({user_payload(r)["component"]["id"] for r in transport.requests}), ["g02", "g04"])   # g02 又換回原來的內容，g04 的事實改了
+        self.assertEqual(self.resent(), ["g04"])
+
+    def test_editing_only_the_expected_answers_or_notes_resends_nothing_because_they_are_not_sent_to_the_judge(self):
+        self.calibrate_j1()
+        self.edited_gold(lambda items: (items[0]["findings"][0].update(severity="minor", note="虛構的備註"), items[1]["facts"][0].update(weakening_type="d")))
+        self.assertEqual(self.resent(), [])
+        self.assertIn("預期 Finding 的 recall", self.output_text("calibration.md"))   # 指標用新的標註重算
+
+    def test_a_changed_prompt_makes_only_that_tasks_requests_stale(self):
+        self.calibrate_j1()
+        with tempfile.TemporaryDirectory() as templates:
+            shutil.copytree(prompts._DIR, os.path.join(templates, "t"))
+            with open(os.path.join(templates, "t", "judge-facts.txt"), "a", encoding="utf-8") as f:
+                f.write("\nAn extra sentence in the fact prompt.\n")
+            with mock.patch.object(prompts, "_DIR", prompts.Path(templates) / "t"):
+                transport = j1_transport()
+                self.calibrate("--judge", "j1", transport=transport)
+        self.assertEqual(len(transport.requests), 6)   # 只有 fact 的 6 個請求
+        self.assertTrue(all("sentences" in user_payload(r) for r in transport.requests))
 
     def test_changing_the_judge_configuration_makes_every_record_stale(self):
         self.calibrate_j1()
@@ -215,11 +257,49 @@ class RunTest(CalibrationCase):
         self.assertEqual(len(self.gold_calls()), 18)
 
 
+class RunSafetyTest(CalibrationCase):
+    def test_a_response_from_a_provider_that_is_not_allowed_stops_the_run_after_recording_it(self):
+        env = mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": FAKE_KEY})
+        env.start()
+        self.addCleanup(env.stop)
+        judge = {"id": "j1", "role": "primary", "family": "claude", "provider": "openrouter", "model": "anthropic/fake-judge", "api_key_env": "OPENROUTER_API_KEY",
+                 "retry": {"max_attempts": 1, "base_delay_seconds": 0}, "routing": {"only": ["deepinfra"], "confirmed_on": "2026-11-09"}}
+        self.use_judging(judges=(judge,))
+        self.extra_experiment["calibration"] = {"gold_set": self.gold_path}
+        self.write_json(self.config_path, self.experiment())
+        transport = FunctionTransport(lambda r: openrouter_samples.ok(json.dumps(NO_PROBLEMS), "SomewhereElse"))
+        code, _, err = self.calibrate("--judge", "j1", transport=transport)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(len(transport.requests), 1)   # 資料已經送過去了：不再送下一個
+        self.assertIn("provider", err)
+        [call] = self.gold_calls()
+        self.assertEqual((call["outcome"], call["reason"], call["served_provider"]), ("error", "provider 不在允許清單內", "SomewhereElse"))
+
+    def test_a_key_that_comes_back_in_a_response_is_scrubbed_from_every_calibration_output(self):
+        leaking = finding(severity="major", source_span="預算超支", target_span="over budget", reason=f"洩漏的 {FAKE_KEY}")
+        leaking_response = gemini_samples.with_fields(gemini_samples.ok(json.dumps({"findings": [leaking], "source_defects": []})), modelVersion=FAKE_KEY)
+        transport = FunctionTransport(lambda r: leaking_response if "sentences" not in user_payload(r) else gemini_samples.ok(json.dumps({"verdicts": []})))
+        self.assertEqual(self.calibrate("--judge", "j1", transport=transport)[0], 0)
+        self.assertIn("[REDACTED]", self.all_output_text())   # 對照：有東西被遮蓋了
+        self.assertNotIn(FAKE_KEY, self.all_output_text())   # data/ 底下所有檔案：gold-calls.jsonl、gold-raw、calibration*.md
+
+    def test_the_dry_run_estimates_the_input_size(self):
+        del os.environ["GEMINI_API_KEY"]
+        code, out, _ = self.calibrate("--judge", "j1", "--dry-run", transport=FakeTransport())
+        self.assertEqual(code, 0)
+        self.assertRegex(out, r"Judge j1：估計輸入字數約 \d+")
+
+    def test_a_missing_key_leaves_the_outputs_untouched(self):
+        del os.environ["GEMINI_API_KEY"]
+        self.calibrate("--judge", "j1", transport=FakeTransport())
+        for name in ("gold-calls.jsonl", "calibration.md", "calibration-disagreements.md"):
+            self.assertFalse(os.path.exists(os.path.join(self.out_dir, name)), name)
+
+
 class MetricsTest(CalibrationCase):
     def setUp(self):
         super().setUp()
         self.calibrate_j1()
-        self.text = self.output_text("calibration.md")
 
     def lines(self, heading: str) -> str:
         return self.group(self.output_text("calibration.md"), heading)   # 每次重讀：有的測試會重跑校準
@@ -228,25 +308,29 @@ class MetricsTest(CalibrationCase):
         overall = self.lines("全部")
         for expected in (
                 "- 項目：6 條；MQM 評完 6、Unjudged 0、尚未評完 0；fact 評完 3、Unjudged 0、尚未評完 0",
-                "- 預期 Finding 的 recall：只計一致的 2/2（100.0%）；連 uncertain 一起計 2/2（100.0%）；對上的之中 Severity 一致 1/2（50.0%）",
+                "- Unjudged 率（跑完的項目之中）：MQM 0/6（0.0%）；fact 0/3（0.0%）",
+                "- 預期 Finding 的 recall：只計一致的 2/2（100.0%）；連 uncertain 一起計 2/2（100.0%）（Unjudged 的項目算沒有抓到）；對上的之中 Severity 一致 1/2（50.0%）",
                 "- 驗證後 precision（annotated 項目）：2/3（66.7%）",
                 "- clean 項目上的誤報：有 Finding 的 clean 項目，只計一致的 0/2（0.0%）；連 uncertain 一起計 1/2（50.0%）",
                 "- 無效 Finding 率：1/9（11.1%）",
                 "- 兩次一致率：Finding 3/5（60.0%）；事實 verdict 3/4（75.0%）",
                 "- Finding 的錯誤率（annotated 與 clean 項目）：一致的 1/3（33.3%）；uncertain 的 1/1（100.0%）",
                 "- 事實 verdict：有最終 verdict 3/4（75.0%）（uncertain 1、無效 0）；準確率（有最終 verdict 的）3/3（100.0%）",
-                "- Weakened 的 recall：1/2（50.0%）；Absent 的 recall：1/1（100.0%）；失敗的事實（Weakened 或 Absent）的 recall：2/3（66.7%）；預期 Present 被判成失敗：0"):
+                "- Weakened 的 recall：1/2（50.0%）；Absent 的 recall：1/1（100.0%）；失敗的事實（Weakened 或 Absent）的 recall：2/3（66.7%）"
+                "（uncertain 與 Unjudged 算沒有抓到）；預期 Present 被判成失敗：0/1（0.0%）"):
             self.assertIn(expected, overall)
 
     def test_metrics_are_listed_apart_for_each_direction(self):
         english, simplified = self.lines("Direction trad-to-en"), self.lines("Direction trad-to-simplified")
-        self.assertIn("- 預期 Finding 的 recall：只計一致的 1/1（100.0%）；連 uncertain 一起計 1/1（100.0%）；對上的之中 Severity 一致 1/1（100.0%）", english)
+        self.assertIn("- 預期 Finding 的 recall：只計一致的 1/1（100.0%）；連 uncertain 一起計 1/1（100.0%）（Unjudged 的項目算沒有抓到）；對上的之中 Severity 一致 1/1（100.0%）", english)
         self.assertIn("- 無效 Finding 率：1/4（25.0%）", english)
         self.assertIn("失敗的事實（Weakened 或 Absent）的 recall：2/2（100.0%）", english)
-        self.assertIn("- 預期 Finding 的 recall：只計一致的 1/1（100.0%）；連 uncertain 一起計 1/1（100.0%）；對上的之中 Severity 一致 0/1（0.0%）", simplified)
+        self.assertIn("預期 Present 被判成失敗：0/1（0.0%）", english)
+        self.assertIn("對上的之中 Severity 一致 0/1（0.0%）", simplified)
         self.assertIn("- 驗證後 precision（annotated 項目）：1/2（50.0%）", simplified)
         self.assertIn("- 事實 verdict：有最終 verdict 0/1（0.0%）（uncertain 1、無效 0）；準確率（有最終 verdict 的）0/0（—）", simplified)
         self.assertIn("失敗的事實（Weakened 或 Absent）的 recall：0/1（0.0%）", simplified)
+        self.assertIn("預期 Present 被判成失敗：0/0（—）", simplified)
 
     def test_metrics_are_listed_apart_for_each_domain(self):
         political, general = self.lines("domain china-political"), self.lines("domain general")
@@ -254,28 +338,40 @@ class MetricsTest(CalibrationCase):
         self.assertIn("- 預期 Finding 的 recall：只計一致的 0/0（—）", political)
         self.assertIn("- clean 項目上的誤報：有 Finding 的 clean 項目，只計一致的 0/1（0.0%）；連 uncertain 一起計 1/1（100.0%）", political)
         self.assertIn("失敗的事實（Weakened 或 Absent）的 recall：0/1（0.0%）", political)
-        self.assertIn("- 預期 Finding 的 recall：只計一致的 2/2（100.0%）；連 uncertain 一起計 2/2（100.0%）；對上的之中 Severity 一致 1/2（50.0%）", general)
+        self.assertIn("對上的之中 Severity 一致 1/2（50.0%）", general)
         self.assertIn("- Finding 的錯誤率（annotated 與 clean 項目）：一致的 1/3（33.3%）；uncertain 的 0/0（—）", general)
         self.assertIn("失敗的事實（Weakened 或 Absent）的 recall：2/2（100.0%）", general)
 
-    def test_the_calibration_file_says_no_pass_mark_is_set_and_has_no_pass_or_fail_verdict(self):
-        self.assertIn("合格線（recall、precision）尚未訂", self.text)
-        for word in ("通過", "不合格", "合格：", "PASS", "FAIL"):
-            self.assertNotIn(word, self.text.replace("合格線（recall、precision）尚未訂", ""))
+    def test_the_cells_the_gate_reads_and_the_variant_slices_for_the_q31_comparison_are_listed(self):
+        text = self.output_text("calibration.md")
+        self.assertIn("失敗的事實（Weakened 或 Absent）的 recall：2/2（100.0%）", self.group(text, "Direction trad-to-en × domain general"))   # Gate 的 trad-to-en × general
+        self.assertIn("失敗的事實（Weakened 或 Absent）的 recall：0/1（0.0%）", self.group(text, "Direction trad-to-simplified × domain china-political"))
+        self.assertNotIn("Direction trad-to-en × domain china-political", text)   # Gold set 沒有這一格：不列空的
+        self.assertIn("失敗的事實（Weakened 或 Absent）的 recall：2/2（100.0%）", self.group(text, "variant × domain general"))
+        self.assertIn("失敗的事實（Weakened 或 Absent）的 recall：0/1（0.0%）", self.group(text, "variant × domain china-political"))
+        self.assertIn("- 項目：1 條", self.group(text, "variant × domain china-political"))   # 只有 variant，不含同一個 domain 的 clean
 
-    def test_a_blocked_judge_is_unjudged_and_leaves_the_denominators(self):
+    def test_the_calibration_file_says_no_pass_mark_is_set_and_has_no_pass_or_fail_verdict(self):
+        text = self.output_text("calibration.md")
+        self.assertIn("合格線（recall、precision）尚未訂", text)
+        for word in ("通過", "不合格", "合格：", "PASS", "FAIL"):
+            self.assertNotIn(word, text.replace("合格線（recall、precision）尚未訂", ""))
+
+    def test_a_blocked_judge_is_unjudged_and_its_expected_findings_stay_in_the_denominator_as_misses(self):
         self.forget_gold_calls()
         transport = routed({"gemini-3.1-pro": ({"g01": gemini_samples.prompt_blocked()}, {})})
         self.calibrate("--judge", "j1", transport=transport)
         overall = self.lines("全部")
         self.assertIn("MQM 評完 5、Unjudged 1、尚未評完 0", overall)
-        self.assertIn("- 預期 Finding 的 recall：只計一致的 0/1（0.0%）", overall)   # g01 的預期 Finding 不在分母；g06 的沒被抓到（這次沒有 Finding）
+        self.assertIn("MQM 1/6（16.7%）", overall)   # Unjudged 率
+        self.assertIn("預期 Finding 的 recall：只計一致的 0/2（0.0%）", overall)   # g01 的預期 Finding 不能因為 Judge 被擋就離開分母
 
-    def test_items_that_were_not_run_yet_are_incomplete_not_unjudged(self):
+    def test_items_that_were_not_run_yet_are_incomplete_not_unjudged_and_stay_out_of_the_denominators(self):
         self.forget_gold_calls()
         self.calibrate("--judge", "j1", "--limit", "2", transport=j1_transport())
         overall = self.lines("全部")
         self.assertIn("MQM 評完 1、Unjudged 0、尚未評完 5", overall)
+        self.assertIn("預期 Finding 的 recall：只計一致的 1/1（100.0%）", overall)   # 只有 g01 跑完
 
     def test_an_item_that_changed_after_the_run_is_ignored_and_counted_as_stale(self):
         self.edited_gold(lambda items: items[0].update(translation="The renovation is six months late and well over budget."))
@@ -287,24 +383,35 @@ class MetricsTest(CalibrationCase):
 
 class OtherJudgeOutcomesTest(CalibrationCase):
     def overall(self, judge_id: str) -> str:
-        return self.group(self.output_text("calibration.md"), "全部", "###") if judge_id == "j1" else \
-            self.output_text("calibration.md").split("## Judge j2（experiment）")[1].split("### 全部\n", 1)[1].split("\n#", 1)[0]
+        judge_part = self.output_text("calibration.md").split(f"## Judge {judge_id}（")[1].split("\n## ", 1)[0]
+        return judge_part.split("### 全部\n", 1)[1].split("\n### ", 1)[0]
 
     def test_an_expected_finding_only_an_uncertain_finding_catches_counts_only_in_the_second_recall(self):
         accuracy = finding(severity="major", source_span="預算超支", target_span="over budget")
         self.calibrate("--judge", "j1", transport=routed({"gemini-3.1-pro": (mqm({("g01", 1): [accuracy]}), {})}))   # 只有第 1 次提出
-        self.assertIn("預期 Finding 的 recall：只計一致的 0/2（0.0%）；連 uncertain 一起計 1/2（50.0%）；對上的之中 Severity 一致 1/1（100.0%）", self.overall("j1"))
+        overall = self.overall("j1")
+        self.assertIn("只計一致的 0/2（0.0%）；連 uncertain 一起計 1/2（50.0%）", overall)
+        self.assertIn("對上的之中 Severity 一致 1/1（100.0%）", overall)
 
     def test_a_judge_that_calls_everything_present_misses_every_expected_failure_and_is_wrong_on_those_facts(self):
         self.calibrate("--judge", "j2", transport=routed({"gemini-3.1-other": ({}, {})}))   # 預設：每條事實 Present
         overall = self.overall("j2")
         self.assertIn("準確率（有最終 verdict 的）1/4（25.0%）", overall)   # 只有 g03 的 Present 對
-        self.assertIn("Weakened 的 recall：0/2（0.0%）；Absent 的 recall：0/1（0.0%）；失敗的事實（Weakened 或 Absent）的 recall：0/3（0.0%）；預期 Present 被判成失敗：0", overall)
+        self.assertIn("Weakened 的 recall：0/2（0.0%）；Absent 的 recall：0/1（0.0%）；失敗的事實（Weakened 或 Absent）的 recall：0/3（0.0%）"
+                      "（uncertain 與 Unjudged 算沒有抓到）；預期 Present 被判成失敗：0/1（0.0%）", overall)
 
     def test_a_present_fact_the_judge_calls_failed_is_a_false_alarm(self):
         weakened = lambda p: fact_output(p, {FACT_BUDGET: {"verdict": "Weakened", "type": "c", "quote": "over budget"}})   # noqa: E731
         self.calibrate("--judge", "j2", transport=routed({"gemini-3.1-other": ({}, {("g03", 1): weakened, ("g03", 2): weakened})}))
-        self.assertIn("預期 Present 被判成失敗：1", self.overall("j2"))
+        self.assertIn("預期 Present 被判成失敗：1/1（100.0%）", self.overall("j2"))
+
+    def test_a_judge_that_is_blocked_on_a_variants_facts_misses_them_instead_of_leaving_the_denominator(self):
+        blocked = gemini_samples.prompt_blocked()
+        self.calibrate("--judge", "j2", transport=routed({"gemini-3.1-other": ({}, {("g02", 1): blocked, ("g02", 2): blocked})}))
+        overall = self.overall("j2")
+        self.assertIn("fact 評完 2、Unjudged 1、尚未評完 0", overall)
+        self.assertIn("fact 1/3（33.3%）", overall)   # Unjudged 率
+        self.assertIn("失敗的事實（Weakened 或 Absent）的 recall：0/3（0.0%）", overall)   # g02 的兩條預期失敗的事實還在分母（算沒有抓到）
 
     def test_each_judges_numbers_use_only_its_own_requests(self):
         self.calibrate_j1()
@@ -318,9 +425,10 @@ class DisagreementTest(CalibrationCase):
     def setUp(self):
         super().setUp()
         self.calibrate_j1()
-        # j2：g01 兩次都沒有抓到預期的 Finding；g03（clean）兩次都多報；事實全部 Present
+        # j2：g01 兩次都沒有抓到預期的 Finding；g03（clean）兩次都多報；g02 的「工程延誤半年」判 Weakened 但類型是 b（預期 c）；其餘事實 Present
         spurious = finding(dimension="Fluency", subtype="awkward", severity="minor", source_span="", target_span="six months late")
-        transport = routed({"gemini-3.1-other": (mqm({("g03", 1): [spurious], ("g03", 2): [spurious]}), {})})
+        weak_b = lambda p: fact_output(p, {FACT_DELAY: {"verdict": "Weakened", "type": "b", "quote": "a little behind"}})   # noqa: E731
+        transport = routed({"gemini-3.1-other": (mqm({("g03", 1): [spurious], ("g03", 2): [spurious]}), {("g02", 1): weak_b, ("g02", 2): weak_b})})
         code, out, err = self.calibrate("--judge", "j2", transport=transport)
         self.assertEqual(code, 0, err)
         self.text = self.output_text("calibration-disagreements.md")
@@ -334,16 +442,19 @@ class DisagreementTest(CalibrationCase):
         self.assertNotIn("Judge j1 沒有抓到", g01)
         self.assertIn("Judge j2 多報（標註沒有）：Fluency／minor：原文「」譯文「six months late」", g03)
 
-    def test_a_fact_verdict_that_differs_from_the_expectation_is_listed_for_that_judge(self):
+    def test_a_matched_finding_with_a_different_severity_is_listed(self):
+        self.assertIn("Judge j1：Severity 不同（預期 minor、Judge major）：Fluency／minor：原文「」譯文「延误半年」", self.item("g06"))
+
+    def test_a_fact_verdict_or_type_that_differs_from_the_expectation_is_listed_for_that_judge(self):
         g02 = self.item("g02")
-        self.assertIn(f"Judge j2 對事實「{FACT_DELAY}」：Present（預期 Weakened）", g02)
+        self.assertIn(f"Judge j2 對事實「{FACT_BUDGET}」：Present（預期 Absent）", g02)
+        self.assertIn(f"Judge j2 對事實「{FACT_DELAY}」：Weakened 的類型是 b（預期 c）", g02)
         self.assertNotIn("Judge j1 對事實", g02)   # j1 全部答對
         self.assertIn("Judge j1 對事實「不滿的是市民陳虛構本人」：uncertain（預期 Weakened）", self.item("g04"))
 
     def test_two_judges_that_differ_are_listed_against_each_other(self):
         g01, g02 = self.item("g01"), self.item("g02")
         self.assertIn("只有 Judge j1 報：Accuracy／major：原文「預算超支」譯文「over budget」", g01)
-        self.assertIn(f"事實「{FACT_DELAY}」：Judge j1 Weakened、Judge j2 Present", g02)
         self.assertIn(f"事實「{FACT_BUDGET}」：Judge j1 Absent、Judge j2 Present", g02)
 
     def test_the_list_has_the_texts_but_the_calibration_file_has_only_numbers(self):
@@ -368,47 +479,68 @@ class DisagreementTest(CalibrationCase):
 
 
 class GateRecallTest(CalibrationCase):
-    def gate(self) -> str:
-        self.assertEqual(self.run_cli("check")[0], 0)
+    def setUp(self):
+        super().setUp()
+        self.translate_both()
+
+    def gate(self, group: str = "general") -> str:
         report = self.report_text()
-        return report.split("### a × trad-to-en ・ 分組 general")[1].split("\n##", 1)[0]
+        return report.split(f"### a × trad-to-en ・ 分組 {group}")[1].split("\n##", 1)[0]
 
     def test_without_calibration_the_gate_says_the_recall_is_not_measured(self):
         self.assertIn("Judge recall 未量度（還沒有校準結果）", self.gate())
 
     def test_the_gate_lists_the_primary_judges_recall_for_the_direction_and_domain(self):
         self.calibrate_j1()
+        self.assertIn("Judge recall 2/2（100.0%）（Gold set 上預期失敗的事實，Judge j1，trad-to-en × general；uncertain 算沒有抓到；合格線尚未訂）", self.gate())
+
+    def test_a_cell_the_gold_set_has_no_expected_failures_for_is_not_measured_and_says_why(self):
+        self.calibrate_j1()
+        self.assertIn("Judge recall 未量度（Gold set 在這一格沒有預期失敗的事實：trad-to-en × china-political）", self.gate("china-political"))   # g04 是繁→簡
+
+    def test_a_judge_that_was_blocked_on_the_variants_gets_a_recall_of_zero_not_an_empty_cell(self):
+        blocked = gemini_samples.prompt_blocked()
+        self.calibrate("--judge", "j1", transport=routed({"gemini-3.1-pro": ({}, {("g02", 1): blocked, ("g02", 2): blocked})}))
         gate = self.gate()
-        self.assertIn("Judge recall 2/2（100.0%）（Gold set 上預期失敗的事實，Judge j1，trad-to-en × general；uncertain 算沒有抓到；合格線尚未訂）", gate)
-        self.assertNotIn("未量度", gate)
+        self.assertIn("Judge recall 0/2（0.0%）", gate)
+        self.assertIn("其中 1 條項目 Judge 被擋（Unjudged，算沒有抓到）", gate)
 
-    def test_an_uncertain_verdict_counts_as_missed_in_the_gate_recall(self):
-        self.calibrate_j1()
-        self.assertEqual(self.run_cli("check")[0], 0)
-        report = self.report_text()
-        # trad-to-simplified × china-political 在 Gold set 有 g04（uncertain）：沒有被抓到。報告的 Gate 分組是文章的 domain，這裡直接看校準摘要
-        self.assertIn("失敗的事實（Weakened 或 Absent）的 recall：2/3（66.7%）", report.split("## Judge 校準摘要")[1])
+    def test_a_cell_whose_items_have_no_request_results_yet_says_so_instead_of_blaming_the_gold_set(self):
+        self.calibrate("--judge", "j1", "--limit", "2", transport=j1_transport())   # 只有 g01 的 MQM；其餘（包括所有 fact 的請求）都還沒跑
+        self.assertIn("Judge recall 未量度（這一格的 2 條項目還沒有請求結果：尚未跑，或請求已過期：trad-to-en × general）", self.gate())
 
-    def test_a_calibration_made_with_an_older_item_or_prompt_does_not_give_a_recall(self):
+    def test_an_uncertain_verdict_counts_as_missed_in_the_calibration_summary(self):
         self.calibrate_j1()
-        self.edited_gold(lambda items: [i.update(translation=i["translation"] + " Really.") for i in items])   # 每個項目都改了
+        summary = self.report_text().split("## Judge 校準摘要")[1].split("\n## ", 1)[0]
+        self.assertIn("失敗的事實（Weakened 或 Absent）的 recall：2/3（66.7%）（uncertain 與 Unjudged 算沒有抓到）", summary)
+
+    def test_a_calibration_made_with_older_item_content_does_not_give_a_recall(self):
+        self.calibrate_j1()
+        self.edited_gold(lambda items: [i.update(translation=i["translation"] + " Really.") for i in items])   # 每個項目送給 Judge 的內容都改了
         gate = self.gate()
         self.assertIn("Judge recall 未量度", gate)
         self.assertIn("校準的請求都已過期", gate)
+
+    def test_a_changed_fact_prompt_leaves_the_cell_without_results_until_it_is_calibrated_again(self):
+        self.calibrate_j1()
+        with tempfile.TemporaryDirectory() as templates:
+            shutil.copytree(prompts._DIR, os.path.join(templates, "t"))
+            with open(os.path.join(templates, "t", "judge-facts.txt"), "a", encoding="utf-8") as f:
+                f.write("\nAn extra sentence in the fact prompt.\n")
+            with mock.patch.object(prompts, "_DIR", prompts.Path(templates) / "t"):
+                gate = self.gate()
+        self.assertIn("Judge recall 未量度（這一格的 2 條項目還沒有請求結果：尚未跑，或請求已過期", gate)
 
     def test_a_group_that_is_not_a_domain_uses_all_domains_of_the_direction(self):
         self.extra_experiment["ground_truth"]["group_overrides"] = {"9000001": "q34"}
         self.write_json(self.config_path, self.experiment())
         self.calibrate_j1()
-        self.assertEqual(self.run_cli("check")[0], 0)
-        report = self.report_text()
-        section = report.split("### a × trad-to-en ・ 分組 q34")[1].split("\n##", 1)[0]
+        section = self.gate("q34")
         self.assertIn("Judge recall 2/2（100.0%）", section)
         self.assertIn("Judge j1，trad-to-en；", section)   # 不是 domain 的分組：不分 domain
 
     def test_the_report_has_a_calibration_summary_with_numbers_only_and_so_does_the_summary_version(self):
         self.calibrate_j1()
-        self.assertEqual(self.run_cli("check")[0], 0)
         self.report_text()
         for name in ("report.md", "summary.md"):
             text = self.output_text(name)
@@ -417,15 +549,16 @@ class GateRecallTest(CalibrationCase):
             self.assertIn("- 驗證後 precision（annotated 項目）：2/3（66.7%）", text)
             self.assertNotIn(SOURCE_001, text)
 
-    def test_an_invalid_gold_set_stops_the_report(self):
+    def test_an_invalid_gold_set_stops_the_report_and_writes_nothing(self):
         self.edited_gold(lambda items: items[0]["findings"][0].update(source_span="不存在的片段"))
         self.assertEqual(self.run_cli("check")[0], 0)
         code, out, err = self.run_cli("report")
         self.assertNotEqual(code, 0)
         self.assertIn("Gold set 項目 g01", err)
+        for name in ("report.md", "summary.md"):
+            self.assertFalse(os.path.exists(os.path.join(self.out_dir, name)), name)
 
     def test_a_report_without_calibration_settings_has_no_calibration_section(self):
         self.extra_experiment.pop("calibration")
         self.write_json(self.config_path, self.experiment())
-        self.assertEqual(self.run_cli("check")[0], 0)
         self.assertNotIn("## Judge 校準摘要", self.report_text())

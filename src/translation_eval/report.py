@@ -18,7 +18,8 @@ from .config import Experiment, PlannedApproach, length_ranges, load_experiment
 from .articles import load_article
 from .gate_report import gate_lines, ground_truth_settings_lines
 from .ground_truth import GroundTruth, load_ground_truth
-from .calibration import evaluate_judge, summary_lines
+from .calibration import evaluate_judge
+from .calibration_report import summary_lines
 from .comparison import comparison_lines
 from .gold import load_gold_set
 from .judge_report import judge_context, judge_lines, judge_settings_lines
@@ -225,8 +226,8 @@ def handle(args) -> int:
     require_checked(experiment, out, records, rows)
     decisions = load_decisions(out)
     truth = None
-    # 審閱項目、Judge 的分數和 Gate 都要原文：ground truth 對實驗內所有文章驗證，其餘只要有 ok 的 Run 的文章
-    ids = cfg.articles.ids if cfg.ground_truth else sorted({r.article_id for r in records if r.outcome is Outcome.OK})
+    # 審閱項目、Judge 的分數和 Gate 都要原文：ground truth 與 Gold set 對實驗內所有文章驗證，其餘只要有 ok 的 Run 的文章
+    ids = cfg.articles.ids if (cfg.ground_truth or cfg.calibration) else sorted({r.article_id for r in records if r.outcome is Outcome.OK})
     articles = {i: load_article(cfg.articles.dir, i) for i in ids}
     if cfg.ground_truth:
         truth = load_ground_truth(cfg.ground_truth, articles)
@@ -236,7 +237,7 @@ def handle(args) -> int:
     ctx = judge_context(experiment, out, records, rows, articles, decisions)
     evaluations, calibration = {}, []
     if cfg.calibration:   # Gold set 不合（驗證失敗）也在這裡停止；校準只看實驗設定裡的 Judge 的新紀錄
-        gold = load_gold_set(cfg.calibration.gold_set, truth)
+        gold = load_gold_set(cfg.calibration.gold_set, truth, articles)
         gold_calls = out.read_gold_calls()
         evaluations = {j.id: evaluate_judge(gold, truth, gold_calls, j) for j in experiment.judges}
         calibration = summary_lines(gold, list(evaluations.values()))

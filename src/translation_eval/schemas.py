@@ -96,6 +96,17 @@ class WeakeningType(StrEnum):
     AMPLIFICATION = "amplification"   # 比原文更聳動；不計入淡化率
 
 
+FAILING_VERDICTS = (Verdict.WEAKENED, Verdict.ABSENT)   # 事實最終判成這兩個，所在的句子就失敗
+
+
+def type_contradicts(fact_kept: bool, weakening: WeakeningType | None) -> bool:
+    """verdict 與淡化類型矛盾。事實還在（Present、全文篩查的 Amplification）只能標 amplification；事實被淡化或缺失（Weakened、Absent）只能標 a–f。
+    沒有類型不矛盾。"""
+    if weakening is None:
+        return False
+    return (weakening is not WeakeningType.AMPLIFICATION) if fact_kept else (weakening is WeakeningType.AMPLIFICATION)
+
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -511,12 +522,9 @@ class FactVerdict(StrictModel):
 WHOLE_RUN = "*"   # 全文篩查是整個 Run 一個請求：紀錄的 Component 寫這個保留值
 
 
-class JudgeCall(RunKey):
-    """Judge 對一個 Run 的一個 Component 的一次請求（每個 Component 要評兩次，call_index 是 1 或 2）。
-    task 是 mqm（Finding）、fact（Must-retain fact 的 verdict）或 screen（全文篩查，整個 Run 一個請求，Component 是 *）。"""
-    component_id: str
+class JudgeRecord(StrictModel):
+    """Judge 一次請求的結果：正式評核（JudgeCall）與校準（GoldCall）共用，所以一致性判定可以直接用在兩者上。call_index 是 1 或 2（每個任務評兩次）。"""
     judge: Slug
-    task: Literal["mqm", "fact", "screen"] = "mqm"
     call_index: int = Field(ge=1, le=2)
     outcome: Outcome
     reason: str | None = None
@@ -531,11 +539,18 @@ class JudgeCall(RunKey):
     findings: list[JudgeFinding] = []
     source_defects: list[SourceDefect] = []
     verdicts: list[FactVerdict] = []
-    screenings: list[ScreenItem] = []
     invalid: list[InvalidItem] = []
     input_hash: str | None = None   # fact 任務：送出的事實與 anchor 的 hash；ground truth 改了，這筆紀錄就過期
     raw_response: str | None = None
     created_at: str
+
+
+class JudgeCall(RunKey, JudgeRecord):
+    """Judge 對一個 Run 的一個 Component 的一次請求。
+    task 是 mqm（Finding）、fact（Must-retain fact 的 verdict）或 screen（全文篩查，整個 Run 一個請求，Component 是 *）。"""
+    component_id: str
+    task: Literal["mqm", "fact", "screen"] = "mqm"
+    screenings: list[ScreenItem] = []
 
 
 # ───────────── Ground truth（現有格式，見 tools/render_ground_truth.py） ─────────────
@@ -657,8 +672,7 @@ class GoldFact(StrictModel):
 
     @model_validator(mode="after")
     def _type_fits_verdict(self):
-        amplified = self.weakening_type is WeakeningType.AMPLIFICATION
-        if self.weakening_type is not None and (amplified != (self.verdict is Verdict.PRESENT)):
+        if type_contradicts(self.verdict is Verdict.PRESENT, self.weakening_type):
             raise ValueError("Weakened／Absent 的類型是 a–f；Present 只能標 amplification")
         return self
 
@@ -684,10 +698,10 @@ class GoldItem(StrictModel):
             raise ValueError("facts 要有 ground_truth：事實指向 ground truth 的 Sensitive sentence")
         if self.ground_truth is not None and not self.facts:
             raise ValueError("ground_truth 要和 facts 一起寫")
-        failing = [f for f in self.facts if f.verdict is not Verdict.PRESENT]
+        failing = [f for f in self.facts if f.verdict in FAILING_VERDICTS]
         if self.category is GoldCategory.CLEAN and (self.findings or failing):
             raise ValueError("clean 沒有預期的 Finding，事實都是 Present")
-        if self.category is GoldCategory.VARIANT and not any(f.verdict in (Verdict.WEAKENED, Verdict.ABSENT) for f in self.facts):
+        if self.category is GoldCategory.VARIANT and not failing:
             raise ValueError("variant 要有至少一條預期是 Weakened 或 Absent 的事實")
         if self.category is GoldCategory.ANNOTATED and not (self.findings or self.facts):
             raise ValueError("annotated 要有預期的 Finding 或事實")
@@ -698,31 +712,11 @@ class GoldFile(StrictModel):
     items: list[GoldItem]
 
 
-class GoldCall(StrictModel):
-    """校準時 Judge 對一個 Gold set 項目的一次請求（兩個任務各兩次）。結構與 JudgeCall 相同的部分（call_index、outcome、findings、verdicts、
-    input_hash）可以直接餵給一致性判定；item_hash 是項目內容的 hash，項目改了舊的請求就過期。"""
+class GoldCall(JudgeRecord):
+    """校準時 Judge 對一個 Gold set 項目的一次請求（MQM 與 fact 兩個任務各兩次）。item_hash 是項目送給 Judge 的內容的 hash：改了，舊的請求就過期。"""
     item_id: Slug
-    judge: Slug
     task: Literal["mqm", "fact"]
-    call_index: int = Field(ge=1, le=2)
-    outcome: Outcome
-    reason: str | None = None
-    attempts: list[Attempt]
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    thought_tokens: int | None = None
-    model_version: str | None = None
-    served_provider: str | None = None
-    prompt_hash: str
-    config_hash: str
     item_hash: str
-    input_hash: str | None = None   # fact 任務：送出的事實與 anchor 的 hash（與 JudgeCall 一樣）
-    findings: list[JudgeFinding] = []
-    source_defects: list[SourceDefect] = []
-    verdicts: list[FactVerdict] = []
-    invalid: list[InvalidItem] = []
-    raw_response: str | None = None
-    created_at: str
 
 
 # ───────────── Component 結果 ─────────────

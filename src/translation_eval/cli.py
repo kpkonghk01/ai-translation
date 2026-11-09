@@ -52,9 +52,10 @@ def build_parser() -> argparse.ArgumentParser:
     m = sub.add_parser("import-cms", help="把 CMS 匯出（CSV）轉成文章檔")
     m.add_argument("--csv", required=True, help="CMS 匯出的 CSV")
     m.add_argument("--out", default="data/cms-articles", help="文章檔的輸出目錄（預設 data/cms-articles）")
-    for p in (t, j, b, c, r, v, cal, g_check, g_sample):
+    for p in (t, j, b, c, r, v, cal, g_sample):
         p.add_argument("--config", required=True, help="實驗設定（JSON）")
         p.add_argument("--data-dir", default="data", help="輸出目錄（預設 data）")
+    g_check.add_argument("--config", required=True, help="實驗設定（JSON）")   # 只驗證，不寫任何東西
     t.add_argument("--dry-run", action="store_true", help="不送出請求，只印出請求數、估計輸入字數和 endpoint")
     t.add_argument("--article", action="append", default=[], help="只跑這篇文章（可重覆）")
     t.add_argument("--limit", type=_positive_int, help="最多執行幾個 Run")

@@ -34,3 +34,14 @@
 - **分歧清單**含原文與譯文，只寫在 `data/`；`calibration.md` 與報告裡的校準摘要只有數字。
 - 還沒有的：真實的 Gold set（第 15 張）、Q31 比較 2 與 3（第 17 張）。Judge prompt 要在校準之前先由 Pan 看過（三份：`judge-mqm.txt`、`judge-facts.txt`、`judge-screen.txt`）。
 
+### 2026-11-09 review 之後的修正
+
+- **Judge 被擋（Unjudged）的項目不能離開 recall 的分母**（最重要的一項）：原本 Unjudged 的項目整個不算，一個在 8／10 個政治變體上被擋、其餘 2 個抓到的 Judge 會顯示「recall 2/2」。現在預期的 Finding 與預期失敗的事實都留在分母，算沒有抓到；Unjudged 率用「分子／分母」另列；還沒有兩個請求的才是「尚未評完」，不在分母，另外列。（我自己的測試原本把這個行為鎖住了，已改。）
+- **「未量度」的原因不能寫錯**：Gold set 在這一格沒有預期失敗的事實、這一格的項目還沒有請求結果（尚未跑或已過期）、校準全部過期、還沒有校準，現在是四種不同的說法。
+- **`domain` 與原文要核對**：variant 與帶事實的項目，`domain` 必須與 ground truth 那篇文章的 domain 相同（標錯就放進錯的 Gate 格），項目的原文必須與那個 Component 的原文相同（原本只要含一個 anchor）。
+- **標註或備註改了不再重送請求**：項目 hash 原本涵蓋預期答案與備註，改一個 Severity 就要重送（要錢）。現在只涵蓋送給 Judge 的內容（Direction、原文、譯文、前後文、它指向的句子與事實）；指標由程式用請求紀錄重算。
+- **報告補上**：Unjudged 率與預期 Present 被判成失敗的比率都附分子分母；`calibration.md` 加「Direction × domain」（Gate 旁邊的 recall 就是這一格）和「variant × domain」（Q31 比較 1）；分歧清單加 Severity 不同的 Finding 與類型不同的事實；`calibrate --dry-run` 印估計的輸入字數。
+- **結構**：`GoldCall` 與 `JudgeCall` 共用一個基底（`JudgeRecord`），不再重抄欄位；verdict 與類型矛盾的規則、`FAILING_VERDICTS` 只定義一次（schemas）；正式評核與校準共用送請求的函式與 provider 違規的停止；`calibration.py`（計算）與 `calibration_report.py`（寫成報告）分開。
+- **補的測試**：provider 違規停止、key 不會寫進任何校準輸出、prompt 改了只讓該任務的請求過期、ground truth 的 anchor 改了讓指向它的項目過期、失敗時不寫任何檔案、domain 與原文的核對。
+- 沒有照 review 改的：**`Metrics` 的 35 個計數沒有拆成 MQM 與 fact 兩組**（只是整理，不影響行為）；**precision 不含 clean 項目**（clean 的 Finding 一律是誤報，在「clean 項目上的誤報」，定義寫在 `calibration.py` 開頭）；**配對不是一對一**（一個 Judge Finding 可以對上好幾個預期 Finding，實務上很少見）；**報告在 Gold set 不合時停止**，不是寫「未量度」（CODING_STANDARDS：不靜默丟掉東西；Gold set 還沒有時，實驗設定先不要寫 `calibration`）。Term List 或語域要求改了不會讓校準過期（正式的 `judge` 也一樣）。
+

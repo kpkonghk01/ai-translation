@@ -6,21 +6,23 @@
                                                                                            以固定種子抽項目，渲染成 Markdown 給 Pan 審閱
 
 驗證（任何一項不合就以非 0 結束，不寫出任何東西；錯誤只列項目 id 與原因，不回顯文字）：預期 Finding 的片段是原文或譯文的逐字子字串
-（連續空白忽略，與 Judge 輸出的驗證同一把尺）；facts 指向的 ground truth 的 Sensitive sentence 和事實都要存在，原文要含那句的 anchor；
+（連續空白忽略，與 Judge 輸出的驗證同一把尺）；facts 指向的 ground truth 的 Sensitive sentence 和事實都要存在，原文與那個 Component 的原文相同（連續空白忽略）、domain 與 ground truth 的文章相同；
 各類別的規則在 schema（clean 沒有預期的 Finding、variant 至少一條預期失敗的事實等）。
 """
 import hashlib
+import json
 from collections import Counter
 from dataclasses import dataclass
 
-from .articles import load_article
+from .articles import load_article, text_of
 from .config import Experiment, load_experiment
 from .errors import InputError
 from .ground_truth import GroundTruth, Sentence, fact_key, input_hash, load_ground_truth
+from .pairs import ComponentPair
 from .loading import read_model
-from .schemas import GoldCategory, GoldFile, GoldItem
+from .schemas import Article, GoldCategory, GoldFile, GoldItem
 from .store import OutputDir
-from .textrules import squash
+from .textrules import quoted, squash
 
 TARGET_MIX = "約 50／25／25（annotated／variant／clean）"   # Q14：只用來提醒，不當作合格條件
 
@@ -38,9 +40,17 @@ def item_sentences(item: GoldItem, truth: GroundTruth | None) -> list[Sentence]:
     return truth.sentences_in(item.ground_truth.article_id, item.ground_truth.component_id)
 
 
+def item_pair(item: GoldItem) -> ComponentPair:
+    return ComponentPair(item.id, item.component_type, item.source, item.translation)
+
+
 def item_hash(item: GoldItem, truth: GroundTruth | None) -> str:
-    """項目內容（含它指向的事實與 anchor）的 hash：項目或 ground truth 改了，已有的校準請求就過期。"""
-    return hashlib.sha256(f"{item.model_dump_json()}|{input_hash(item_sentences(item, truth))}".encode("utf-8")).hexdigest()
+    """送給 Judge 的內容（Direction、原文、譯文、前後文，和它指向的事實與 anchor）的 hash。這些改了，已有的校準請求就過期；
+    預期答案和備註沒有送給 Judge，改了不用重送：指標由程式用請求紀錄重算。"""
+    sent = [item.direction.value, item.component_type, item.source, item.translation,
+            item.context_before.model_dump() if item.context_before else None, item.context_after.model_dump() if item.context_after else None,
+            input_hash(item_sentences(item, truth)) if item.facts else None]
+    return hashlib.sha256(json.dumps(sent, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def _span_problems(item: GoldItem) -> list[str]:
@@ -55,7 +65,7 @@ def _span_problems(item: GoldItem) -> list[str]:
     return problems
 
 
-def _fact_problems(item: GoldItem, truth: GroundTruth | None) -> list[str]:
+def _fact_problems(item: GoldItem, truth: GroundTruth | None, articles: dict[str, Article]) -> list[str]:
     if not item.facts:
         return []
     if truth is None:
@@ -63,22 +73,27 @@ def _fact_problems(item: GoldItem, truth: GroundTruth | None) -> list[str]:
     sentences = item_sentences(item, truth)
     if not sentences:
         return ["ground_truth 指向的 Component 在 ground truth 裡沒有 Sensitive sentence（或不在實驗內）"]
+    ref = item.ground_truth
     known = {f.key for s in sentences for f in s.facts}
     problems = [f"預期的事實 {n}：不是 ground truth 這個 Component 的事實" for n, fact in enumerate(item.facts, 1) if fact_key(fact.fact) not in known]
     keys = [fact_key(f.fact) for f in item.facts]
     if len(set(keys)) != len(keys):
         problems.append("預期的事實有重覆")
-    if not any(squash(s.anchor) in squash(item.source) for s in sentences):
-        problems.append("原文不含 ground truth 那句的 anchor")
+    if item.domain != truth.domains[ref.article_id]:
+        problems.append(f"domain 是 {item.domain.value}，但 ground truth 的文章 {ref.article_id} 是 {truth.domains[ref.article_id].value}："
+                        "domain 決定 Gate 旁邊的 recall 與 Q31 的比較看哪一格，標錯就放進錯的格")
+    component = next(c for c in articles[ref.article_id].components if c.id == ref.component_id)
+    if squash(item.source) != squash(text_of(component.type, component.model_dump()) or ""):
+        problems.append("原文與 ground truth 指向的 Component 不同：Gold set 的 variant 與 clean 用那個 Component 的原文")
     return problems
 
 
-def load_gold_set(path: str, truth: GroundTruth | None) -> GoldSet:
+def load_gold_set(path: str, truth: GroundTruth | None, articles: dict[str, Article]) -> GoldSet:
     gold = read_model(path, GoldFile)
     problems, ids = [], Counter(i.id for i in gold.items)
     problems += [f"Gold set：項目 id 重覆：{i}" for i, n in ids.items() if n > 1]
     for item in gold.items:
-        problems += [f"Gold set 項目 {item.id}：{p}" for p in [*_span_problems(item), *_fact_problems(item, truth)]]
+        problems += [f"Gold set 項目 {item.id}：{p}" for p in [*_span_problems(item), *_fact_problems(item, truth, articles)]]
     if problems:
         raise InputError(problems)
     with open(path, "rb") as f:
@@ -104,21 +119,17 @@ def sample_items(items: tuple[GoldItem, ...], count: int, seed: int) -> list[Gol
     return sorted(ranked[:count], key=lambda i: i.id)
 
 
-def _quote(text: str) -> str:
-    return "\n  > " + text.replace("\n", "\n  > ")
-
-
 def render_sample(sample: list[GoldItem], total: int, seed: int) -> str:
     """給 Pan 審閱的 Markdown：每條有原文、譯文、前後文和預期答案。含原文與譯文，只寫在 data/。"""
     lines = [f"# Gold set 抽樣（{len(sample)}／{total} 條，種子 {seed}）", "",
              "怎樣審閱：每一條看預期答案有沒有錯（Finding 的 Dimension、Severity 和片段；事實的 verdict 與淡化類型）。有問題請引用項目 id。", ""]
     for item in sample:
-        lines += [f"## `{item.id}` ・ {item.category.value} ・ {item.direction.value} ・ {item.domain.value}", "", f"- 原文（{item.component_type}）：{_quote(item.source)}",
-                  f"- 譯文：{_quote(item.translation)}"]
+        lines += [f"## `{item.id}` ・ {item.category.value} ・ {item.direction.value} ・ {item.domain.value}", "", f"- 原文（{item.component_type}）：{quoted(item.source)}",
+                  f"- 譯文：{quoted(item.translation)}"]
         for name, context in (("前文", item.context_before), ("後文", item.context_after)):
             if context:
-                lines.append(f"- {name}（原文）：{_quote(context.source)}")
-                lines.append(f"- {name}（譯文）：{_quote(context.translation)}")
+                lines.append(f"- {name}（原文）：{quoted(context.source)}")
+                lines.append(f"- {name}（譯文）：{quoted(context.translation)}")
         for finding in item.findings:
             lines.append(f"- [ ] 預期的 Finding：{finding.dimension.value}／{finding.severity.value}；原文片段「{finding.source_span}」；譯文片段「{finding.target_span}」"
                          + (f"；{' '.join(finding.note.split())}" if finding.note else ""))
@@ -139,10 +150,9 @@ def load_gold_for(config_path: str) -> tuple[GoldSet, Experiment, GroundTruth | 
     cfg = experiment.config
     if cfg.calibration is None:
         raise InputError("實驗設定沒有 calibration（Gold set 的位置）")
-    truth = None
-    if cfg.ground_truth:
-        truth = load_ground_truth(cfg.ground_truth, {i: load_article(cfg.articles.dir, i) for i in cfg.articles.ids})
-    return load_gold_set(cfg.calibration.gold_set, truth), experiment, truth
+    articles = {i: load_article(cfg.articles.dir, i) for i in cfg.articles.ids}
+    truth = load_ground_truth(cfg.ground_truth, articles) if cfg.ground_truth else None
+    return load_gold_set(cfg.calibration.gold_set, truth, articles), experiment, truth
 
 
 def handle_check(args) -> int:

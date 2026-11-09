@@ -33,6 +33,11 @@ def judge_call_key(call: JudgeCall) -> tuple:
     return judge_call_id(RunKey.of(call), call.component_id, call.judge, call.task, call.call_index)
 
 
+def gold_call_key(call: GoldCall) -> tuple:
+    """校準請求的身分：續跑靠它判斷哪些請求已經有紀錄。"""
+    return (call.item_id, call.judge, call.task, call.call_index)
+
+
 def _scrub(text: str, secrets: tuple[str, ...]) -> str:
     for secret in secrets:
         text = text.replace(secret, REDACTED)
@@ -220,8 +225,7 @@ class OutputDir:
             call = call.model_copy(update={"raw_response": f"gold-raw/{call.judge}.jsonl"})
         text = _scrub(call.model_dump_json(), secrets) + "\n"
         if replaces_existing:
-            same = lambda c: (c.item_id, c.judge, c.task, c.call_index) == (call.item_id, call.judge, call.task, call.call_index)   # noqa: E731
-            kept = "".join(c.model_dump_json() + "\n" for c in self.read_gold_calls() if not same(c))
+            kept = "".join(c.model_dump_json() + "\n" for c in self.read_gold_calls() if gold_call_key(c) != gold_call_key(call))
             self._replace(self.gold_calls_path, kept + text)
         else:
             self.root.mkdir(parents=True, exist_ok=True)

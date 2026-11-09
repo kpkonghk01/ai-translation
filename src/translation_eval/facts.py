@@ -12,10 +12,7 @@ from enum import StrEnum
 
 from .consistency import Status
 from .ground_truth import Sentence, input_hash
-from .schemas import JudgeCall, Outcome, Verdict, WeakeningType
-
-
-FAILING_VERDICTS = (Verdict.WEAKENED, Verdict.ABSENT)   # 事實最終判成這兩個，所在的句子就失敗
+from .schemas import JudgeRecord, Outcome, Verdict, WeakeningType
 
 
 class FactStatus(StrEnum):
@@ -38,7 +35,7 @@ class FactJudgment:
     facts: dict[str, FactResult]   # 事實 key → 結果；只有 JUDGED 才有
     failed: list[Outcome]          # 沒有成功的請求的結果類別
     stale: bool = False            # INCOMPLETE 的原因是 ground truth 改了，舊紀錄過期
-    calls: tuple[JudgeCall, ...] = ()   # 沒有過期的請求紀錄，依請求序號；審閱清單顯示每次的 verdict 用
+    calls: tuple[JudgeRecord, ...] = ()   # 沒有過期的請求紀錄，依請求序號；審閱清單顯示每次的 verdict 用
 
 
 def _result(valid) -> FactResult:
@@ -51,7 +48,7 @@ def _result(valid) -> FactResult:
     return FactResult(FactStatus.UNCERTAIN)
 
 
-def judge_facts(calls: list[JudgeCall], sentences: list[Sentence]) -> FactJudgment:
+def judge_facts(calls: list[JudgeRecord], sentences: list[Sentence]) -> FactJudgment:
     """calls：這個 Component 的請求紀錄（最多兩個）；sentences：這個 Component 內的 Sensitive sentence。"""
     current = input_hash(sentences)
     fresh = {c.call_index: c for c in calls if c.input_hash == current}

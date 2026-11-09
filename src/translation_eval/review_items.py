@@ -19,11 +19,11 @@ from enum import StrEnum
 from .articles import apply_variant
 from .config import Experiment
 from .consistency import Status, judge_component
-from .facts import FAILING_VERDICTS, FactStatus, judge_facts
+from .facts import FactStatus, judge_facts
 from .ground_truth import GroundTruth
 from .pairs import component_pairs
 from .screening import judge_screening
-from .schemas import (DUPLICATE_COMPONENT, EXTRA_COMPONENT, OMISSION, TYPE_CHANGED, WHOLE_RUN, CheckWarning, ComponentResult, Dimension, Finding,
+from .schemas import (DUPLICATE_COMPONENT, FAILING_VERDICTS, EXTRA_COMPONENT, OMISSION, TYPE_CHANGED, WHOLE_RUN, CheckWarning, ComponentResult, Dimension, Finding,
                       JudgeFinding, JudgeRole, Outcome, RunKey, RunRecord, ScreenItem, WarningKind)
 from .store import OutputDir
 from .textrules import squash

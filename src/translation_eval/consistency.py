@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from .pairs import ComponentPair
-from .schemas import JudgeCall, JudgeFinding, Outcome, Severity, SourceDefect
+from .schemas import JudgeFinding, JudgeRecord, Outcome, Severity, SourceDefect
 from .textrules import squash
 
 SEVERITY_ORDER = {Severity.MINOR: 0, Severity.MAJOR: 1, Severity.CRITICAL: 2}
@@ -72,7 +72,7 @@ def _merge(first: list[JudgeFinding], second: list[JudgeFinding], pair: Componen
     return merged
 
 
-def judge_component(calls: list[JudgeCall], pair: ComponentPair) -> Judgment:
+def judge_component(calls: list[JudgeRecord], pair: ComponentPair) -> Judgment:
     """同一個 Run、同一個 Component、同一個 Judge 的請求紀錄（最多兩個）→ 判定。"""
     by_index = {c.call_index: c for c in calls}
     if len(by_index) < 2:

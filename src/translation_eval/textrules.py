@@ -12,6 +12,11 @@ def squash(text: str) -> str:
     return re.sub(r"\s+", "", text)
 
 
+def quoted(text: str) -> str:
+    """Markdown 的引用區塊（接在「- 標籤：」後面）：每一行都加 >，原文與譯文放進清單用。"""
+    return "\n  > " + text.replace("\n", "\n  > ")
+
+
 def nonspace_length(text: str) -> int:
     return len(squash(text))
 

@@ -15,19 +15,18 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from .calibration import disagreement_lines, evaluate_judge, evaluation_lines, item_pair
+from .calibration import evaluate_judge, is_current
+from .calibration_report import disagreement_lines, evaluation_lines
 from .config import Experiment, PlannedJudge
 from .errors import InputError
-from .exchange import send_with_retries
-from .gold import GoldSet, count_lines, item_hash, item_sentences, load_gold_for
+from .gold import GoldSet, count_lines, item_hash, item_pair, item_sentences, load_gold_for
 from .ground_truth import GroundTruth, Sentence, input_hash
-from .judging import fact_request_message, interpret_facts, interpret_output, mqm_message, task_templates
-from .outcome import classify_text
+from .judging import fact_request_message, interpret_facts, interpret_output, mqm_message, provider_violation_stop, send_judge_request, task_templates
 from .pairs import ComponentPair
 from .providers import adapter_for
 from .prompts import PromptTemplate
 from .schemas import GoldCall, GoldItem, Outcome
-from .store import OutputDir
+from .store import OutputDir, gold_call_key
 from .terms import LoadedTermList
 from .transport import Transport
 
@@ -44,6 +43,11 @@ class PlannedGoldCall:
     item_hash: str
 
     @property
+    def input_hash(self) -> str | None:
+        """fact 任務：送出的事實與 anchor 的 hash（與正式評核一樣）。"""
+        return input_hash(list(self.sentences)) if self.task == "fact" else None
+
+    @property
     def key(self) -> tuple:
         return (self.item.id, self.judge.id, self.task, self.call_index)
 
@@ -57,29 +61,21 @@ def plan_gold_calls(gold: GoldSet, truth: GroundTruth | None, judge: PlannedJudg
     return plan
 
 
-def is_current(recorded: GoldCall, call: PlannedGoldCall, templates: dict[str, PromptTemplate]) -> bool:
-    return (recorded.item_hash, recorded.prompt_hash, recorded.config_hash) == (call.item_hash, templates[call.task].hash, call.judge.config_hash)
-
-
 def gold_message(call: PlannedGoldCall, term_list: LoadedTermList) -> str:
     """與正式評核同一種格式：MQM 的前後文是項目自己的 context（沒有就是 None）。"""
     item, pair = call.item, item_pair(call.item)
     if call.task == "fact":
         return fact_request_message(item.direction, pair, list(call.sentences), term_list)
-    before = ComponentPair(f"{item.id}-before", item.component_type, item.context_before.source, item.context_before.translation) if item.context_before else None
-    after = ComponentPair(f"{item.id}-after", item.component_type, item.context_after.source, item.context_after.translation) if item.context_after else None
-    pairs = [p for p in (before, pair, after) if p is not None]
-    return mqm_message(item.direction, pairs, pairs.index(pair), term_list)
+    before = [ComponentPair(f"{item.id}-before", item.component_type, item.context_before.source, item.context_before.translation)] if item.context_before else []
+    after = [ComponentPair(f"{item.id}-after", item.component_type, item.context_after.source, item.context_after.translation)] if item.context_after else []
+    return mqm_message(item.direction, [*before, pair, *after], len(before), term_list)
 
 
 def run_gold_call(transport: Transport, call: PlannedGoldCall, template: PromptTemplate, term_list: LoadedTermList, out: OutputDir, *,
                   replaces_existing: bool) -> tuple[GoldCall, bool]:
     """送出一個請求並記錄。第二個回傳值是：回應是不是來自不在允許清單內的 provider。"""
+    exchange, api_key = send_judge_request(transport, call.judge, template, gold_message(call, term_list))
     judge = call.judge.config
-    adapter = adapter_for(judge)
-    api_key = os.environ[judge.api_key_env]
-    request = adapter.build_request(judge, template.text, gold_message(call, term_list), api_key)
-    exchange = send_with_retries(transport, adapter, request, judge, classify_text)
     result, pair = exchange.interpretation, item_pair(call.item)
     findings, defects, verdicts = [], [], []
     if call.task == "fact":
@@ -90,13 +86,9 @@ def run_gold_call(transport: Transport, call: PlannedGoldCall, template: PromptT
         item_id=call.item.id, judge=judge.id, task=call.task, call_index=call.call_index, outcome=outcome, reason=reason, attempts=exchange.attempts,
         input_tokens=result.input_tokens, output_tokens=result.output_tokens, thought_tokens=result.thought_tokens,
         model_version=result.model_version, served_provider=result.served_provider, prompt_hash=template.hash, config_hash=call.judge.config_hash,
-        item_hash=call.item_hash, input_hash=_fact_input_hash(call), findings=findings, source_defects=defects, verdicts=verdicts, invalid=invalid,
+        item_hash=call.item_hash, input_hash=call.input_hash, findings=findings, source_defects=defects, verdicts=verdicts, invalid=invalid,
         created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
     return out.write_gold_call(record, exchange.raw_body, secrets=(api_key,), replaces_existing=replaces_existing), result.provider_violation
-
-
-def _fact_input_hash(call: PlannedGoldCall) -> str | None:
-    return input_hash(list(call.sentences)) if call.task == "fact" else None
 
 
 def select_judge(experiment: Experiment, judge_id: str) -> PlannedJudge:
@@ -110,12 +102,13 @@ def handle(args, transport: Transport) -> int:
     gold, experiment, truth = load_gold_for(args.config)
     out = OutputDir(args.data_dir, experiment.config.id)
     judge = select_judge(experiment, args.judge) if args.judge else None
-    templates, existing = task_templates(), {(c.item_id, c.judge, c.task, c.call_index): c for c in out.read_gold_calls()}
+    templates, existing = task_templates(), {gold_call_key(c): c for c in out.read_gold_calls()}
+    template_hashes = {task: template.hash for task, template in templates.items()}
 
     pending, skipped = [], 0
     for call in (plan_gold_calls(gold, truth, judge) if judge else []):
         done = existing.get(call.key)
-        if done is None or (args.redo_errors and done.outcome is Outcome.ERROR) or not is_current(done, call, templates):
+        if done is None or (args.redo_errors and done.outcome is Outcome.ERROR) or not is_current(done, call.item_hash, call.judge, template_hashes):
             pending.append(call)
         else:
             skipped += 1
@@ -123,7 +116,7 @@ def handle(args, transport: Transport) -> int:
         pending = pending[: args.limit]
 
     if args.dry_run:
-        return dry_run(pending, skipped, judge)
+        return dry_run(pending, skipped, judge, templates)
     if pending:
         key_env = judge.config.api_key_env
         if not os.environ.get(key_env):
@@ -136,7 +129,7 @@ def handle(args, transport: Transport) -> int:
         record, violation = run_gold_call(transport, call, templates[call.task], experiment.term_list, out, replaces_existing=call.key in existing)
         outcomes[record.outcome] += 1
         if violation:   # 資料已經送到不在允許清單內的 provider：不能再送下一個請求
-            raise InputError(f"Judge {judge.id} 的回應來自不在允許清單內的 provider：已停止，沒有再送出請求（已記錄 {sum(outcomes.values())} 個）")
+            raise provider_violation_stop(judge.id, sum(outcomes.values()))
     if judge:
         print(f"完成 {len(pending)} 個請求（已有新的紀錄而略過：{skipped}）：" + ("、".join(f"{o} {n}" for o, n in sorted(outcomes.items())) or "沒有要執行的請求"))
     write_outputs(experiment, gold, truth, out)
@@ -146,7 +139,7 @@ def handle(args, transport: Transport) -> int:
 def write_outputs(experiment: Experiment, gold: GoldSet, truth: GroundTruth | None, out: OutputDir) -> None:
     calls = out.read_gold_calls()
     evaluations = [evaluate_judge(gold, truth, calls, judge) for judge in experiment.judges]
-    recorded = [e for e in evaluations if e.requests or e.stale]
+    recorded = [e for e in evaluations if e.has_records]
     lines = [f"# Judge 校準：{experiment.config.id}", "", *count_lines(gold), "",
              "合格線（recall、precision）尚未訂：要等第一批數字出來，不寫死在程式裡。", ""]
     for evaluation in recorded:
@@ -157,10 +150,15 @@ def write_outputs(experiment: Experiment, gold: GoldSet, truth: GroundTruth | No
     print(f"已寫入 {out.calibration_path} 和 {out.disagreements_path}（{len(recorded)} 個 Judge 有紀錄）")
 
 
-def dry_run(pending: list[PlannedGoldCall], skipped: int, judge: PlannedJudge | None) -> int:
+def dry_run(pending: list[PlannedGoldCall], skipped: int, judge: PlannedJudge | None, templates: dict[str, PromptTemplate]) -> int:
     print("dry-run：不送出任何請求，也不寫出任何檔案")
     print(f"請求數：{len(pending)}（已有新的紀錄而略過：{skipped}）")
     if judge is not None and pending:
+        # 估計輸入字數：prompt、項目的原文、譯文、前後文和事實（Term List 不算）
+        chars = sum(len(templates[c.task].text) + len(c.item.source) + len(c.item.translation)
+                    + sum(len(x.source) + len(x.translation) for x in (c.item.context_before, c.item.context_after) if x)
+                    + sum(len(f.text) for s in c.sentences for f in s.facts) for c in pending)
+        print(f"Judge {judge.id}：估計輸入字數約 {chars}")
         print(f"endpoint：{judge.id} {adapter_for(judge.config).endpoint(judge.config)}")
         for line in adapter_for(judge.config).describe(judge.config):
             print(line)

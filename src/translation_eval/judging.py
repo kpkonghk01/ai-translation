@@ -26,14 +26,14 @@ from pydantic import ValidationError
 from .articles import apply_variant, load_article
 from .config import PlannedJudge, load_experiment
 from .errors import InputError
-from .exchange import send_with_retries
+from .exchange import Exchange, send_with_retries
 from .ground_truth import Fact, GroundTruth, Sentence, input_hash, load_ground_truth
 from .outcome import Interpretation, classify_text
 from .pairs import ComponentPair, component_pairs
 from .prompts import PromptTemplate, fact_template, judge_template, screen_template
 from .providers import adapter_for
 from .schemas import (WHOLE_RUN, Dimension, Direction, FactVerdict, InvalidItem, JudgeCall, JudgeFinding, Outcome, RunKey, RunRecord,
-                      ScreenItem, ScreenVerdict, SourceDefect, Verdict, WeakeningType)
+                      ScreenItem, ScreenVerdict, SourceDefect, Verdict, WeakeningType, type_contradicts)
 from .store import OutputDir, judge_call_id, judge_call_key
 from .terms import LoadedTermList, entries_in
 from .textrules import squash
@@ -211,15 +211,6 @@ def _read_type(value) -> WeakeningType | None:
     return WeakeningType(value.strip().strip("()").strip().lower())
 
 
-def _type_contradicts(role: str, weakening: WeakeningType | None) -> bool:
-    """verdict 與類型矛盾。role：weakened（Weakened）、absent（Absent）、kept（Present 或 Amplification：事實還在）。
-    Weakened 與 Absent 不能配 amplification；事實還在的不能配 a–f。"""
-    if weakening is None:
-        return False
-    amplified = weakening is WeakeningType.AMPLIFICATION
-    return amplified if role in ("weakened", "absent") else not amplified
-
-
 def _check_verdict(item: dict, fact: Fact, pair: ComponentPair) -> tuple[FactVerdict | None, str]:
     try:
         verdict = FactVerdict.model_validate({
@@ -227,8 +218,7 @@ def _check_verdict(item: dict, fact: Fact, pair: ComponentPair) -> tuple[FactVer
             "quote": item.get("quote") or "", "reason": item.get("reason") or ""})
     except ValueError:   # pydantic 的 ValidationError 也是 ValueError
         return None, "結構不符"
-    role = {Verdict.WEAKENED: "weakened", Verdict.ABSENT: "absent", Verdict.PRESENT: "kept"}[verdict.verdict]
-    if _type_contradicts(role, verdict.weakening_type):
+    if type_contradicts(verdict.verdict is Verdict.PRESENT, verdict.weakening_type):
         return None, "verdict 與類型矛盾"
     if verdict.verdict is Verdict.ABSENT:
         return verdict.model_copy(update={"quote": ""}), ""
@@ -287,8 +277,7 @@ def _check_screen_item(item, pairs: list[ComponentPair]) -> tuple[ScreenItem | N
             "target_span": item.get("target_span") or "", "reason": item.get("reason") or ""})
     except ValueError:   # pydantic 的 ValidationError 也是 ValueError
         return None, "結構不符"
-    role = {ScreenVerdict.WEAKENED: "weakened", ScreenVerdict.ABSENT: "absent", ScreenVerdict.AMPLIFICATION: "kept"}[screened.verdict]
-    if _type_contradicts(role, screened.weakening_type):
+    if type_contradicts(screened.verdict is ScreenVerdict.AMPLIFICATION, screened.weakening_type):
         return None, "verdict 與類型矛盾"
     target = screened.target_span.strip()
     holders = [p for p in pairs if _is_verbatim(screened.source_span, p.source_text)]
@@ -422,7 +411,7 @@ def handle(args, transport: Transport) -> int:
         record, violation = run_call(transport, call, templates[call.task], experiment.term_list, out, replaces_existing=call.key in existing)
         outcomes[record.outcome] += 1
         if violation:   # 資料已經送到不在允許清單內的 provider：不能再送下一個請求
-            raise InputError(f"Judge {call.judge.id} 的回應來自不在允許清單內的 provider：已停止，沒有再送出請求（已記錄 {sum(outcomes.values())} 個）")
+            raise provider_violation_stop(call.judge.id, sum(outcomes.values()))
     summary = "、".join(f"{o} {n}" for o, n in sorted(outcomes.items())) or "沒有要執行的請求"
     print(f"完成 {len(pending)} 個請求（已有紀錄而略過：{skipped}）：{summary}")
     return 0
@@ -464,15 +453,23 @@ def interpret_call(call: PlannedCall, result: Interpretation):
 MESSAGE_BUILDERS = {"mqm": user_message, "fact": fact_message, "screen": screen_message}
 
 
+def send_judge_request(transport: Transport, judge: PlannedJudge, template: PromptTemplate, message: str) -> tuple[Exchange, str]:
+    """送出一個 Judge 的請求（正式評核與校準共用）。回傳 (這次交換的結果, 用的 key)：key 要交給 store 去遮蓋，不會寫進任何輸出。"""
+    adapter = adapter_for(judge.config)
+    api_key = os.environ[judge.config.api_key_env]
+    request = adapter.build_request(judge.config, template.text, message, api_key)
+    return send_with_retries(transport, adapter, request, judge.config, classify_text), api_key
+
+
+def provider_violation_stop(judge_id: str, recorded: int) -> InputError:
+    return InputError(f"Judge {judge_id} 的回應來自不在允許清單內的 provider：已停止，沒有再送出請求（已記錄 {recorded} 個）")
+
+
 def run_call(transport: Transport, call: PlannedCall, template: PromptTemplate, term_list: LoadedTermList, out: OutputDir, *,
              replaces_existing: bool) -> tuple[JudgeCall, bool]:
     """送出一個請求並記錄。第二個回傳值是：回應是不是來自不在允許清單內的 provider。"""
-    judge = call.judge.config
-    adapter = adapter_for(judge)
-    api_key = os.environ[judge.api_key_env]
-    request = adapter.build_request(judge, template.text, MESSAGE_BUILDERS[call.task](call, term_list), api_key)
-    exchange = send_with_retries(transport, adapter, request, judge, classify_text)
-    result = exchange.interpretation
+    exchange, api_key = send_judge_request(transport, call.judge, template, MESSAGE_BUILDERS[call.task](call, term_list))
+    result, judge = exchange.interpretation, call.judge.config
     outcome, reason, fields, invalid = interpret_call(call, result)
     record = JudgeCall(
         **RunKey.of(call.record).model_dump(), component_id=call.component_id, judge=judge.id, task=call.task, call_index=call.call_index,
