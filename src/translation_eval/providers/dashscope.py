@@ -8,9 +8,10 @@ body 裡有這些錯誤碼就是 block：Block 率不能因為狀態碼不如預
 import json
 import re
 
-from ..outcome import Interpretation, UnrecognisedResponse, classify_text, lenient, token_count
+from ..outcome import Interpretation, UnrecognisedResponse, classify_text
 from ..schemas import ApproachConfig, DASHSCOPE_DEFAULT_BASE_URL, Outcome
 from ..transport import Request, Response
+from .openai_compat import interpret_completion
 
 # 平台因為內容而拒絕處理的錯誤碼（官方錯誤碼文件）：比對時不分大小寫、不計底線與點，報告裡一律寫成官方的寫法
 BLOCK_CODES = {"datainspectionfailed": "DataInspectionFailed", "faqruleblocked": "FaqRuleBlocked",
@@ -51,7 +52,13 @@ class DashscopeAdapter:
             headers["X-DashScope-DataInspection"] = approach.data_inspection
         return Request("POST", self.endpoint(approach), headers, json.dumps(body, ensure_ascii=False).encode("utf-8"), approach.timeout_seconds)
 
-    def interpret(self, response: Response) -> Interpretation:
+    def problems(self, approach: ApproachConfig) -> list[str]:
+        return []
+
+    def describe(self, approach: ApproachConfig) -> list[str]:
+        return []
+
+    def interpret(self, response: Response, approach: ApproachConfig, classify=classify_text) -> Interpretation:
         try:
             body = json.loads(response.body)
         except (ValueError, RecursionError):
@@ -62,54 +69,9 @@ class DashscopeAdapter:
         if response.status != 200:
             return self._http_error(response.status, body)
         try:
-            return self._interpret_completion(body)
+            return interpret_completion(body, classify)
         except UnrecognisedResponse:
             return Interpretation(Outcome.ERROR, "回應格式不認識")
-
-    @staticmethod
-    def _meta(body: dict) -> dict:
-        usage = body.get("usage") if body.get("usage") is not None else {}
-        details = usage.get("completion_tokens_details") if isinstance(usage, dict) else None
-        model_version = body.get("model")
-        if not isinstance(usage, dict) or not (model_version is None or isinstance(model_version, str)):
-            raise UnrecognisedResponse
-        return {
-            "input_tokens": token_count(usage.get("prompt_tokens")),
-            "output_tokens": token_count(usage.get("completion_tokens")),
-            "thought_tokens": token_count(details.get("reasoning_tokens")) if isinstance(details, dict) else None,
-            "model_version": model_version,
-        }
-
-    def _interpret_completion(self, body) -> Interpretation:
-        if not isinstance(body, dict):
-            raise UnrecognisedResponse
-        choices = body.get("choices")
-        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-            raise UnrecognisedResponse
-        finish = choices[0].get("finish_reason")
-        # 只有 ok 的 Run 才要求 token 數和模型版本正確；其他結果類別不能因為這些附帶資料怪怪的而變成 error
-        meta = lenient(self._meta, body)
-        if finish == "content_filter":   # OpenAI 相容的標準值；官方文件沒有列，但意思就是被過濾，不能當成正常結束
-            return Interpretation(Outcome.BLOCK, "output:content_filter", **meta)
-        if finish == "length":
-            return Interpretation(Outcome.TRUNCATED, "length", **meta)
-        if finish != "stop":
-            return Interpretation(Outcome.ERROR, f"finish_reason {str(finish)[:40]}", **meta)
-        message = choices[0].get("message")
-        if not isinstance(message, dict):
-            raise UnrecognisedResponse
-        refusal = message.get("refusal")
-        if refusal is not None and not isinstance(refusal, str):
-            raise UnrecognisedResponse
-        if refusal and refusal.strip():   # OpenAI 相容的 refusal 欄位：模型自己拒絕
-            return Interpretation(Outcome.REFUSAL, "message.refusal 有內容", **meta)
-        content = message.get("content")
-        if not isinstance(content, str):
-            raise UnrecognisedResponse
-        outcome, reason, payload = classify_text(content)
-        if outcome is Outcome.OK:
-            meta = self._meta(body)
-        return Interpretation(outcome, reason, payload, **meta)
 
     @staticmethod
     def _http_error(status: int, body) -> Interpretation:

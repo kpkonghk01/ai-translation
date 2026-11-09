@@ -16,6 +16,7 @@ class Interpretation:
     output_tokens: int | None = None
     thought_tokens: int | None = None
     model_version: str | None = None
+    served_provider: str | None = None   # OpenRouter：回應寫的、實際服務這個請求的 provider
 
 
 class UnrecognisedResponse(Exception):

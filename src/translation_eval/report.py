@@ -153,8 +153,8 @@ def approach_lines(planned: PlannedApproach, records: list[RunRecord]) -> list[s
         f"- 每篇每個 Direction 每個輸入版本的 Run 次數：{planned.runs}（輸入版本：{'、'.join(planned.input_variants)}）",
         f"- 設定 hash：{hash_text}",
         f"- 實際回應的模型版本：{_counts(r.model_version for r in records) or '無'}",
-        "",
-    ]
+    ] + ([f"- 實際服務的 provider：{_counts((r.served_provider for r in records), none_label='回應沒有寫') or '無'}"]
+         if approach.provider == "openrouter" else []) + [""]
 
 
 def section_lines(approach_id: str, direction: str, variant: InputVariant, planned: int | None,

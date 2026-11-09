@@ -3,6 +3,7 @@
 設定與紀錄都禁止多出來的欄位（拼錯欄位名會令驗證失敗，而不是被靜默忽略）。
 """
 import re
+from datetime import date
 from enum import StrEnum
 from typing import Annotated, Literal
 
@@ -12,7 +13,11 @@ from .textrules import squash
 
 # 會用在檔名和網址路徑裡的 id：只允許安全字元，避免設定檔把輸出寫到別的目錄
 Slug = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$", max_length=64)]
-ModelName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$", max_length=100)]
+# 模型名：OpenRouter 的是「作者/名稱」（名稱後面可能有 :free 這類後綴），其他 provider 的不能有 / 和 :，
+# 因為 Gemini 把模型名放進網址路徑；這個差別由 ApproachConfig 按 provider 檢查
+ModelName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$", max_length=100)]
+# OpenRouter 的 provider slug（請求的 only 用）：小寫，可以帶 /variant 或 /region
+ProviderSlug = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)*$", max_length=60)]
 NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 # HTTP header 的值：可以印出的 ASCII，沒有換行，才不會被拿去夾帶別的 header
 HeaderValue = Annotated[str, StringConstraints(pattern=r"^[\x20-\x7e]+$", max_length=500)]
@@ -59,7 +64,7 @@ class StrictModel(BaseModel):
 
 # ───────────── 設定 ─────────────
 
-PROVIDER_KEY_ENV = {"gemini": "GEMINI_API_KEY", "dashscope": "DASHSCOPE_API_KEY"}
+PROVIDER_KEY_ENV = {"gemini": "GEMINI_API_KEY", "dashscope": "DASHSCOPE_API_KEY", "openrouter": "OPENROUTER_API_KEY"}
 
 # 阿里雲只用 International（新加坡）：舊的共用網域，或各 workspace 自己的 ap-southeast-1 網域。大陸版的條款寫明
 # 紀錄會保留並報告當局，政治敏感文章不能送，所以其他 endpoint 一律不接受。對原始字串整個比對，不先解析：
@@ -74,14 +79,28 @@ class RetryConfig(StrictModel):
     base_delay_seconds: float = Field(default=2.0, ge=0)
 
 
+class OpenRouterRouting(StrictModel):
+    """OpenRouter 的 provider 允許清單：只有 Pan 看過 providers 指令列出的清單、確認過（排除位於中國大陸的 provider），
+    才可以寫進來。清單是空的或沒有確認日期，adapter 就拒絕組出請求。"""
+    only: list[ProviderSlug] = []
+    confirmed_on: date | None = None
+
+    @model_validator(mode="after")
+    def _unique_only(self):
+        if len(set(self.only)) != len(self.only):
+            raise ValueError("only 有重覆的 provider")
+        return self
+
+
 class ApproachConfig(StrictModel):
     id: Slug
     family: str = Field(min_length=1)
-    provider: Literal["gemini", "dashscope"]
+    provider: Literal["gemini", "dashscope", "openrouter"]
     model: ModelName
     api_key_env: str
     base_url: str | None = None   # 只有 dashscope 用；不設就用 DASHSCOPE_DEFAULT_BASE_URL
     data_inspection: HeaderValue | None = None   # 只有 dashscope 用：X-DashScope-DataInspection 的值；不設就不送這個 header
+    routing: OpenRouterRouting | None = None   # 只有 openrouter 用
     request_mode: Literal["article-json"] = "article-json"
     temperature: float | None = Field(default=None, ge=0, le=2)   # None：不送，用 API 預設
     max_output_tokens: int | None = Field(default=None, ge=1)
@@ -102,6 +121,13 @@ class ApproachConfig(StrictModel):
                                  "或 https://<workspace>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1（全小寫，不能有空白、帳號、埠號、? 或 #）")
         elif self.base_url is not None or self.data_inspection is not None:
             raise ValueError("base_url 和 data_inspection 只有 dashscope 用")
+        if self.provider != "openrouter" and self.routing is not None:
+            raise ValueError("routing 只有 openrouter 用")
+        if self.provider == "openrouter":
+            if self.model.count("/") != 1:
+                raise ValueError("openrouter 的 model 要寫成「作者/名稱」")
+        elif "/" in self.model or ":" in self.model:
+            raise ValueError("model 不能有 / 或 :")
         return self
 
 
@@ -285,6 +311,7 @@ class RunRecord(RunKey):
     model_version: str | None = None   # 實際回應的模型版本
     prompt_id: str | None = None
     prompt_hash: str | None = None
+    served_provider: str | None = None   # OpenRouter：回應寫的、實際服務這個請求的 provider
     term_list_hash: str | None = None   # 模型看到的 Term List（原文詞與譯法）的 hash；沒有設 Term List 時為 None
     config_hash: str | None = None
     baseline_label: str | None = None   # baseline 的 Run：來源的 meta.baseline 標籤（服務與 opencc 的版本）

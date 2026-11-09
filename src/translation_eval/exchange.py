@@ -6,9 +6,9 @@
 import time
 from dataclasses import dataclass
 
-from .outcome import Interpretation
+from .outcome import Interpretation, classify_text
 from .providers import Adapter
-from .schemas import Attempt, Outcome, RetryConfig
+from .schemas import ApproachConfig, Attempt, Outcome, RetryConfig
 from .transport import Request, Transport, TransportFailure
 
 
@@ -19,7 +19,9 @@ class Exchange:
     attempts: list[Attempt]
 
 
-def send_with_retries(transport: Transport, adapter: Adapter, request: Request, retry: RetryConfig) -> Exchange:
+def send_with_retries(transport: Transport, adapter: Adapter, request: Request, approach: ApproachConfig,
+                      classify=classify_text) -> Exchange:
+    retry = approach.retry
     attempts: list[Attempt] = []
     for n in range(1, retry.max_attempts + 1):
         started = time.monotonic()
@@ -28,7 +30,7 @@ def send_with_retries(transport: Transport, adapter: Adapter, request: Request, 
         except TransportFailure as e:
             result, raw, status = Interpretation(Outcome.ERROR, str(e), retryable=True), None, None
         else:
-            result, raw, status = adapter.interpret(response), response.body, response.status
+            result, raw, status = adapter.interpret(response, approach, classify), response.body, response.status
         attempts.append(Attempt(http_status=status, outcome=result.outcome, reason=result.reason,
                                 latency_seconds=time.monotonic() - started))
         if not result.retryable or n == retry.max_attempts:

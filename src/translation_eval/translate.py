@@ -82,6 +82,10 @@ def handle(args, transport: Transport) -> int:
     missing = sorted({p.config.api_key_env for _, p in pending if not os.environ.get(p.config.api_key_env)})
     if missing:
         raise InputError([f"缺少環境變數 {name}" for name in missing])
+    # 送出任何請求之前就能發現的設定問題（例如 OpenRouter 的允許清單還沒確認），整批一起停止
+    not_ready = sorted({problem for _, p in pending for problem in adapter_for(p.config).problems(p.config)})
+    if not_ready:
+        raise InputError(not_ready)
 
     outcomes = Counter()
     for key, planned in pending:
@@ -102,15 +106,18 @@ def dry_run(pending, skipped: int, articles, term_list: LoadedTermList, variants
         prompt = system_prompt(translation_template(key.direction), sent, term_list, key.direction)
         chars_by_variant[key.input_variant] += len(prompt) + len(user_text(sent))
         requests_by_variant[key.input_variant] += 1
-        destinations[planned.id] = (adapter_for(planned.config).endpoint(planned.config), planned.config.concurrency)
+        adapter = adapter_for(planned.config)
+        destinations[planned.id] = (adapter.endpoint(planned.config), planned.config.concurrency, adapter.describe(planned.config))
     print("dry-run：不送出任何請求，也不寫出任何檔案")
     print(f"Run：{len(pending)}（已有紀錄而略過：{skipped}）")
     print(f"請求數：{len(pending)}")
     for variant in variants:   # 沒有要送的版本也列出，免得以為漏了
         print(f"輸入版本 {variant}：請求數 {requests_by_variant[variant]}、估計輸入字數 {chars_by_variant[variant]}")
     print(f"估計輸入字數：{sum(chars_by_variant.values())}")
-    for approach_id, (endpoint, concurrency) in destinations.items():
+    for approach_id, (endpoint, concurrency, extra_lines) in destinations.items():
         print(f"endpoint：{approach_id} {endpoint}（併發：{concurrency}）")
+        for line in extra_lines:
+            print(f"{line}")
     return 0
 
 
@@ -140,7 +147,7 @@ def translate_one(transport: Transport, key: RunKey, planned: PlannedApproach, a
     prompt = system_prompt(template, sent, term_list, key.direction)
     request = adapter.build_request(approach, prompt, user_text(sent), api_key)
 
-    exchange = send_with_retries(transport, adapter, request, approach.retry)
+    exchange = send_with_retries(transport, adapter, request, approach)
     result = require_translation_shape(exchange.interpretation)
     record = RunRecord(
         **key.model_dump(),
@@ -154,6 +161,7 @@ def translate_one(transport: Transport, key: RunKey, planned: PlannedApproach, a
         concurrency=approach.concurrency,
         provider=approach.provider,
         model_version=result.model_version,
+        served_provider=result.served_provider,
         prompt_id=template.id,
         prompt_hash=template.hash,
         term_list_hash=term_list.prompt_hash,

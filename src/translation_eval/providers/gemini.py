@@ -62,7 +62,13 @@ class GeminiAdapter:
         headers = {"content-type": "application/json", "x-goog-api-key": api_key}
         return Request("POST", self.endpoint(approach), headers, json.dumps(body, ensure_ascii=False).encode("utf-8"), approach.timeout_seconds)
 
-    def interpret(self, response: Response) -> Interpretation:
+    def problems(self, approach: ApproachConfig) -> list[str]:
+        return []
+
+    def describe(self, approach: ApproachConfig) -> list[str]:
+        return []
+
+    def interpret(self, response: Response, approach: ApproachConfig, classify=classify_text) -> Interpretation:
         try:
             body = json.loads(response.body)
         except (ValueError, RecursionError):
@@ -72,7 +78,7 @@ class GeminiAdapter:
         if not isinstance(body, dict):
             return UNRECOGNISED
         try:
-            return self._interpret_ok_status(body)
+            return self._interpret_ok_status(body, classify)
         except UnrecognisedResponse:
             return UNRECOGNISED
 
@@ -91,7 +97,7 @@ class GeminiAdapter:
             "model_version": model_version,
         }
 
-    def _interpret_ok_status(self, body: dict) -> Interpretation:
+    def _interpret_ok_status(self, body: dict, classify) -> Interpretation:
         # 只有 ok 的 Run 才要求 token 數和模型版本正確；其他結果類別不能因為這些附帶資料怪怪的而變成 error
         meta = lenient(self._meta, body)
         feedback = body.get("promptFeedback")
@@ -109,7 +115,7 @@ class GeminiAdapter:
             return Interpretation(Outcome.TRUNCATED, "MAX_TOKENS", **meta)
         if finish != "STOP":
             return Interpretation(Outcome.ERROR, f"finishReason {str(finish)[:40]}", **meta)
-        outcome, reason, payload = classify_text(_output_text(candidate))
+        outcome, reason, payload = classify(_output_text(candidate))
         if outcome is Outcome.OK:
             meta = self._meta(body)
         return Interpretation(outcome, reason, payload, **meta)

@@ -2,6 +2,7 @@
 
 用法（在 repo 根目錄）：
   uv run --locked python -I -m translation_eval translate --config <實驗設定> [--dry-run] [--article <id>] [--limit <N>] [--redo-errors]
+  uv run --locked python -I -m translation_eval providers <作者/名稱> [--dry-run]   （OpenRouter 的 provider 清單，需要 key）
   uv run --locked python -I -m translation_eval import-cms --csv <CMS 匯出> [--out data/cms-articles]
   uv run --locked python -I -m translation_eval import-baseline --config <實驗設定>
   uv run --locked python -I -m translation_eval check --config <實驗設定>
@@ -11,7 +12,7 @@
 import argparse
 import sys
 
-from . import baselines, check, cms, report, translate
+from . import baselines, check, cms, provider_listing, report, translate
 from .errors import InputError
 from .transport import Transport, TransportForbidden, UrllibTransport
 
@@ -23,6 +24,9 @@ def build_parser() -> argparse.ArgumentParser:
     b = sub.add_parser("import-baseline", help="把方案 E 等 baseline 目錄匯入成 Run")
     c = sub.add_parser("check", help="對 ok 的 Run 做 Deterministic check")
     r = sub.add_parser("report", help="產生 Block／Refusal 報告")
+    pv = sub.add_parser("providers", help="列出 OpenRouter 上某個模型的 provider 清單，供 Pan 確認")
+    pv.add_argument("model", help="OpenRouter 的模型，寫成「作者/名稱」")
+    pv.add_argument("--dry-run", action="store_true", help="不送出請求，只印出要查的網址")
     m = sub.add_parser("import-cms", help="把 CMS 匯出（CSV）轉成文章檔")
     m.add_argument("--csv", required=True, help="CMS 匯出的 CSV")
     m.add_argument("--out", default="data/cms-articles", help="文章檔的輸出目錄（預設 data/cms-articles）")
@@ -48,6 +52,8 @@ def main(argv=None, transport: Transport | None = None) -> int:
     try:
         if args.command == "translate":
             return translate.handle(args, transport or UrllibTransport())
+        if args.command == "providers":
+            return provider_listing.handle(args, transport or UrllibTransport())
         if args.command == "import-cms":
             return cms.handle(args)
         if args.command == "import-baseline":
