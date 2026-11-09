@@ -17,6 +17,7 @@ class Interpretation:
     thought_tokens: int | None = None
     model_version: str | None = None
     served_provider: str | None = None   # OpenRouter：回應寫的、實際服務這個請求的 provider
+    provider_violation: bool = False     # 資料被送到不在允許清單內的 provider：優先於其他結果，Run 要立刻停止
 
 
 class UnrecognisedResponse(Exception):
@@ -59,9 +60,15 @@ def looks_like_refusal(text: str) -> bool:
     return bool(_REFUSAL.search(text[:REFUSAL_SCAN_CHARS]))
 
 
+def opens_with_refusal(text: str) -> bool:
+    """一段譯文一開頭就是拒絕語（前面的空白和引號不計）。譯文中間出現「I can't」很常見（引語），開頭就是拒絕語幾乎一定是拒絕。"""
+    return bool(_REFUSAL.match(text.lstrip(" \t\r\n\"'“‘「『")))
+
+
 def classify_plain_text(text: str) -> tuple[Outcome, str | None, str | None]:
     """逐 Component 模式：預期的輸出就是純譯文。空的是 malformed。拒絕語的字樣在這裡不判：譯文的引語裡本來就可能有
-    「I can't」，只認 provider 明確給的訊號（message.refusal、content_filter）；疑似 Refusal 由 check 的警示攔住。"""
+    「I can't」，只認 provider 明確給的訊號（message.refusal、content_filter）。模型若直接拿拒絕語當譯文，這個請求仍是 ok，
+    但 check 會在那個 Component 列出疑似 Refusal 的警示（一開頭就是拒絕語，或遠短於原文），所以不會沒人看到。"""
     stripped = text.strip()
     if not stripped:
         return Outcome.MALFORMED, "輸出是空的", None

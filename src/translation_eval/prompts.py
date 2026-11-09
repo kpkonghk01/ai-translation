@@ -10,14 +10,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from .schemas import Direction, TermEntry
+from .schemas import Direction, RequestMode, TermEntry
 
 _DIR = Path(__file__).parent / "prompt_templates"
 _TEMPLATE_IDS = {
-    ("trad-to-en", "article-json"): "translate-trad-to-en",
-    ("trad-to-simplified", "article-json"): "translate-trad-to-simplified",
-    ("trad-to-en", "per-component"): "translate-trad-to-en-component",
-    ("trad-to-simplified", "per-component"): "translate-trad-to-simplified-component",
+    (Direction.TRAD_TO_EN, RequestMode.ARTICLE_JSON): "translate-trad-to-en",
+    (Direction.TRAD_TO_SIMPLIFIED, RequestMode.ARTICLE_JSON): "translate-trad-to-simplified",
+    (Direction.TRAD_TO_EN, RequestMode.PER_COMPONENT): "translate-trad-to-en-component",
+    (Direction.TRAD_TO_SIMPLIFIED, RequestMode.PER_COMPONENT): "translate-trad-to-simplified-component",
 }
 TERMINOLOGY_MARKER = "<<TERMINOLOGY>>"
 
@@ -37,7 +37,7 @@ class PromptTemplate:
         return base.rstrip() + "\n\n" + terminology.strip().replace("{terms}", lines) + "\n"
 
 
-def translation_template(direction: Direction, request_mode: str) -> PromptTemplate:
-    template_id = _TEMPLATE_IDS[(direction.value, request_mode)]
+def translation_template(direction: Direction, request_mode: RequestMode) -> PromptTemplate:
+    template_id = _TEMPLATE_IDS[(direction, request_mode)]
     raw = (_DIR / f"{template_id}.txt").read_bytes()
     return PromptTemplate(id=template_id, text=raw.decode("utf-8"), hash=hashlib.sha256(raw).hexdigest())

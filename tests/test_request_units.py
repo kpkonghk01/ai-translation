@@ -297,6 +297,18 @@ class PerComponentTest(UnitCase):
         with_term = [user_message(r) for r in transport.requests if "Chan Fictional" in system_message(r)]
         self.assertEqual(with_term, ["市民陳虛構表示不滿。"])
 
+    def test_an_article_with_nothing_to_translate_is_rejected_before_any_request(self):
+        nothing = {"title": "", "mainChannel": "社會新聞", "tags": [], "components": [{"id": f"{ID}-001", "type": "code", "code": "<div>embed</div>"}],
+                   "meta": {"source": "public-web", "unknown": [], "warnings": []}}
+        self.write_json(os.path.join(self.articles_dir, f"{ID}.json"), nothing)
+        shutil.rmtree(self.data_dir, ignore_errors=True)
+        transport = FunctionTransport(self.echo)
+        code, out, err = self.run_cli("translate", transport=transport)
+        self.assertNotEqual(code, 0)
+        self.assertIn(ID, err)
+        self.assertEqual((out, transport.requests), ("", []))
+        self.assertFalse(os.path.exists(self.data_dir))
+
     def test_the_dry_run_counts_one_request_per_string(self):
         shutil.rmtree(self.data_dir, ignore_errors=True)
         code, out, _ = self.run_cli("translate", "--dry-run", transport=FunctionTransport(self.echo))
@@ -337,6 +349,22 @@ class OpenRouterPerComponentTest(Workspace):
             self.assertEqual(body["provider"], {"zdr": True, "data_collection": "deny", "only": ["deepinfra", "novita"], "allow_fallbacks": False})
             self.assertNotIn("response_format", body)
         self.assertEqual(self.read_runs()[0]["served_provider"], "DeepInfra, Novita")
+
+    def test_an_unlisted_provider_wins_over_a_worse_result_and_stops_the_run_at_once(self):
+        calls = []
+        def reply(request):
+            calls.append(1)
+            if len(calls) == 2:   # 比 error 更差的結果，出現在違規之前
+                return openrouter_samples.provider_refusal()
+            if len(calls) == 4:
+                return openrouter_samples.ok("EN:x", "SomewhereElse")
+            return openrouter_samples.ok("EN:x", "DeepInfra")
+        transport = FunctionTransport(reply)
+        self.run_cli("translate", transport=transport)
+        record = self.read_runs()[0]
+        self.assertEqual(len(transport.requests), 4)   # 資料已經送到不該去的地方：後面的請求不再送
+        self.assertEqual((record["outcome"], record["reason"]), ("error", "provider 不在允許清單內"))
+        self.assertEqual(record["served_provider"], "DeepInfra, SomewhereElse")
 
     def test_one_unit_served_by_an_unlisted_provider_makes_the_run_an_error(self):
         calls = {"n": 0}

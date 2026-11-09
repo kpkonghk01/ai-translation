@@ -12,9 +12,10 @@ import os
 import re
 
 from .errors import InputError
+from .schemas import PROVIDER_KEY_ENV
 from .transport import Request, Transport, TransportFailure
 
-KEY_ENV = "OPENROUTER_API_KEY"
+KEY_ENV = PROVIDER_KEY_ENV["openrouter"]
 LISTING_URL = "https://openrouter.ai/api/v1/models/{model}/endpoints"
 _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:-]*")
 _SAFE_TEXT = re.compile(r"[\w .:/()+-]{1,60}")

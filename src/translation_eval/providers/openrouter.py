@@ -12,7 +12,7 @@ from dataclasses import replace
 
 from ..errors import InputError
 from ..outcome import Interpretation, UnrecognisedResponse, classify_text
-from ..schemas import ApproachConfig, Outcome
+from ..schemas import ApproachConfig, Outcome, RequestMode
 from ..transport import Request, Response
 from .openai_compat import interpret_completion
 
@@ -54,7 +54,7 @@ class OpenRouterAdapter:
             "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_text}],
             "provider": {"zdr": True, "data_collection": "deny", "only": list(approach.routing.only), "allow_fallbacks": False},
         }
-        if approach.request_mode == "article-json":
+        if approach.request_mode is RequestMode.ARTICLE_JSON:
             body["response_format"] = {"type": "json_object"}
         if approach.temperature is not None:
             body["temperature"] = approach.temperature
@@ -81,11 +81,14 @@ class OpenRouterAdapter:
         """資料已經送出去了，不論結果是什麼，都要確認是哪個 provider 收到的。"""
         served = body.get("provider")
         if not isinstance(served, str) or not served.strip():
-            return replace(interpretation, outcome=Outcome.ERROR, reason="回應沒有寫是哪個 provider 服務的", payload=None)
+            if interpretation.outcome is Outcome.OK:   # 拿來當譯文的結果，要知道是誰產生的
+                return replace(interpretation, outcome=Outcome.ERROR, reason="回應沒有寫是哪個 provider 服務的", payload=None)
+            return interpretation   # Block、Refusal 等照記，不能因為沒寫 provider 就少算；報告會列出「回應沒有寫」的 Run 數
         served = served.strip()[:60]
         allowed = {_normalised(slug.split("/")[0]) for slug in approach.routing.only}
         if _normalised(served) not in allowed:
-            return replace(interpretation, outcome=Outcome.ERROR, reason="provider 不在允許清單內", payload=None, served_provider=served)
+            return replace(interpretation, outcome=Outcome.ERROR, reason="provider 不在允許清單內", payload=None, served_provider=served,
+                           provider_violation=True)
         return replace(interpretation, served_provider=served)
 
     @staticmethod

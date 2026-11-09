@@ -148,6 +148,24 @@ class ServedProviderTest(OpenRouterCase):
         [record] = self.read_runs()
         self.assertEqual((record["outcome"], record["reason"]), ("error", "回應沒有寫是哪個 provider 服務的"))
 
+    def test_a_block_or_refusal_that_names_no_provider_keeps_its_result_and_the_report_shows_the_gap(self):
+        for name, sample, outcome in (
+            ("content filter", samples.finished('{"title": "Fict', "content_filter", provider=None), "block"),
+            ("refusal field", samples.with_fields(samples.provider_refusal(), provider=None), "refusal"),
+            ("truncated", samples.finished('{"title": "Fict', "length", provider=None), "truncated"),
+        ):
+            with self.subTest(name):
+                self.translate(sample)
+                [record] = self.read_runs()
+                self.assertEqual((record["outcome"], record["served_provider"]), (outcome, None))
+        self.translate(samples.finished('{"title": "Fict', "content_filter", provider=None))
+        self.assertEqual(self.run_cli("check")[0], 0)
+        self.assertEqual(self.run_cli("report")[0], 0)
+        with open(os.path.join(self.out_dir, "report.md"), encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("- 實際服務的 provider：回應沒有寫（1 個 Run）", text)
+        self.assertIn("- Block 率：按 Run 1/1", text)
+
     def test_a_blocked_response_from_an_unlisted_provider_is_still_flagged_as_an_error(self):
         self.translate(samples.finished('{"title": "Fict', "content_filter", provider="SomewhereElse"))
         self.assertEqual(self.read_runs()[0]["outcome"], "error")

@@ -21,7 +21,7 @@ from .articles import (TAGS_ID, TAGS_TYPE, TITLE_ID, TITLE_TYPE, apply_variant, 
                        text_of)
 from .config import Experiment, length_ranges, load_experiment
 from .errors import InputError
-from .outcome import looks_like_refusal
+from .outcome import looks_like_refusal, opens_with_refusal
 from .schemas import (DUPLICATE_COMPONENT, EXTRA_COMPONENT, OMISSION, RESIDUAL_HAN, RESIDUAL_TRADITIONAL, TERM_MISMATCH, TYPE_CHANGED,
                       Article, CheckMeta,
                       CheckWarning, ComponentResult, Dimension, Direction, Finding, LengthRatioRange, Outcome, RunKey, Severity,
@@ -106,9 +106,11 @@ def _content_warnings(direction: Direction, source_text: str, translated_text: s
         if not length_range.min <= ratio <= length_range.max:
             warnings.append(_warning(WarningKind.LENGTH_RATIO,
                                      f"譯文與原文的長度比是 {ratio:.2f}，範圍 {length_range.min}–{length_range.max}"))
-        # 「遠短於原文」以這個 Direction 正常範圍的下限為準：低於它，又像拒絕語，才列為疑似 Refusal
-        if ratio < length_range.min and looks_like_refusal(translated_text):
-            warnings.append(_warning(WarningKind.SUSPECTED_REFUSAL, "譯文像拒絕語，而且遠短於原文"))
+    # 疑似 Refusal：一開頭就是拒絕語；或像拒絕語、而且遠短於原文（以這個 Direction 正常範圍的下限為準）。
+    # 只看開頭不夠：短的原文配一句拒絕語，長度比落在正常範圍內；只看長度也不夠：中間出現「I can't」常是譯文的引語
+    if source_length and (opens_with_refusal(translated_text)
+                          or (translated_length / source_length < length_range.min and looks_like_refusal(translated_text))):
+        warnings.append(_warning(WarningKind.SUSPECTED_REFUSAL, "譯文像拒絕語"))
     missing = NUMBER_RULES[direction](source_text, translated_text)
     if missing:
         warnings.append(_warning(WarningKind.NUMBER_MISSING,

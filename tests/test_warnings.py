@@ -161,8 +161,22 @@ class SuspectedRefusalTest(ContentCheckCase):
         source, translation = build([paragraph("虛構市政廳翻新工程嚴重延誤" * 4, "I'm sorry, but I can't help with that.")])
         self.assertIn("suspected-refusal", self.warnings(self.check_pair(source, translation)["9000001-001"]))
 
+    def test_refusal_wording_at_the_start_is_suspected_even_when_the_translation_is_not_short(self):
+        # 短的原文配一句拒絕語：長度比落在正常範圍內，只靠長度攔不住
+        for refusal in ("I'm sorry, but I can't help with that.", "I cannot translate this.", "  “I'm sorry, but I can't help with that.”"):
+            with self.subTest(refusal):
+                shutil.rmtree(self.data_dir, ignore_errors=True)
+                source, translation = build([paragraph("虛構人物", refusal)])
+                self.assertIn("suspected-refusal", self.warnings(self.check_pair(source, translation)["9000001-001"]))
+
+    def test_refusal_wording_in_the_middle_of_a_translation_of_normal_length_is_still_not(self):
+        shutil.rmtree(self.data_dir, ignore_errors=True)
+        text = "He said that he was sorry, and that I can't help it, " + "word " * 30
+        source, translation = build([paragraph("虛構市政廳翻新工程嚴重延誤" * 4, text)])
+        self.assertNotIn("suspected-refusal", self.warnings(self.check_pair(source, translation)["9000001-001"]))
+
     def test_refusal_wording_in_a_translation_of_normal_length_is_not(self):
-        text = "I'm sorry, he shouted, and I can't help it. " + "word " * 40   # 有拒絕語，但長度正常
+        text = "He shouted that he was sorry, and I can't help it. " + "word " * 40   # 有拒絕語，但不在開頭，長度也正常
         self.assertNotIn("suspected-refusal", self.warnings_for(text))
 
     def test_short_but_not_refusal_wording_is_not_a_refusal_warning(self):

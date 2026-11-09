@@ -25,7 +25,7 @@ from .exchange import Exchange, send_with_retries
 from .outcome import Interpretation, classify_plain_text, classify_text, refusal_or_malformed
 from .prompts import PromptTemplate, translation_template
 from .providers import adapter_for
-from .schemas import Article, Direction, Outcome, RunKey, RunRecord, Translation
+from .schemas import Article, Direction, Outcome, RequestMode, RunKey, RunRecord, Translation
 from .store import OutputDir
 from .terms import LoadedTermList, entries_in
 from .transport import Transport
@@ -80,6 +80,11 @@ def handle(args, transport: Transport) -> int:
         variants = sorted({v for p in experiment.approaches for v in p.input_variants})
         return dry_run(pending, skipped, articles, experiment.term_list, variants)
 
+    # 沒有任何要送的字串（例如逐 Component 模式遇到一篇沒有可翻譯文字的文章）：沒辦法有結果，送出任何請求之前就停止
+    nothing = sorted({key.article_id for key, p in pending
+                      if not plan_units(apply_variant(articles[key.article_id], key.input_variant), p.config)})
+    if nothing:
+        raise InputError([f"文章 {a} 沒有任何要送出的文字" for a in nothing])
     # 缺少 key 時在送出任何請求之前就停止，只列出變數名稱
     missing = sorted({p.config.api_key_env for _, p in pending if not os.environ.get(p.config.api_key_env)})
     if missing:
@@ -153,11 +158,17 @@ def _raw_lines(sent_units: list[tuple[Unit, Exchange]]) -> bytes:
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
+def assemble_translation(sent: Article, units: list[Unit], payloads: list, json_mode: bool) -> dict:
+    if not json_mode:
+        return merge_components(sent, units, payloads)
+    return merge_chunks(payloads) if len(units) > 1 else payloads[0]
+
+
 def translate_one(transport: Transport, key: RunKey, planned: PlannedApproach, article: Article, out: OutputDir,
                   term_list: LoadedTermList, *, replaces_existing: bool) -> RunRecord:
     approach = planned.config
     adapter = adapter_for(approach)
-    json_mode = approach.request_mode == "article-json"
+    json_mode = approach.request_mode is RequestMode.ARTICLE_JSON
     template = translation_template(key.direction, approach.request_mode)
     api_key = os.environ[approach.api_key_env]
     sent = apply_variant(article, key.input_variant)
@@ -169,16 +180,14 @@ def translate_one(transport: Transport, key: RunKey, planned: PlannedApproach, a
         exchange = send_with_retries(transport, adapter, request, approach, classify_text if json_mode else classify_plain_text)
         result = require_translation_shape(exchange.interpretation) if json_mode else exchange.interpretation
         results.append((unit, exchange, result))
-        if result.outcome is Outcome.BLOCK:   # 結果已經是最差的：不再送後面的請求
+        if result.outcome is Outcome.BLOCK or result.provider_violation:   # 結果已經是最差的，或資料送到不該去的地方：不再送後面的請求
             break
-    worst_unit, _, worst = max(results, key=lambda item: SEVERITY[item[2].outcome])   # 一樣差的，取最前面的那個
+    # 資料送到不在允許清單內的 provider，優先於其他結果；否則取最差的，一樣差的取最前面的那個
+    worst_unit, _, worst = next(((u, e, r) for u, e, r in results if r.provider_violation),
+                                max(results, key=lambda item: SEVERITY[item[2].outcome]))
     several = len(units) > 1
 
-    translation = None
-    if worst.outcome is Outcome.OK:
-        payloads = [result.payload for _, _, result in results]
-        translation = (merge_components(sent, units, payloads) if not json_mode
-                       else merge_chunks(payloads) if several else payloads[0])
+    translation = assemble_translation(sent, units, [r.payload for _, _, r in results], json_mode) if worst.outcome is Outcome.OK else None
     served = list(dict.fromkeys(r.served_provider for _, _, r in results if r.served_provider))
     record = RunRecord(
         **key.model_dump(),

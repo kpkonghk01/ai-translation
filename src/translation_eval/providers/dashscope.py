@@ -9,7 +9,7 @@ import json
 import re
 
 from ..outcome import Interpretation, UnrecognisedResponse, classify_text
-from ..schemas import ApproachConfig, DASHSCOPE_DEFAULT_BASE_URL, Outcome
+from ..schemas import ApproachConfig, DASHSCOPE_DEFAULT_BASE_URL, Outcome, RequestMode
 from ..transport import Request, Response
 from .openai_compat import interpret_completion
 
@@ -42,7 +42,7 @@ class DashscopeAdapter:
             "model": approach.model,
             "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_text}],
         }
-        if approach.request_mode == "article-json":
+        if approach.request_mode is RequestMode.ARTICLE_JSON:
             body["response_format"] = {"type": "json_object"}
         if approach.temperature is not None:
             body["temperature"] = approach.temperature

@@ -8,7 +8,7 @@ import json
 import re
 
 from ..outcome import Interpretation, UnrecognisedResponse, classify_text, lenient, token_count
-from ..schemas import ApproachConfig, Outcome
+from ..schemas import ApproachConfig, Outcome, RequestMode
 from ..transport import Request, Response
 
 ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -47,7 +47,7 @@ class GeminiAdapter:
         return ENDPOINT.format(model=approach.model)
 
     def build_request(self, approach: ApproachConfig, system_prompt: str, user_text: str, api_key: str) -> Request:
-        generation = {"responseMimeType": "application/json"} if approach.request_mode == "article-json" else {}
+        generation = {"responseMimeType": "application/json"} if approach.request_mode is RequestMode.ARTICLE_JSON else {}
         if approach.temperature is not None:
             generation["temperature"] = approach.temperature
         if approach.max_output_tokens is not None:

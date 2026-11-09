@@ -30,6 +30,11 @@ class Direction(StrEnum):
 
 
 
+class RequestMode(StrEnum):
+    ARTICLE_JSON = "article-json"   # 整篇 JSON 進、同結構 JSON 出（可以按 max_input_chars 切塊）
+    PER_COMPONENT = "per-component"   # 每個要翻譯的字串一個請求，純文字進出
+
+
 class InputVariant(StrEnum):
     FULL = "full"   # 整篇
     MAIN_ONLY = "main-only"   # 只有 Main component，用於 Block 誘因實驗
@@ -101,7 +106,7 @@ class ApproachConfig(StrictModel):
     base_url: str | None = None   # 只有 dashscope 用；不設就用 DASHSCOPE_DEFAULT_BASE_URL
     data_inspection: HeaderValue | None = None   # 只有 dashscope 用：X-DashScope-DataInspection 的值；不設就不送這個 header
     routing: OpenRouterRouting | None = None   # 只有 openrouter 用
-    request_mode: Literal["article-json", "per-component"] = "article-json"
+    request_mode: RequestMode = RequestMode.ARTICLE_JSON
     max_input_chars: int | None = Field(default=None, ge=1)   # 只用於 article-json：超過就按 Component 順序切塊，每塊一個請求
     temperature: float | None = Field(default=None, ge=0, le=2)   # None：不送，用 API 預設
     max_output_tokens: int | None = Field(default=None, ge=1)
@@ -122,7 +127,7 @@ class ApproachConfig(StrictModel):
                                  "或 https://<workspace>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1（全小寫，不能有空白、帳號、埠號、? 或 #）")
         elif self.base_url is not None or self.data_inspection is not None:
             raise ValueError("base_url 和 data_inspection 只有 dashscope 用")
-        if self.request_mode == "per-component" and self.max_input_chars is not None:
+        if self.request_mode is RequestMode.PER_COMPONENT and self.max_input_chars is not None:
             raise ValueError("max_input_chars 只用於 article-json（切塊）；per-component 每個請求本來就只有一段文字")
         if self.provider != "openrouter" and self.routing is not None:
             raise ValueError("routing 只有 openrouter 用")

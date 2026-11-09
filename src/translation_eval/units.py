@@ -10,7 +10,7 @@ import json
 from dataclasses import dataclass
 
 from .articles import article_text, request_payload, text_field_names
-from .schemas import ApproachConfig, Article
+from .schemas import ApproachConfig, Article, RequestMode
 
 
 @dataclass(frozen=True)
@@ -43,7 +43,7 @@ def _chunks(article: Article, limit: int) -> list[list[dict]]:
 
 
 def plan_units(article: Article, approach: ApproachConfig) -> list[Unit]:
-    if approach.request_mode == "per-component":
+    if approach.request_mode is RequestMode.PER_COMPONENT:
         return _component_units(article)
     if approach.max_input_chars is None:
         return [Unit(None, _json_text(article.title, article.tags, request_payload(article)["components"]), article_text(article))]
@@ -88,16 +88,28 @@ def merge_chunks(payloads: list[dict]) -> dict:
 def merge_components(article: Article, units: list[Unit], texts: list[str]) -> dict:
     """逐 Component 的譯文放回原文的結構：id、type 和其他欄位（例如 level）不變，沒有送出的字串與不翻譯的 Component 原樣。"""
     translated = {unit.where: text for unit, text in zip(units, texts)}
+    placed: set[tuple] = set()
     components = []
     for component in article.components:
         fields = component.model_dump(mode="json")
         for name in text_field_names(component.type):
             value = fields.get(name)
             if isinstance(value, str):
-                fields[name] = translated.get(("component", component.id, name, None), value)
+                fields[name] = _place(translated, placed, ("component", component.id, name, None), value)
             elif isinstance(value, list):
-                fields[name] = [translated.get(("component", component.id, name, position), item) for position, item in enumerate(value)]
+                fields[name] = [_place(translated, placed, ("component", component.id, name, position), item) for position, item in enumerate(value)]
         components.append(fields)
-    return {"title": translated.get(("title",), article.title),
-            "tags": [translated.get(("tags", index), tag) for index, tag in enumerate(article.tags)],
-            "components": components}
+    merged = {"title": _place(translated, placed, ("title",), article.title),
+              "tags": [_place(translated, placed, ("tags", index), tag) for index, tag in enumerate(article.tags)],
+              "components": components}
+    if placed != set(translated):   # 有譯文沒有放回去：位置的寫法對不上，不能靜默留下原文，卻當作翻譯過了
+        raise AssertionError(f"{len(set(translated) - placed)} 段譯文沒有放回原文的結構")
+    return merged
+
+
+def _place(translated: dict, placed: set, where: tuple, original: str) -> str:
+    """有這個位置的譯文就用譯文；沒有送出的字串（空白的）原樣。"""
+    if where in translated:
+        placed.add(where)
+        return translated[where]
+    return original
