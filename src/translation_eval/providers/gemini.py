@@ -7,7 +7,7 @@
 import json
 import re
 
-from ..outcome import Interpretation, classify_text
+from ..outcome import Interpretation, UnrecognisedResponse, classify_text, token_count
 from ..schemas import ApproachConfig, Outcome
 from ..transport import Request, Response
 
@@ -30,27 +30,15 @@ BLOCK_FINISH_REASONS = {"SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"}
 UNRECOGNISED = Interpretation(Outcome.ERROR, "回應格式不認識")
 
 
-class _Unrecognised(Exception):
-    """回應的某個欄位型別不符。"""
-
-
-def _count(value) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise _Unrecognised
-    return value
-
-
 def _output_text(candidate: dict) -> str:
     content = candidate.get("content")
     if not isinstance(content, dict):
-        raise _Unrecognised
+        raise UnrecognisedResponse
     if "parts" not in content:   # 正常結束但沒有任何輸出
         return ""
     parts = content["parts"]
     if not isinstance(parts, list) or not all(isinstance(p, dict) and isinstance(p.get("text", ""), str) for p in parts):
-        raise _Unrecognised
+        raise UnrecognisedResponse
     return "".join(p.get("text", "") for p in parts)
 
 
@@ -85,7 +73,7 @@ class GeminiAdapter:
             return UNRECOGNISED
         try:
             return self._interpret_ok_status(body)
-        except _Unrecognised:
+        except UnrecognisedResponse:
             return UNRECOGNISED
 
     def _interpret_ok_status(self, body: dict) -> Interpretation:
@@ -94,11 +82,11 @@ class GeminiAdapter:
             usage = {}
         model_version = body.get("modelVersion")
         if not isinstance(usage, dict) or not (model_version is None or isinstance(model_version, str)):
-            raise _Unrecognised
+            raise UnrecognisedResponse
         meta = {
-            "input_tokens": _count(usage.get("promptTokenCount")),
-            "output_tokens": _count(usage.get("candidatesTokenCount")),
-            "thought_tokens": _count(usage.get("thoughtsTokenCount")),
+            "input_tokens": token_count(usage.get("promptTokenCount")),
+            "output_tokens": token_count(usage.get("candidatesTokenCount")),
+            "thought_tokens": token_count(usage.get("thoughtsTokenCount")),
             "model_version": model_version,
         }
         feedback = body.get("promptFeedback")
@@ -107,7 +95,7 @@ class GeminiAdapter:
             return Interpretation(Outcome.BLOCK, f"prompt:{block_reason}", **meta)   # 輸入端被擋，沒有 candidates
         candidates = body.get("candidates")
         if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
-            raise _Unrecognised
+            raise UnrecognisedResponse
         candidate = candidates[0]
         finish = candidate.get("finishReason")
         if finish in BLOCK_FINISH_REASONS:   # 即使已有部分輸出也是 Block：殘缺的譯文不能拿去評分

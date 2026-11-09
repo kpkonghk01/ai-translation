@@ -18,6 +18,18 @@ class Interpretation:
     model_version: str | None = None
 
 
+class UnrecognisedResponse(Exception):
+    """回應的某個欄位型別不符：provider 的 adapter 把它記為 error，不是讓程式拋出例外。"""
+
+
+def token_count(value) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise UnrecognisedResponse
+    return value
+
+
 # 只接受最外層包了一層 code fence 的 JSON，其他偏離都算 malformed
 _FENCE = re.compile(r"\A```(?:json)?[ \t]*\n(.*)\n```\Z", re.DOTALL)
 

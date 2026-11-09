@@ -2,8 +2,10 @@
 
 設定與紀錄都禁止多出來的欄位（拼錯欄位名會令驗證失敗，而不是被靜默忽略）。
 """
+import re
 from enum import StrEnum
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -13,6 +15,8 @@ from .textrules import squash
 Slug = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$", max_length=64)]
 ModelName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$", max_length=100)]
 NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+# HTTP header 的值：可以印出的 ASCII，沒有換行，才不會被拿去夾帶別的 header
+HeaderValue = Annotated[str, StringConstraints(pattern=r"^[\x20-\x7e]+$", max_length=500)]
 
 
 class Direction(StrEnum):
@@ -56,7 +60,12 @@ class StrictModel(BaseModel):
 
 # ───────────── 設定 ─────────────
 
-PROVIDER_KEY_ENV = {"gemini": "GEMINI_API_KEY"}
+PROVIDER_KEY_ENV = {"gemini": "GEMINI_API_KEY", "dashscope": "DASHSCOPE_API_KEY"}
+
+# 阿里雲只用 International（新加坡）：舊的共用網域，或各 workspace 自己的 ap-southeast-1 網域。大陸版的條款寫明
+# 紀錄會保留並報告當局，政治敏感文章不能送，所以其他 endpoint 一律不接受
+DASHSCOPE_DEFAULT_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+_DASHSCOPE_SINGAPORE_HOST = re.compile(r"dashscope-intl\.aliyuncs\.com|[a-z0-9-]+\.ap-southeast-1\.maas\.aliyuncs\.com")
 
 
 class RetryConfig(StrictModel):
@@ -67,9 +76,11 @@ class RetryConfig(StrictModel):
 class ApproachConfig(StrictModel):
     id: Slug
     family: str = Field(min_length=1)
-    provider: Literal["gemini"]
+    provider: Literal["gemini", "dashscope"]
     model: ModelName
     api_key_env: str
+    base_url: str | None = None   # 只有 dashscope 用；不設就用 DASHSCOPE_DEFAULT_BASE_URL
+    data_inspection: HeaderValue | None = None   # 只有 dashscope 用：X-DashScope-DataInspection 的值；不設就不送這個 header
     request_mode: Literal["article-json"] = "article-json"
     temperature: float | None = Field(default=None, ge=0, le=2)   # None：不送，用 API 預設
     max_output_tokens: int | None = Field(default=None, ge=1)
@@ -84,6 +95,13 @@ class ApproachConfig(StrictModel):
             raise ValueError(f"provider {self.provider} 的 api_key_env 必須是 {PROVIDER_KEY_ENV[self.provider]}")
         if self.concurrency != 1:
             raise ValueError("目前只支援循序執行（concurrency 必須是 1）")
+        if self.provider == "dashscope":
+            parts = urlsplit(self.base_url or DASHSCOPE_DEFAULT_BASE_URL)
+            if (parts.scheme != "https" or not _DASHSCOPE_SINGAPORE_HOST.fullmatch(parts.hostname or "") or parts.username
+                    or parts.password or parts.port or parts.path.rstrip("/") != "/compatible-mode/v1" or parts.query or parts.fragment):
+                raise ValueError("base_url 只能是阿里雲 International（新加坡）的 https 網址，路徑是 /compatible-mode/v1")
+        elif self.base_url is not None or self.data_inspection is not None:
+            raise ValueError("base_url 和 data_inspection 只有 dashscope 用")
         return self
 
 

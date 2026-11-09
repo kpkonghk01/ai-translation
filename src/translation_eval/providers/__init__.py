@@ -4,7 +4,7 @@ from typing import Protocol
 from ..outcome import Interpretation
 from ..schemas import ApproachConfig
 from ..transport import Request, Response
-from . import gemini
+from . import dashscope, gemini
 
 
 class Adapter(Protocol):
@@ -15,7 +15,7 @@ class Adapter(Protocol):
     def interpret(self, response: Response) -> Interpretation: ...
 
 
-_ADAPTERS = {"gemini": gemini.GeminiAdapter()}
+_ADAPTERS = {"gemini": gemini.GeminiAdapter(), "dashscope": dashscope.DashscopeAdapter()}
 
 
 def adapter_for(approach: ApproachConfig) -> Adapter:
