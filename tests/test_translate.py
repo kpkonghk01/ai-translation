@@ -5,8 +5,10 @@ import os
 import shutil
 import time
 import unittest
+from pathlib import Path
 
 import gemini_samples
+import translation_eval
 from fake_transport import FakeTransport
 from fixtures import APPROACH, FAKE_KEY, KEY_ENV, Workspace, good_translation, ok_response, source_article
 from translation_eval.transport import TransportForbidden, TransportTimeout
@@ -63,12 +65,12 @@ class RequestTest(Workspace):
     def test_asks_for_json_output(self):
         self.assertEqual(json.loads(self.sent_request().body)["generationConfig"]["responseMimeType"], "application/json")
 
-    def test_run_record_stores_the_id_and_hash_of_the_prompt_that_was_sent(self):
-        request = self.sent_request()
-        prompt = json.loads(request.body)["systemInstruction"]["parts"][0]["text"]
+    def test_run_record_stores_the_id_and_hash_of_the_prompt_template(self):
+        self.sent_request()
         [record] = self.read_runs()
-        self.assertEqual(record["prompt_id"], "translate-trad-to-en.v1")
-        self.assertEqual(record["prompt_hash"], hashlib.sha256(prompt.encode("utf-8")).hexdigest())
+        self.assertEqual(record["prompt_id"], "translate-trad-to-en.v2")
+        template = Path(translation_eval.__file__).parent / "prompt_templates" / f"{record['prompt_id']}.txt"
+        self.assertEqual(record["prompt_hash"], hashlib.sha256(template.read_bytes()).hexdigest())
         self.assertRegex(record["config_hash"], r"^[0-9a-f]{64}$")
 
 

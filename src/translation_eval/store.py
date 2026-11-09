@@ -15,7 +15,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from .errors import InputError
-from .schemas import ComponentResult, RunKey, RunRecord, Translation
+from .schemas import CheckMeta, ComponentResult, RunKey, RunRecord, Translation
 
 REDACTED = "[REDACTED]"
 
@@ -47,6 +47,10 @@ class OutputDir:
     @property
     def components_path(self) -> Path:
         return self.root / "components.jsonl"
+
+    @property
+    def check_meta_path(self) -> Path:
+        return self.root / "check-meta.json"
 
     @property
     def report_path(self) -> Path:
@@ -94,6 +98,17 @@ class OutputDir:
 
     def write_components(self, rows: list[ComponentResult]) -> None:
         self._replace(self.components_path, "".join(r.model_dump_json() + "\n" for r in rows))
+
+    def read_check_meta(self) -> CheckMeta | None:
+        if not self.check_meta_path.exists():
+            return None
+        try:
+            return CheckMeta.model_validate_json(self.check_meta_path.read_bytes())
+        except ValidationError as e:
+            raise InputError(f"{self.check_meta_path}：不是合法的 check 紀錄（{e.error_count()} 個錯誤）") from e
+
+    def write_check_meta(self, meta: CheckMeta) -> None:
+        self._replace(self.check_meta_path, meta.model_dump_json(indent=2) + "\n")
 
     def write_report(self, text: str) -> None:
         self._replace(self.report_path, text)

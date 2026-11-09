@@ -8,12 +8,21 @@
 """
 from collections import Counter
 
+from .check import current_check_meta
 from .config import Experiment, PlannedApproach, load_experiment
 from .errors import InputError
-from .schemas import ComponentResult, Outcome, RunKey, RunRecord
+from .schemas import ComponentResult, Dimension, Outcome, RunKey, RunRecord, WarningKind, length_ranges
 from .store import OutputDir
 
 MAX_LISTED = 20
+WARNING_LABELS = {
+    WarningKind.LENGTH_RATIO: "長度比例",
+    WarningKind.NUMBER_MISSING: "數字遺失",
+    WarningKind.QUOTE_COUNT: "引語數量",
+    WarningKind.SUSPECTED_REFUSAL: "疑似 Refusal",
+    WarningKind.UNCHANGED_TRANSLATABLE: "譯文與原文相同",
+    WarningKind.UNTRANSLATABLE_CHANGED: "不翻譯的 Component 被改動",
+}
 
 
 def format_ratio(numerator: int, denominator: int) -> str:
@@ -22,8 +31,8 @@ def format_ratio(numerator: int, denominator: int) -> str:
     return f"{numerator}/{denominator}（{100 * numerator / denominator:.1f}%）"
 
 
-def _counts(values, unit: str = "個 Run") -> str:
-    return "、".join(f"{v if v is not None else '未回報'}（{n} {unit}）" for v, n in sorted(Counter(values).items(), key=lambda kv: str(kv[0])))
+def _counts(values, none_label: str = "未回報") -> str:
+    return "、".join(f"{v if v is not None else none_label}（{n} 個 Run）" for v, n in sorted(Counter(values).items(), key=lambda kv: str(kv[0])))
 
 
 def render(experiment: Experiment, records: list[RunRecord], rows: list[ComponentResult]) -> str:
@@ -35,6 +44,9 @@ def render(experiment: Experiment, records: list[RunRecord], rows: list[Componen
         f"- 文章：{len(cfg.articles.ids)} 篇（{'、'.join(cfg.articles.ids)}）",
         f"- Direction：{'、'.join(cfg.directions)}",
         f"- 輸入版本：{'、'.join(sorted({r.input_variant for r in records}))}",
+        f"- Term List：{term_list_text(experiment)}",
+        f"- Run 紀錄裡的 Term List hash：{_counts((r.term_list_hash for r in records), none_label='未使用')}",
+        "- 長度比例範圍（警示用）：" + "；".join(f"{d} {r.min}–{r.max}" for d, r in length_ranges(cfg).items() if d in cfg.directions),
         "", "## Approach 設定", "",
     ]
     for planned in experiment.approaches:
@@ -51,6 +63,12 @@ def render(experiment: Experiment, records: list[RunRecord], rows: list[Componen
         section_rows = [r for r in rows if r.approach == approach_id and r.direction == direction]
         lines += section_lines(approach_id, direction, planned_runs.get((approach_id, direction)), section, section_rows)
     return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def term_list_text(experiment: Experiment) -> str:
+    if experiment.term_list is None:
+        return "未使用"
+    return f"目前 {experiment.term_list.hash}（{len(experiment.term_list.terms.terms)} 條）"
 
 
 def approach_lines(planned: PlannedApproach, records: list[RunRecord]) -> list[str]:
@@ -86,6 +104,10 @@ def section_lines(approach_id: str, direction: str, planned: int | None, records
     omissions = sum(r.n_omissions for r in rows)
     checked_runs = len({RunKey.of(r) for r in rows})
     n_components = sum(1 for r in rows if r.source_type is not None)
+    finding_counts = Counter(f.dimension for r in rows for f in r.findings)
+    warning_counts = Counter(w.kind for r in rows for w in r.warnings)
+    findings = "、".join(f"{d.value} {finding_counts[d]}" for d in Dimension)
+    warnings = "、".join(f"{WARNING_LABELS[k]} {warning_counts[k]}" for k in WarningKind)
     others = "、".join(f"{o.value} {format_ratio(by_outcome[o], n)}" for o in (Outcome.MALFORMED, Outcome.TRUNCATED, Outcome.ERROR))
     return [
         f"## {approach_id} × {direction}", "",
@@ -94,8 +116,26 @@ def section_lines(approach_id: str, direction: str, planned: int | None, records
         f"- Refusal 率：{format_ratio(by_outcome[Outcome.REFUSAL], n)}",
         f"- 其他失敗：{others}",
         f"- 漏段數：{omissions}（已檢查 {checked_runs} 個 ok 的 Run、共 {n_components} 個 Component）",
+        f"- Deterministic Finding：{findings}（已檢查 {checked_runs} 個 ok 的 Run、共 {n_components} 個 Component）",
+        f"- 警示：{warnings}",
         "",
     ]
+
+
+def require_fresh_check(experiment: Experiment, out: OutputDir) -> None:
+    """check 的結果取決於規則、Term List 和長度比例範圍。它們變了而沒有重跑 check，報告就會用舊結果，
+    而且看不出來，所以不產生報告。"""
+    meta, current = out.read_check_meta(), current_check_meta(experiment)
+    if meta == current:
+        return
+    if meta is None:
+        reasons = ["沒有 check 紀錄，可能是舊版 check 跑的"]
+    else:
+        reasons = [name for name, differs in (
+            ("規則版本", meta.rules_version != current.rules_version),
+            ("Term List", meta.term_list_hash != current.term_list_hash),
+            ("長度比例範圍", meta.length_ratio != current.length_ratio)) if differs]
+    raise InputError(f"check 的結果已過期（{'、'.join(reasons)}），請重新執行 check")
 
 
 def handle(args) -> int:
@@ -111,6 +151,7 @@ def handle(args) -> int:
         if len(unchecked) > MAX_LISTED:
             problems.append(f"…另有 {len(unchecked) - MAX_LISTED} 個")
         raise InputError(problems)
+    require_fresh_check(experiment, out)   # 先列出沒檢查過的 Run（較具體）；都檢查過了，才看結果是不是過期
     out.write_report(render(experiment, records, rows))
     print(f"已寫入 {out.report_path}（{len(records)} 個 Run）")
     return 0

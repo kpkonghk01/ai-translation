@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 # 會用在檔名和網址路徑裡的 id：只允許安全字元，避免設定檔把輸出寫到別的目錄
 Slug = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$", max_length=64)]
 ModelName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$", max_length=100)]
+NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 class Direction(StrEnum):
@@ -96,16 +97,82 @@ class ApproachEntry(StrictModel):
     runs: int = Field(ge=1)
 
 
+class LengthRatioRange(StrictModel):
+    """譯文與原文長度（不計空白的字元數）之比的正常範圍；超出就列警示。"""
+    min: float = Field(gt=0)
+    max: float
+
+    @model_validator(mode="after")
+    def _min_below_max(self):
+        if self.min >= self.max:
+            raise ValueError("min 必須小於 max")
+        return self
+
+
+# 暫定的預設值，等有繁→英的實際分佈再定；各 Direction 都可以在實驗設定的 length_ratio 覆寫
+DEFAULT_LENGTH_RATIO = {Direction.TRAD_TO_EN: LengthRatioRange(min=1.5, max=8.0)}
+
+
 class ExperimentConfig(StrictModel):
     id: Slug
     articles: ArticleSet
     directions: list[Direction] = Field(min_length=1)
     approaches: list[ApproachEntry] = Field(min_length=1)
+    term_list: str | None = None   # Term List 檔的路徑；不設就不注入、也不做 Terminology 檢查
+    length_ratio: dict[Direction, LengthRatioRange] = {}   # 覆寫 DEFAULT_LENGTH_RATIO
 
     @model_validator(mode="after")
     def _unique(self):
         if len(set(self.directions)) != len(self.directions):
             raise ValueError("directions 有重覆")
+        return self
+
+
+def length_ranges(config: ExperimentConfig) -> dict[Direction, LengthRatioRange]:
+    """實際使用的長度比例範圍：預設值加上實驗設定的覆寫。"""
+    return {**DEFAULT_LENGTH_RATIO, **config.length_ratio}
+
+
+# ───────────── Term List ─────────────
+
+class TermCategory(StrEnum):
+    PERSON = "person"
+    PLACE = "place"
+    ORGANIZATION = "organization"
+    LEGAL = "legal"
+    NEWS_IDIOM = "news-idiom"
+
+
+class TermEntry(StrictModel):
+    source: NonBlank   # 原文詞
+    translations: dict[Direction, Annotated[list[NonBlank], Field(min_length=1)]]   # 各 Direction 的允許譯法
+    category: TermCategory
+    severity: Severity = Severity.MINOR   # 譯文找不到任何允許的譯法時的 Severity
+    simplified_exceptions: list[NonBlank] = []   # 繁→簡殘留字檢查的例外
+    note: str = ""
+
+    @model_validator(mode="after")
+    def _at_least_one_direction(self):
+        if not self.translations:
+            raise ValueError("translations 至少要有一個 Direction")
+        return self
+
+
+class TermList(StrictModel):
+    terms: list[TermEntry]
+
+    @model_validator(mode="after")
+    def _no_duplicate_sources(self):
+        # 只報位置，不抄條目的文字；連空白不同的寫法也算重覆
+        first_seen: dict[str, int] = {}
+        duplicates = []
+        for n, entry in enumerate(self.terms):
+            squashed = "".join(entry.source.split())
+            if squashed in first_seen:
+                duplicates.append(f"terms[{n}] 與 terms[{first_seen[squashed]}] 的原文詞重覆")
+            first_seen.setdefault(squashed, n)
+        if duplicates:
+            raise ValueError("；".join(duplicates))
         return self
 
 
@@ -176,6 +243,7 @@ class RunRecord(RunKey):
     model_version: str | None = None   # 實際回應的模型版本
     prompt_id: str
     prompt_hash: str
+    term_list_hash: str | None = None   # 沒有設 Term List 時為 None
     config_hash: str
     raw_response: str | None = None   # 相對於輸出目錄
     translation: str | None = None
@@ -189,6 +257,8 @@ OMISSION = "omission"
 EXTRA_COMPONENT = "extra-component"
 DUPLICATE_COMPONENT = "duplicate-component"
 TYPE_CHANGED = "type-changed"
+TERM_MISMATCH = "term-mismatch"
+RESIDUAL_HAN = "residual-han"
 
 
 class Finding(StrictModel):
@@ -202,11 +272,34 @@ class Finding(StrictModel):
     reason: str
 
 
+class WarningKind(StrEnum):
+    LENGTH_RATIO = "length-ratio"
+    NUMBER_MISSING = "number-missing"
+    QUOTE_COUNT = "quote-count"
+    SUSPECTED_REFUSAL = "suspected-refusal"
+    UNCHANGED_TRANSLATABLE = "unchanged-translatable"
+    UNTRANSLATABLE_CHANGED = "untranslatable-changed"
+
+
+class CheckWarning(StrictModel):
+    """Deterministic check 標出、交人手看但不計分的提示。程式判斷不夠可靠的情況只產生 Warning，不產生 Finding。"""
+    kind: WarningKind
+    detail: str = ""
+
+
+class CheckMeta(StrictModel):
+    """check 當時用的規則版本與外部輸入。report 用它判斷 check 的結果是不是已經過期。"""
+    rules_version: str
+    term_list_hash: str | None
+    length_ratio: dict[Direction, LengthRatioRange]
+
+
 class ComponentResult(RunKey):
     """一個 Component × Approach × Direction × Run 的檢查結果。source_type 為 None 表示原文沒有這個 id（譯文多出來的）。"""
     component_id: str
     source_type: str | None
     findings: list[Finding] = []
+    warnings: list[CheckWarning] = []
 
     @property
     def n_omissions(self) -> int:

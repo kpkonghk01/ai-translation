@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from .errors import InputError
 from .loading import read_model
 from .schemas import ApproachConfig, ExperimentConfig
+from .terms import LoadedTermList, load_term_list
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,7 @@ class PlannedApproach:
 class Experiment:
     config: ExperimentConfig
     approaches: list[PlannedApproach]
+    term_list: LoadedTermList | None
 
 
 def config_hash(approach: ApproachConfig) -> str:
@@ -46,4 +48,5 @@ def load_experiment(path: str) -> Experiment:
         approaches.append(PlannedApproach(approach, entry.runs, config_hash(approach)))
     if problems:
         raise InputError(problems)
-    return Experiment(config=config, approaches=approaches)
+    term_list = load_term_list(config.term_list) if config.term_list else None
+    return Experiment(config=config, approaches=approaches, term_list=term_list)

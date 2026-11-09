@@ -10,6 +10,7 @@ import unittest
 from unittest import mock
 
 import gemini_samples
+from fake_transport import FakeTransport
 from translation_eval import cli
 from translation_eval.transport import OFFLINE_ENV
 
@@ -70,6 +71,14 @@ def component(translation, suffix):
     return next(c for c in translation["components"] if c["id"] == f"{ARTICLE_ID}-{suffix}")
 
 
+# 虛構的 Term List：前兩條出現在 source_article 裡，第三條不會出現
+TERM_LIST = {"terms": [
+    {"source": "虛構市政廳", "category": "organization", "translations": {"trad-to-en": ["Fictional City Hall"]}},
+    {"source": "陳虛構", "category": "person", "translations": {"trad-to-en": ["Chan Fictional", "Fictional Chan"]},
+     "severity": "major", "simplified_exceptions": ["虛"], "note": "測試用"},
+    {"source": "從未出現的詞", "category": "place", "translations": {"trad-to-en": ["Never Mentioned"]}},
+]}
+
 APPROACH = {
     "id": "a",
     "family": "gemini",
@@ -89,8 +98,10 @@ class Workspace(unittest.TestCase):
 
     article_ids = ("9000001",)
     runs = 1
+    extra_experiment: dict = {}   # 併入實驗設定的欄位（例如 term_list）
 
     def setUp(self):
+        self.extra_experiment = {}
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp)
         self.articles_dir = os.path.join(self.tmp, "articles")
@@ -113,7 +124,15 @@ class Workspace(unittest.TestCase):
             "articles": {"dir": self.articles_dir, "ids": list(self.article_ids)},
             "directions": ["trad-to-en"],
             "approaches": [{"config": self.approach_path, "runs": self.runs}],
+            **self.extra_experiment,
         }
+
+    def use_term_list(self, term_list: dict) -> str:
+        path = os.path.join(self.tmp, "term-list.json")
+        self.write_json(path, term_list)
+        self.extra_experiment["term_list"] = path
+        self.write_json(self.config_path, self.experiment())
+        return path
 
     @staticmethod
     def write_json(path: str, obj) -> None:
@@ -136,6 +155,17 @@ class Workspace(unittest.TestCase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = cli.main(argv, transport=transport)
         return code, out.getvalue(), err.getvalue()
+
+    def assert_fails_cleanly(self, needle: str, command: str = "translate") -> None:
+        """輸入或設定不合法：非 0 結束，列出原因，不送請求，不寫出任何檔案（連 data 目錄也不建）。"""
+        transport = FakeTransport()   # 任何請求都會令測試失敗
+        for command_args in ((), ("--dry-run",)) if command == "translate" else ((),):
+            code, out, err = self.run_cli(command, *command_args, transport=transport)
+            self.assertNotEqual(code, 0, command_args)
+            self.assertIn(needle, err)
+            self.assertEqual(out, "")
+            self.assertFalse(os.path.exists(self.data_dir))
+        self.assertEqual(transport.requests, [])
 
     def read_runs(self) -> list[dict]:
         with open(os.path.join(self.out_dir, "runs.jsonl"), encoding="utf-8") as f:

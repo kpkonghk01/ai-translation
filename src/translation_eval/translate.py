@@ -15,15 +15,16 @@ from datetime import datetime, timezone
 
 from pydantic import ValidationError
 
-from .articles import load_article, request_payload
+from .articles import article_text, load_article, request_payload
 from .config import PlannedApproach, load_experiment
 from .errors import InputError
 from .exchange import send_with_retries
 from .outcome import Interpretation, refusal_or_malformed
-from .prompts import translation_template
+from .prompts import PromptTemplate, translation_template
 from .providers import adapter_for
 from .schemas import Article, InputVariant, Outcome, RunKey, RunRecord, Translation
 from .store import OutputDir
+from .terms import LoadedTermList, entries_in
 from .transport import Transport
 
 
@@ -49,6 +50,12 @@ def user_text(article: Article) -> str:
     return json.dumps(request_payload(article), ensure_ascii=False)
 
 
+def system_prompt(template: PromptTemplate, article: Article, term_list: LoadedTermList | None, direction) -> str:
+    """範本加上這篇文章原文出現過的 Term List 條目：沒出現的條目不注入。"""
+    entries = entries_in(term_list.terms if term_list else None, article_text(article), direction)
+    return template.render(entries, direction)
+
+
 def handle(args, transport: Transport) -> int:
     experiment = load_experiment(args.config)
     cfg = experiment.config
@@ -68,7 +75,7 @@ def handle(args, transport: Transport) -> int:
         pending = pending[: args.limit]
 
     if args.dry_run:
-        return dry_run(pending, skipped, articles)
+        return dry_run(pending, skipped, articles, experiment.term_list)
 
     # 缺少 key 時在送出任何請求之前就停止，只列出變數名稱
     missing = sorted({p.config.api_key_env for _, p in pending if not os.environ.get(p.config.api_key_env)})
@@ -77,7 +84,8 @@ def handle(args, transport: Transport) -> int:
 
     outcomes = Counter()
     for key, planned in pending:
-        record = translate_one(transport, key, planned, articles[key.article_id], out, replaces_existing=key in done)
+        record = translate_one(transport, key, planned, articles[key.article_id], out, experiment.term_list,
+                               replaces_existing=key in done)
         outcomes[record.outcome] += 1
         print(f"{key.label}: {record.outcome}")
     summary = "、".join(f"{o} {n}" for o, n in sorted(outcomes.items())) or "沒有要執行的 Run"
@@ -85,11 +93,13 @@ def handle(args, transport: Transport) -> int:
     return 0
 
 
-def dry_run(pending, skipped: int, articles) -> int:
+def dry_run(pending, skipped: int, articles, term_list: LoadedTermList | None) -> int:
     chars = 0
     destinations = {}
     for key, planned in pending:
-        chars += len(translation_template(key.direction).text) + len(user_text(articles[key.article_id]))
+        article = articles[key.article_id]
+        prompt = system_prompt(translation_template(key.direction), article, term_list, key.direction)
+        chars += len(prompt) + len(user_text(article))
         destinations[planned.id] = (adapter_for(planned.config).endpoint(planned.config), planned.config.concurrency)
     print("dry-run：不送出任何請求，也不寫出任何檔案")
     print(f"Run：{len(pending)}（已有紀錄而略過：{skipped}）")
@@ -114,13 +124,14 @@ def require_translation_shape(result: Interpretation) -> Interpretation:
     return result
 
 
-def translate_one(transport: Transport, key: RunKey, planned: PlannedApproach, article: Article, out: OutputDir, *,
-                  replaces_existing: bool) -> RunRecord:
+def translate_one(transport: Transport, key: RunKey, planned: PlannedApproach, article: Article, out: OutputDir,
+                  term_list: LoadedTermList | None, *, replaces_existing: bool) -> RunRecord:
     approach = planned.config
     adapter = adapter_for(approach)
     template = translation_template(key.direction)
     api_key = os.environ[approach.api_key_env]
-    request = adapter.build_request(approach, template.text, user_text(article), api_key)
+    prompt = system_prompt(template, article, term_list, key.direction)
+    request = adapter.build_request(approach, prompt, user_text(article), api_key)
 
     exchange = send_with_retries(transport, adapter, request, approach.retry)
     result = require_translation_shape(exchange.interpretation)
@@ -138,6 +149,7 @@ def translate_one(transport: Transport, key: RunKey, planned: PlannedApproach, a
         model_version=result.model_version,
         prompt_id=template.id,
         prompt_hash=template.hash,
+        term_list_hash=term_list.hash if term_list else None,
         config_hash=planned.config_hash,
         created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
     )

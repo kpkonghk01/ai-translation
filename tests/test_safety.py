@@ -13,16 +13,6 @@ from translation_eval.transport import OFFLINE_ENV, Request, TransportFailure, T
 class InvalidInputTest(Workspace):
     """輸入或設定驗證失敗：非 0 結束，列出原因，不送請求，不寫出任何檔案（連 data 目錄也不建）。"""
 
-    def assert_fails_cleanly(self, needle):
-        transport = FakeTransport()   # 任何請求都會令測試失敗
-        for command_args in ((), ("--dry-run",)):
-            code, out, err = self.run_cli("translate", *command_args, transport=transport)
-            self.assertNotEqual(code, 0, command_args)
-            self.assertIn(needle, err)
-            self.assertEqual(out, "")
-            self.assertFalse(os.path.exists(self.data_dir))
-        self.assertEqual(transport.requests, [])
-
     def test_invalid_experiment_config(self):
         cases = {
             "a misspelt field is not silently ignored": (lambda e: e.update(approches=e.pop("approaches")), "approches"),
