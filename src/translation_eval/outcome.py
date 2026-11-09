@@ -10,7 +10,7 @@ from .schemas import Outcome
 class Interpretation:
     outcome: Outcome
     reason: str | None = None
-    payload: dict | None = None   # 只有 ok 才有：解析後的 JSON 物件
+    payload: dict | str | None = None   # 只有 ok 才有：解析後的 JSON 物件，逐 Component 模式是譯文文字
     retryable: bool = False       # 429 與 5xx：由共用的重試層決定要不要重試
     input_tokens: int | None = None
     output_tokens: int | None = None
@@ -57,6 +57,15 @@ REFUSAL_SCAN_CHARS = 400
 
 def looks_like_refusal(text: str) -> bool:
     return bool(_REFUSAL.search(text[:REFUSAL_SCAN_CHARS]))
+
+
+def classify_plain_text(text: str) -> tuple[Outcome, str | None, str | None]:
+    """逐 Component 模式：預期的輸出就是純譯文。空的是 malformed。拒絕語的字樣在這裡不判：譯文的引語裡本來就可能有
+    「I can't」，只認 provider 明確給的訊號（message.refusal、content_filter）；疑似 Refusal 由 check 的警示攔住。"""
+    stripped = text.strip()
+    if not stripped:
+        return Outcome.MALFORMED, "輸出是空的", None
+    return Outcome.OK, None, stripped
 
 
 def classify_text(text: str) -> tuple[Outcome, str | None, dict | None]:

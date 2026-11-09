@@ -66,6 +66,11 @@ def check_article(article: Article, article_id: str) -> Article:
     return article
 
 
+def text_field_names(component_type: str) -> tuple[str, ...]:
+    """這個 type 的 Component 要翻譯的文字欄位。title 與 tags 另外處理；不翻譯的 type 沒有。"""
+    return () if component_type in (TITLE_TYPE, TAGS_TYPE) else _TEXT_FIELDS.get(component_type, ())
+
+
 def kept_fields(component_type: str) -> tuple[str, ...]:
     """這個 type 的 Component 除了 id 與 type 以外保留的欄位。匯入 CMS 時，其他欄位若有文字，就不能靜默丟掉。"""
     return _TEXT_FIELDS.get(component_type, ()) + _STRUCTURE_FIELDS.get(component_type, ())

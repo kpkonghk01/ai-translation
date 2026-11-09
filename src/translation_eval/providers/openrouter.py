@@ -52,9 +52,10 @@ class OpenRouterAdapter:
         body = {
             "model": approach.model,
             "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_text}],
-            "response_format": {"type": "json_object"},
             "provider": {"zdr": True, "data_collection": "deny", "only": list(approach.routing.only), "allow_fallbacks": False},
         }
+        if approach.request_mode == "article-json":
+            body["response_format"] = {"type": "json_object"}
         if approach.temperature is not None:
             body["temperature"] = approach.temperature
         if approach.max_output_tokens is not None:

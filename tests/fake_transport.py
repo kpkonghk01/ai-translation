@@ -19,3 +19,18 @@ class FakeTransport:
         if isinstance(item, BaseException):
             raise item
         return item
+
+
+class FunctionTransport:
+    """回應由函式決定（看請求的內容）：切塊與逐 Component 的請求數量事先不固定，沒辦法預先寫好。"""
+
+    def __init__(self, reply):
+        self._reply = reply
+        self.requests: list[Request] = []
+
+    def send(self, request: Request) -> Response:
+        self.requests.append(request)
+        item = self._reply(request)
+        if isinstance(item, BaseException):
+            raise item
+        return item

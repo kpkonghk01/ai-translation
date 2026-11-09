@@ -34,7 +34,7 @@ class InvalidInputTest(Workspace):
             "concurrency above one": ({"concurrency": 4}, "concurrency"),
             "model that is not a plain model name": ({"model": "../other:path"}, "model"),
             "unknown provider": ({"provider": "somewhere-else"}, "provider"),
-            "request mode not implemented yet": ({"request_mode": "per-component"}, "request_mode"),
+            "request mode that does not exist": ({"request_mode": "per-sentence"}, "request_mode"),
             "unknown field": ({"input_limit": 1000}, "input_limit"),
         }
         for name, (change, needle) in cases.items():

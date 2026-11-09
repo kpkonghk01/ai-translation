@@ -13,7 +13,12 @@ from pathlib import Path
 from .schemas import Direction, TermEntry
 
 _DIR = Path(__file__).parent / "prompt_templates"
-_TEMPLATE_IDS = {Direction.TRAD_TO_EN: "translate-trad-to-en", Direction.TRAD_TO_SIMPLIFIED: "translate-trad-to-simplified"}
+_TEMPLATE_IDS = {
+    ("trad-to-en", "article-json"): "translate-trad-to-en",
+    ("trad-to-simplified", "article-json"): "translate-trad-to-simplified",
+    ("trad-to-en", "per-component"): "translate-trad-to-en-component",
+    ("trad-to-simplified", "per-component"): "translate-trad-to-simplified-component",
+}
 TERMINOLOGY_MARKER = "<<TERMINOLOGY>>"
 
 
@@ -32,7 +37,7 @@ class PromptTemplate:
         return base.rstrip() + "\n\n" + terminology.strip().replace("{terms}", lines) + "\n"
 
 
-def translation_template(direction: Direction) -> PromptTemplate:
-    template_id = _TEMPLATE_IDS[direction]
+def translation_template(direction: Direction, request_mode: str) -> PromptTemplate:
+    template_id = _TEMPLATE_IDS[(direction.value, request_mode)]
     raw = (_DIR / f"{template_id}.txt").read_bytes()
     return PromptTemplate(id=template_id, text=raw.decode("utf-8"), hash=hashlib.sha256(raw).hexdigest())

@@ -148,7 +148,7 @@ def approach_lines(planned: PlannedApproach, records: list[RunRecord]) -> list[s
     return [
         f"### {approach.id}", "",
         f"- 模型家族：{approach.family}；provider：{approach.provider}；模型：{approach.model}",
-        f"- 請求模式：{approach.request_mode}；temperature：{temperature}；max_output_tokens：{max_tokens}；timeout：{approach.timeout_seconds} 秒；併發：{approach.concurrency}",
+        f"- 請求模式：{approach.request_mode}" + (f"（輸入上限 {approach.max_input_chars} 字，超過就按 Component 切塊）" if approach.max_input_chars else "") + f"；temperature：{temperature}；max_output_tokens：{max_tokens}；timeout：{approach.timeout_seconds} 秒；併發：{approach.concurrency}",
         f"- 重試：最多 {approach.retry.max_attempts} 次嘗試，退避起點 {approach.retry.base_delay_seconds} 秒",
         f"- 每篇每個 Direction 每個輸入版本的 Run 次數：{planned.runs}（輸入版本：{'、'.join(planned.input_variants)}）",
         f"- 設定 hash：{hash_text}",

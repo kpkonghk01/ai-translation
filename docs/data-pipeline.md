@@ -103,6 +103,19 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
 - `translate` 可以中斷後重跑同一條指令：已有紀錄的 Run 會略過；`--redo-errors` 重做結果為 `error` 的 Run（`block`、`refusal`、`malformed`、`truncated` 是結果，不會重做）。`--article <id>`（可重覆）只跑指定文章，`--limit <N>` 最多執行 N 個 Run。
 - `check` 與 `report` 每次都從 `runs.jsonl` 整份重算。`report` 發現有 `ok` 的 Run 還沒有 `check` 結果，或 `check` 之後規則、Term List、長度比例範圍改了，會停止，不產生報告；先重新執行 `check`。`check` 另寫 `components.jsonl`（每個 Component 的 Finding 與警示）和 `check-meta.json`（check 當時用的規則版本與輸入，report 靠它判斷結果有沒有過期）。規則版本由實作規則的原始碼的 hash 決定：程式的規則有任何改動，舊的 check 結果就視為過期，重跑 `check` 即可（只要幾秒，不呼叫 API）。所有 Run 都沒有譯文（例如全被 Block）時不需要 `check`。
 - **阿里雲 Qwen（方案 B）**：Approach 設定寫 `"provider": "dashscope"`、`"api_key_env": "DASHSCOPE_API_KEY"`，模型由 Pan 選（例如 `"model": "qwen-plus"`）。只會送到 International（新加坡）endpoint：預設是 `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`，也可以用 `base_url` 改成自己 workspace 的 `https://<workspace>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`；其他網址（大陸、美國、香港、http、帶帳號或埠號的）一律被拒絕。平台內容審查的錯誤（`DataInspectionFailed`、`data_inspection_failed` 等）記為 Block，原因碼寫在報告的 Block 原因分佈。`X-DashScope-DataInspection` header 預設不送；要送的話，把值寫在 Approach 設定的 `data_inspection`，程式照原樣送出。注意官方文件說這個 header 是啟用額外的 AI 安全護欄（值是 JSON 字串，且該服務僅北京區可用），在內建審查之外多加一層，不是 whitelist 的開關；文件裡的「加白」是向阿里雲客戶經理申請、把內容加入豁免名單的另一條流程。真跑同樣只由 Pan 用 `--env-file` 執行。
+- **OpenRouter（方案 F 等）**：Approach 設定寫 `"provider": "openrouter"`、`"api_key_env": "OPENROUTER_API_KEY"`、`"model": "作者/名稱"`。**送出任何請求之前**，Pan 先用 `providers` 指令看 provider 清單，確認後（排除位於中國大陸的 provider）把要用的 tag 和確認日期寫進設定：
+
+  ```bash
+  # 會呼叫 API、需要 key：只由 Pan 在自己的終端機執行
+  uv run --locked --env-file .env python -I -m translation_eval providers tencent/hy-mt2
+  ```
+
+  ```json
+  "routing": {"only": ["deepinfra", "novita"], "confirmed_on": "2026-11-09"}
+  ```
+
+  允許清單是空的或沒有確認日期時，`translate` 會在送出任何請求之前就停止（`--dry-run` 只顯示「尚未確認」）。每個請求都帶 `provider.zdr: true`、`data_collection: "deny"`、`only`、`allow_fallbacks: false`；回應寫的 provider 不在 `only` 內（或沒有寫）時，這個 Run 記為 `error`，Run 紀錄的 `served_provider` 和報告都會列出實際服務的 provider。`providers` 指令不寫入任何東西；API 沒有提供各 provider 的地區和資料政策時，它會明說，要到 OpenRouter 的模型頁自己確認。
+- **請求模式與切塊**：Approach 設定的 `request_mode` 預設是 `article-json`（整篇 JSON 進、同結構 JSON 出）。`max_input_chars` 設了之後（只用於 `article-json`），文章按 Component 順序切成每塊不超過上限的連續幾塊，每塊一個請求；title 和 tags 只在第一塊。`request_mode: "per-component"` 給不擅長處理 JSON 的翻譯專用模型：每個要翻譯的字串一個請求，送純文字、收純文字，再組回同結構的譯文。兩種模式的 Run 紀錄格式相同：一個 Run 一筆紀錄，結果取最差的請求（block > refusal > malformed > truncated > error > ok），`worst_unit` 記下是哪一個，遇到 block 就不再送後面的請求；tokens 和 latency 是各請求的總和，每次嘗試都標明屬於哪個請求，原始回應存成 `raw/` 底下的 `.jsonl`（每行一個請求）。逐 Component 模式不用拒絕語的字樣判 Refusal（譯文的引語裡本來就可能有「I can't」），只認 provider 明確給的訊號；疑似 Refusal 由 `check` 的警示攔住。
 - **繁→簡與方案 E**：實驗設定的 `directions` 可以寫 `trad-to-simplified`，LLM Approach 就會跑繁→簡（prompt 是 `translate-trad-to-simplified`）。方案 E（Current service）不經 API：實驗設定寫 `"baselines": [{"id": "e", "dir": "data/baseline-service", "direction": "trad-to-simplified"}]`，然後執行
 
   ```bash

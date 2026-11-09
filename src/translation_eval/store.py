@@ -114,7 +114,7 @@ class OutputDir:
         self._replace(self.report_path, text)
 
     def write_run(self, record: RunRecord, raw: bytes | None, translation: dict | None, *,
-                  secrets: tuple[str, ...] = (), replaces_existing: bool = False) -> RunRecord:
+                  secrets: tuple[str, ...] = (), replaces_existing: bool = False, raw_extension: str = "body") -> RunRecord:
         """先寫譯文和原始回應，最後才寫 Run 紀錄：有紀錄的 Run 一定有它的檔案。
 
         replaces_existing 用於重做 error 的 Run：舊紀錄到新紀錄寫出的這一刻才被換掉。
@@ -122,7 +122,7 @@ class OutputDir:
         stem = run_stem(record)
         updates = {}
         if raw is not None:
-            updates["raw_response"] = self._write(f"raw/{stem}.body", _scrub_bytes(raw, secrets))
+            updates["raw_response"] = self._write(f"raw/{stem}.{raw_extension}", _scrub_bytes(raw, secrets))
         if translation is not None:
             text = _scrub(json.dumps(translation, ensure_ascii=False, indent=2) + "\n", secrets)
             updates["translation"] = self._write(f"translations/{stem}.json", text.encode("utf-8"))

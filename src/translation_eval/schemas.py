@@ -101,7 +101,8 @@ class ApproachConfig(StrictModel):
     base_url: str | None = None   # 只有 dashscope 用；不設就用 DASHSCOPE_DEFAULT_BASE_URL
     data_inspection: HeaderValue | None = None   # 只有 dashscope 用：X-DashScope-DataInspection 的值；不設就不送這個 header
     routing: OpenRouterRouting | None = None   # 只有 openrouter 用
-    request_mode: Literal["article-json"] = "article-json"
+    request_mode: Literal["article-json", "per-component"] = "article-json"
+    max_input_chars: int | None = Field(default=None, ge=1)   # 只用於 article-json：超過就按 Component 順序切塊，每塊一個請求
     temperature: float | None = Field(default=None, ge=0, le=2)   # None：不送，用 API 預設
     max_output_tokens: int | None = Field(default=None, ge=1)
     timeout_seconds: float = Field(default=600, gt=0)
@@ -121,6 +122,8 @@ class ApproachConfig(StrictModel):
                                  "或 https://<workspace>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1（全小寫，不能有空白、帳號、埠號、? 或 #）")
         elif self.base_url is not None or self.data_inspection is not None:
             raise ValueError("base_url 和 data_inspection 只有 dashscope 用")
+        if self.request_mode == "per-component" and self.max_input_chars is not None:
+            raise ValueError("max_input_chars 只用於 article-json（切塊）；per-component 每個請求本來就只有一段文字")
         if self.provider != "openrouter" and self.routing is not None:
             raise ValueError("routing 只有 openrouter 用")
         if self.provider == "openrouter":
@@ -274,6 +277,7 @@ class Translation(_ArticleShape):
 
 class Attempt(StrictModel):
     """一次請求嘗試。429、5xx、timeout 會重試，每次嘗試都留一筆。"""
+    unit: str | None = None   # 一個 Run 有好幾個請求（切塊、逐 Component）時，這次嘗試屬於哪一個
     http_status: int | None
     outcome: Outcome
     reason: str | None = None
@@ -311,7 +315,8 @@ class RunRecord(RunKey):
     model_version: str | None = None   # 實際回應的模型版本
     prompt_id: str | None = None
     prompt_hash: str | None = None
-    served_provider: str | None = None   # OpenRouter：回應寫的、實際服務這個請求的 provider
+    served_provider: str | None = None   # OpenRouter：回應寫的、實際服務這個請求的 provider（有好幾個就都列出）
+    worst_unit: str | None = None   # 一個 Run 有好幾個請求，而且結果不是 ok：結果最差的是哪一個
     term_list_hash: str | None = None   # 模型看到的 Term List（原文詞與譯法）的 hash；沒有設 Term List 時為 None
     config_hash: str | None = None
     baseline_label: str | None = None   # baseline 的 Run：來源的 meta.baseline 標籤（服務與 opencc 的版本）

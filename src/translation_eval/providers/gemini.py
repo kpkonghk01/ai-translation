@@ -47,7 +47,7 @@ class GeminiAdapter:
         return ENDPOINT.format(model=approach.model)
 
     def build_request(self, approach: ApproachConfig, system_prompt: str, user_text: str, api_key: str) -> Request:
-        generation = {"responseMimeType": "application/json"}
+        generation = {"responseMimeType": "application/json"} if approach.request_mode == "article-json" else {}
         if approach.temperature is not None:
             generation["temperature"] = approach.temperature
         if approach.max_output_tokens is not None:
