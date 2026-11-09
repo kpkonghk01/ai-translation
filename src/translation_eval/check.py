@@ -27,11 +27,13 @@ from .schemas import (DUPLICATE_COMPONENT, EXTRA_COMPONENT, OMISSION, RESIDUAL_H
                       CheckWarning, ComponentResult, Dimension, Direction, Finding, LengthRatioRange, Outcome, RunKey, Severity,
                       TermEntry, Translation, WarningKind)
 from .store import OutputDir
-from .terms import entries_in, has_allowed_rendering, matched_text
+from .terms import entries_in, has_allowed_rendering, matched_text, occurring_entries
 from .textrules import (contains_han, han_runs, missing_digit_tokens, missing_numbers, nonspace_length, quote_count,
                         residual_traditional)
 
 MAX_LISTED_NUMBERS = 10
+# 各 Direction 核對數字的規則。新增 Direction 時，這裡沒有它就會失敗，不會靜默套用別的規則
+NUMBER_RULES = {Direction.TRAD_TO_EN: missing_numbers, Direction.TRAD_TO_SIMPLIFIED: missing_digit_tokens}
 # 實作這些規則的原始碼：它們的內容決定 rules_version
 _RULE_SOURCES = ("check.py", "textrules.py", "terms.py", "articles.py", "outcome.py")
 
@@ -87,8 +89,9 @@ def _content_findings(direction: Direction, source_text: str, translated_text: s
         findings += [_finding(Dimension.LOCALE_FORMAT, RESIDUAL_HAN, Severity.MINOR, "譯文殘留漢字", target_span=run)
                      for run in han_runs(translated_text)]
     elif direction is Direction.TRAD_TO_SIMPLIFIED:
-        # Term List 的例外只對原文有那個詞的 Component 有效
-        exempt = frozenset(char for entry in applicable for exception in entry.simplified_exceptions for char in exception)
+        # Term List 的例外只對原文有那個詞的 Component 有效；條目有沒有簡體譯法都一樣
+        exempt = frozenset(char for entry in occurring_entries(entries, source_text)
+                           for exception in entry.simplified_exceptions for char in exception)
         findings += [_finding(Dimension.LOCALE_FORMAT, RESIDUAL_TRADITIONAL, Severity.MINOR, "譯文殘留 OpenCC t2s 會改動的繁體字",
                               target_span=char)
                      for char in residual_traditional(translated_text, exempt)]
@@ -106,7 +109,7 @@ def _content_warnings(direction: Direction, source_text: str, translated_text: s
         # 「遠短於原文」以這個 Direction 正常範圍的下限為準：低於它，又像拒絕語，才列為疑似 Refusal
         if ratio < length_range.min and looks_like_refusal(translated_text):
             warnings.append(_warning(WarningKind.SUSPECTED_REFUSAL, "譯文像拒絕語，而且遠短於原文"))
-    missing = (missing_numbers if direction is Direction.TRAD_TO_EN else missing_digit_tokens)(source_text, translated_text)
+    missing = NUMBER_RULES[direction](source_text, translated_text)
     if missing:
         warnings.append(_warning(WarningKind.NUMBER_MISSING,
                                  f"原文的 {len(missing)} 個數字在譯文找不到：{'、'.join(missing[:MAX_LISTED_NUMBERS])}"))

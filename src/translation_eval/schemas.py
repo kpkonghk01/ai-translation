@@ -20,8 +20,6 @@ class Direction(StrEnum):
     TRAD_TO_SIMPLIFIED = "trad-to-simplified"
 
 
-# 已有翻譯 prompt、可以拿來跑實驗的 Direction。Term List 這類資料檔可以先寫還沒支援的 Direction 的條目。
-SUPPORTED_DIRECTIONS = frozenset({Direction.TRAD_TO_EN, Direction.TRAD_TO_SIMPLIFIED})
 
 
 class InputVariant(StrEnum):
@@ -141,15 +139,14 @@ class ExperimentConfig(StrictModel):
     length_ratio: dict[Direction, LengthRatioRange] = {}   # 覆寫預設的長度比例範圍（見 config.py）
 
     @model_validator(mode="after")
-    def _directions_are_unique_and_supported(self):
+    def _directions_and_baselines_are_consistent(self):
         if len(set(self.directions)) != len(self.directions):
             raise ValueError("directions 有重覆")
-        unsupported = [d for d in self.directions if d not in SUPPORTED_DIRECTIONS]
-        if unsupported:
-            raise ValueError("directions 含有尚未支援的 Direction：" + "、".join(unsupported))
         ids = [b.id for b in self.baselines]
         if len(set(ids)) != len(ids):
             raise ValueError("baselines 有重覆的 id")
+        if any(b.direction not in self.directions for b in self.baselines):   # 否則報告的開頭不會列出這個 Direction
+            raise ValueError("baselines 的 direction 必須是 directions 之一")
         return self
 
 
@@ -280,6 +277,15 @@ class RunRecord(RunKey):
     @property
     def is_baseline(self) -> bool:
         return self.baseline_label is not None
+
+    @model_validator(mode="after")
+    def _llm_runs_have_their_request_details(self):
+        # 這幾項只有 baseline 的 Run 可以沒有；否則格式壞掉的 Run 會被當成 baseline，在報告裡被靜默略過
+        if not self.is_baseline:
+            missing = [name for name in ("provider", "prompt_id", "prompt_hash", "config_hash", "concurrency") if getattr(self, name) is None]
+            if missing:
+                raise ValueError("不是 baseline 的 Run 缺少：" + "、".join(missing))
+        return self
 
 
 # ───────────── Component 結果 ─────────────

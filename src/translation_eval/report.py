@@ -62,9 +62,10 @@ def render(experiment: Experiment, records: list[RunRecord], rows: list[Componen
     prompts = Counter((r.prompt_id, r.prompt_hash) for r in records if r.prompt_id is not None)
     lines += [f"- {prompt_id}：{prompt_hash}（{n} 個 Run）" for (prompt_id, prompt_hash), n in sorted(prompts.items())]
     lines.append("")
-    if cfg.baselines:
+    baseline_ids = sorted({b.id for b in cfg.baselines} | {r.approach for r in records if r.is_baseline})   # 已匯入的也列出，不看現在的設定
+    if baseline_ids:
         lines += ["## Baseline", ""]
-        lines += [f"- {b.id}：{_counts((r.baseline_label for r in records if r.approach == b.id)) or '尚未匯入'}" for b in cfg.baselines]
+        lines += [f"- {i}：{_counts(r.baseline_label for r in records if r.approach == i) or '尚未匯入'}" for i in baseline_ids]
         lines.append("")
 
     planned_runs = {(p.id, d, v): len(cfg.articles.ids) * p.runs

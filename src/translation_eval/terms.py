@@ -48,12 +48,16 @@ def load_term_list(path: str) -> LoadedTermList:
     return LoadedTermList.from_model(read_model(path, TermList))
 
 
-def entries_in(entries: Iterable[TermEntry], source_text: str, direction: Direction) -> list[TermEntry]:
-    """原文出現的條目（依 Term List 的順序）。原文偶有多餘的空白，比對時忽略；但逐行比對：
-    多個 tag、圖說或相關文章標題是以換行連成一段的，不能讓兩個項目的頭尾接起來湊成一個詞。
-    沒有這個 Direction 的譯法的條目不算。"""
+def occurring_entries(entries: Iterable[TermEntry], source_text: str) -> list[TermEntry]:
+    """原文出現的條目（依 Term List 的順序），不論有沒有某個 Direction 的譯法。原文偶有多餘的空白，比對時忽略；
+    但逐行比對：多個 tag、圖說或相關文章標題是以換行連成一段的，不能讓兩個項目的頭尾接起來湊成一個詞。"""
     lines = [squash(line) for line in source_text.split("\n")]
-    return [e for e in entries if e.applies_to(direction) and any(squash(e.source) in line for line in lines)]
+    return [e for e in entries if any(squash(e.source) in line for line in lines)]
+
+
+def entries_in(entries: Iterable[TermEntry], source_text: str, direction: Direction) -> list[TermEntry]:
+    """原文出現、而且有這個 Direction 的譯法的條目：prompt 注入和 Terminology 檢查用。"""
+    return [e for e in occurring_entries(entries, source_text) if e.applies_to(direction)]
 
 
 def matched_text(source_text: str, term: str) -> str:

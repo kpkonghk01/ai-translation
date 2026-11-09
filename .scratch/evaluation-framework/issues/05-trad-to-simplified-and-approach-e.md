@@ -21,7 +21,7 @@
 
 - **繁→簡 prompt** 只寫 spec 要求的：內地讀者自然的普通話書面語、粵語引語保留粗口強度、Term List；沒有加其他指示。
 - **baseline 的設定**：不放在 Approach 設定，而是實驗設定的 `baselines`（id、目錄、Direction），因為方案 E 不經 API。`import-baseline` 驗證全部通過才寫出；每篇文章一個 Run，`run_index` 是 1。
-- **殘留繁體字**：逐字用 OpenCC 1.4.2 的 t2s 判斷（試過幾十個詞，逐字與整段轉換的結果相同）；每個 Component 同一個字只記一次。Term List 的例外只對原文含有那個詞的 Component 有效，而且只豁免例外裡寫的字。
+- **殘留繁體字**：把整段交給 OpenCC 1.4.2 的 t2s，再逐位置比對哪些字被改動（不是逐字判斷：詞組詞典會保留「乾隆」「乾坤」的「乾」，逐字會誤報；我一度以為兩者相同，那是樣本太小的誤判）；每個 Component 同一個字只記一次。Term List 的例外只對原文含有那個詞的 Component 有效，只豁免例外裡寫的字，條目有沒有簡體譯法都一樣。
 - **繁→簡的數字警示**只核對阿拉伯數字（`萬` 與 `万` 只是字形不同，不換算）；「譯文與原文相同」的警示不用於繁→簡，因為殘留字的 Finding 已經記了。
 - **繁→簡的長度比例預設 0.6–1.6（暫定）**：還沒有任何繁→簡譯文可以量，等有 LLM 的譯文再定。
 - baseline 的 Run 不帶 prompt，所以不受「check 用的 Term List 要與翻譯時的一致」限制；但 Terminology 照樣核對它。
@@ -29,3 +29,11 @@
 用現有的 baseline 檔實測（暫存目錄，不動 `data/`）：40 篇、868 個 Component 匯入並 `check` 通過，沒有漏段，殘留字只有 1 個；警示 22 個。
 
 **發現**：現行服務連 `code`（嵌入的 HTML）裡的文字也一起轉了，40 篇的樣本裡 30 個 code Component 有 20 個內容被改動，所以方案 E 在報告裡會有一批「不翻譯的 Component 被改動」警示。這是服務本身的行為，不是報告的問題；要不要處理（例如 baseline 只比對要翻譯的 Component）由 Pan 決定。
+
+### 2026-11-09 review 之後的修正
+
+- 殘留繁體字的誤報（見上）。
+- `baselines` 的 `direction` 必須是實驗的 `directions` 之一，否則報告開頭不會列出它。
+- 匯入之後即使把 `baselines` 從設定拿掉，報告的 Baseline 一節仍列出標籤。
+- 不是 baseline 的 Run 一定要有 provider、prompt 等欄位，缺了就當成壞掉的紀錄，不會被當成 baseline 而在報告裡被略過。
+- GLOSSARY 加了「Baseline」。

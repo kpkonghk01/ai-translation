@@ -112,6 +112,7 @@ class RejectionTest(ImportBaselineCase):
             ("same id as an Approach", {"id": "a", "dir": self.baseline_dir, "direction": "trad-to-simplified"}, "重覆"),
             ("unsafe id", {"id": "../e", "dir": self.baseline_dir, "direction": "trad-to-simplified"}, "id"),
             ("unknown direction", {"id": "e", "dir": self.baseline_dir, "direction": "trad-to-klingon"}, "direction"),
+            ("direction the experiment does not run", {"id": "e", "dir": self.baseline_dir, "direction": "trad-to-en"}, "directions"),
         ):
             with self.subTest(name):
                 self.extra_experiment["baselines"] = [entry]
@@ -147,6 +148,16 @@ class CheckAndReportTest(ImportBaselineCase):
         self.assertIn("- Run：計畫 2，已有紀錄 2", section)
         self.assertIn("- Block 率：按 Run 0/2（0.0%）；按文章 0/2（0.0%）", section)
         self.assertIn("已檢查 2 個 ok 的 Run", section)
+
+    def test_the_baseline_label_stays_in_the_report_after_baselines_leaves_the_config(self):
+        self.import_baseline()
+        del self.extra_experiment["baselines"]
+        self.write_json(self.config_path, self.experiment())
+        self.assertEqual(self.run_cli("check")[0], 0)
+        self.assertEqual(self.run_cli("report")[0], 0)
+        with open(os.path.join(self.out_dir, "report.md"), encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn(f"- e：{LABEL}（2 個 Run）", text.split("## Baseline")[1].split("\n## ")[0])
 
     def test_the_report_header_does_not_count_baseline_runs_as_translated_with_a_prompt(self):
         text = self.run_all()

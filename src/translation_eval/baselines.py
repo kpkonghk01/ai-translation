@@ -18,8 +18,6 @@ from .loading import read_model
 from .schemas import InputVariant, Outcome, RunKey, RunRecord, Translation
 from .store import OutputDir
 
-TRANSLATION_KEYS = ("title", "tags", "components")
-
 
 def _label_of(baseline: Translation) -> str | None:
     meta = (baseline.model_extra or {}).get("meta")
@@ -70,7 +68,7 @@ def handle(args) -> int:
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     for key, label, parsed in to_import:
         data = parsed.model_dump(mode="json")
-        translation = {k: data[k] for k in TRANSLATION_KEYS if data.get(k) is not None}
+        translation = {k: data[k] for k in Translation.model_fields if data.get(k) is not None}
         record = RunRecord(**key.model_dump(), outcome=Outcome.OK, attempts=[], baseline_label=label, created_at=now)
         out.write_run(record, None, translation)
     print(f"匯入 {len(to_import)} 個 Run（已有紀錄而略過：{skipped}）")

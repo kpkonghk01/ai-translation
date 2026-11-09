@@ -57,6 +57,19 @@ class InvalidInputTest(Workspace):
         self.write_json(os.path.join(self.articles_dir, "9000001.json"), flagged)
         self.assert_fails_cleanly("meta.unknown")
 
+    def test_a_run_record_that_lost_its_prompt_is_corrupt_and_not_mistaken_for_a_baseline(self):
+        self.run_cli("translate", transport=FakeTransport(ok_response()))
+        path = os.path.join(self.out_dir, "runs.jsonl")
+        with open(path, encoding="utf-8") as f:
+            record = json.loads(f.readline())
+        record["prompt_id"] = None
+        self.write_json(path, record)
+        transport = FakeTransport()
+        code, _, err = self.run_cli("translate", transport=transport)
+        self.assertNotEqual(code, 0)
+        self.assertIn("runs.jsonl", err)
+        self.assertEqual(transport.requests, [])
+
     def test_an_unknown_component_type_is_rejected_instead_of_being_skipped_by_the_rules(self):
         article = source_article()
         article["components"].append({"id": "9000001-099", "type": "poll", "text": "x"})

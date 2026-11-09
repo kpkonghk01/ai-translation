@@ -58,6 +58,15 @@ class ResidualTraditionalTest(ContentCheckCase):
         self.assertEqual(self.residue(row), ["說", "虛", "構"])   # 依第一次出現的順序；「虛」出現兩次，只記一次
         self.assertEqual({(f["dimension"], f["severity"], f["source"]) for f in row["findings"]}, {("Locale & Format", "minor", "deterministic")})
 
+    def test_a_character_that_only_stays_traditional_inside_a_name_is_not_residual(self):
+        # OpenCC 的詞組詞典保留「乾隆」「乾坤」的「乾」；逐字判斷會誤報
+        source, translation = build([paragraph("乾隆皇帝在乾坤殿。", "乾隆皇帝在乾坤殿。")])
+        self.assertEqual(self.residue(self.check_pair(source, translation)["9000001-001"]), [])
+
+    def test_the_same_character_is_residual_where_t2s_does_change_it(self):
+        source, translation = build([paragraph("乾隆皇帝喜歡乾淨。", "乾隆皇帝喜歡乾淨。")])
+        self.assertEqual(self.residue(self.check_pair(source, translation)["9000001-001"]), ["歡", "乾", "淨"])
+
     def test_a_character_is_reported_again_in_the_next_component(self):
         source, translation = build([paragraph("甲。", "虛。"), paragraph("乙。", "虛。")])
         rows = self.check_pair(source, translation)
@@ -88,6 +97,12 @@ class ResidualTraditionalTest(ContentCheckCase):
         source, translation = build([paragraph("市民陳虛構表示。", "市民陈虛构表示。")])   # 「虛」留著，「構」沒有
         rows = self.check_pair(source, translation, term_list)
         self.assertEqual(self.residue(rows["9000001-001"]), [])   # 這個 Component 有「陳虛構」，「虛」是允許的；「構」已簡化
+
+    def test_an_exception_works_even_when_the_entry_has_no_simplified_rendering(self):
+        term_list = {"terms": [{"source": "陳虛構", "category": "person", "translations": {"trad-to-en": ["Chan Fictional"]},
+                                "simplified_exceptions": ["虛"]}]}
+        source, translation = build([paragraph("市民陳虛構表示。", "市民陈虛构表示。")])
+        self.assertEqual(self.residue(self.check_pair(source, translation, term_list)["9000001-001"]), [])
 
     def test_an_exception_does_not_apply_to_a_component_without_the_term(self):
         term_list = {"terms": [{"source": "陳虛構", "category": "person", "translations": {"trad-to-simplified": ["陈虚构"]},

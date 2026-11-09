@@ -48,6 +48,10 @@ _Avoid_: 方案以外的 solution, option；單講 model（只是 Approach 的�
 公司現時的繁→簡轉換服務：OpenCC 加自訂 dictionary。方案 E 即它的實際輸出；標準 OpenCC 設定的輸出不能代替它。global.hk01.com 的簡體版由它產生，但編輯可在 CMS 手動校正，所以不等於純服務輸出。輸出隨服務版本與 opencc 版本而變，引用時要註明版本。
 _Avoid_: OpenCC baseline（容易被誤解為標準設定）
 
+**Baseline**:
+用來比較的既有譯文：不經本框架呼叫 API，由目錄匯入成 Run，並記下標籤（來源的版本）。目前只有方案 E，即 Current service 的輸出。
+_Avoid_: 基線
+
 **Run**:
 一個 Approach 對一篇 Article 在一個 Direction 上的一次執行。
 _Avoid_: trial；attempt（見 Attempt，那是 Run 之內的一次送出）

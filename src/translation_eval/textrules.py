@@ -34,20 +34,21 @@ def _t2s() -> OpenCC:
     return OpenCC("t2s")
 
 
-@functools.cache
-def _changed_by_t2s(char: str) -> bool:
-    return _t2s().convert(char) != char
+def _changed_characters(text: str) -> list[str]:
+    """OpenCC t2s 會改動的字，依在文字裡出現的順序。要轉換整段，不能逐字：詞組詞典會保留某些詞裡的繁體字
+    （乾隆、乾坤的「乾」），逐字判斷會把它們誤當成殘留。"""
+    converted = _t2s().convert(text)
+    if len(converted) == len(text):   # t2s 的詞組與字都是同長度地轉換（本機 6089 段文字沒有例外），所以可以逐位置比對
+        return [before for before, after in zip(text, converted) if before != after]
+    # 長度變了就沒辦法對齊：改用逐字判斷。寧可多報（只是 minor 的 Finding），也不能漏報
+    return [char for char in text if _t2s().convert(char) != char]
 
 
 def residual_traditional(text: str, exempt: frozenset[str] = frozenset()) -> list[str]:
     """文字裡 OpenCC t2s 會改動的字，即殘留的繁體字。每個字只列一次，依第一次出現的順序；exempt 內的字不列。"""
-    seen: set[str] = set()
-    residue = []
-    for char in text:
-        if char in seen or char in exempt:
-            continue
-        seen.add(char)
-        if _changed_by_t2s(char):
+    residue: list[str] = []
+    for char in _changed_characters(text):
+        if char not in residue and char not in exempt:
             residue.append(char)
     return residue
 
