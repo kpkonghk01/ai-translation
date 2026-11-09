@@ -1,9 +1,9 @@
 """審閱項目：審閱者可能要看、可以對它寫決定的每一件事。
 
-種類：事實的 verdict（fact）、Judge 的 MQM Finding（finding）、Deterministic Finding（check-finding）、無效的 Judge 輸出（invalid）、
-MQM 沒評成的 Component（unjudged）、Deterministic 警示（warning，含疑似 Refusal）。
+種類：事實的 verdict（fact）、Judge 的 MQM Finding（finding）、Deterministic Finding（check-finding）、全文篩查的條目（screening）、
+無效的 Judge 輸出（invalid）、Judge 沒評成的請求（unjudged）、Deterministic 警示（warning，含疑似 Refusal）。
 必看：Gate 失敗的事實（最終 verdict 是 Weakened 或 Absent，包括漏段）、uncertain 或無效的事實、Unjudged 的事實、uncertain 的 Finding、
-無效的 Judge 輸出、Unjudged 的 Component、所有警示。其餘（通過的事實、一致的 Finding、Deterministic Finding）是抽查的候選。
+無效的 Judge 輸出、Unjudged 的請求、全文篩查的結果、MQM 的 Fidelity-of-force Finding（兩者併在一起，不計分、不決定 Gate）、所有警示。其餘（通過的事實、一致的 Finding、Deterministic Finding）是抽查的候選。
 每個項目有穩定的 key（種類加上身分的 hash：Run、Component、Judge 和能指認這一項的內容；同一個 Component 內身分一樣的項目再加序號）
 和輸入的 hash（原文、譯文和 Judge 的原始輸出）：輸入改了，key 或 hash 就變，審閱決定隨之過期，不會靜默套用在不同的內容上。
 只審 role 為 primary 的 Judge 的結果（事實是該分組的主 Judge）；mqm_run_limit 刻意沒評的 Run 沒有 MQM 項目。
@@ -22,8 +22,9 @@ from .consistency import Status, judge_component
 from .facts import FAILING_VERDICTS, FactStatus, judge_facts
 from .ground_truth import GroundTruth
 from .pairs import component_pairs
-from .schemas import (DUPLICATE_COMPONENT, EXTRA_COMPONENT, OMISSION, TYPE_CHANGED, CheckWarning, ComponentResult, Finding, JudgeFinding,
-                      JudgeRole, Outcome, RunKey, RunRecord, WarningKind)
+from .screening import judge_screening
+from .schemas import (DUPLICATE_COMPONENT, EXTRA_COMPONENT, OMISSION, TYPE_CHANGED, WHOLE_RUN, CheckWarning, ComponentResult, Dimension, Finding,
+                      JudgeFinding, JudgeRole, Outcome, RunKey, RunRecord, ScreenItem, WarningKind)
 from .store import OutputDir
 from .textrules import squash
 
@@ -35,6 +36,7 @@ class ItemKind(StrEnum):
     FACT = "fact"
     FINDING = "finding"
     CHECK_FINDING = "check-finding"
+    SCREENING = "screening"
     INVALID = "invalid"
     UNJUDGED = "unjudged"
     WARNING = "warning"
@@ -45,6 +47,7 @@ class ItemStatus(StrEnum):
     UNCERTAIN = "uncertain"
     INVALID = "invalid"
     UNJUDGED = "unjudged"
+    SCREENED = "screened"                  # 全文篩查的條目與 Fidelity-of-force Finding：全部必看
     SUSPECTED_REFUSAL = "suspected-refusal"
     WARNING = "warning"
     PASSED = "passed"                      # 以下是抽查的候選
@@ -52,7 +55,7 @@ class ItemStatus(StrEnum):
     CHECKED = "checked"
 
 
-MUST_SEE = frozenset({ItemStatus.FAILED, ItemStatus.UNCERTAIN, ItemStatus.INVALID, ItemStatus.UNJUDGED,
+MUST_SEE = frozenset({ItemStatus.FAILED, ItemStatus.UNCERTAIN, ItemStatus.INVALID, ItemStatus.UNJUDGED, ItemStatus.SCREENED,
                       ItemStatus.SUSPECTED_REFUSAL, ItemStatus.WARNING})
 FINAL_FACT_STATUSES = (ItemStatus.FAILED, ItemStatus.PASSED)   # 已有最終 verdict 的事實
 
@@ -114,8 +117,14 @@ def warning_item_key(run: RunKey, component_id: str, warning: CheckWarning) -> s
     return item_key(ItemKind.WARNING, run, component_id, None, warning.kind.value, warning.detail)
 
 
-def unjudged_item_key(run: RunKey, component_id: str, judge: str) -> str:
-    return item_key(ItemKind.UNJUDGED, run, component_id, judge, "mqm")
+def screening_item_keys(run: RunKey, judge: str, items: list[ScreenItem]) -> list[str]:
+    """一個 Run 的全文篩查條目（合併後），依序的 key。"""
+    identities = [(i.verdict.value, squash(i.source_span), squash(i.target_span)) for i in items]
+    return [item_key(ItemKind.SCREENING, run, WHOLE_RUN, judge, *i) for i in _with_ordinals(identities)]
+
+
+def unjudged_item_key(run: RunKey, component_id: str, judge: str, task: str) -> str:
+    return item_key(ItemKind.UNJUDGED, run, component_id, judge, task)
 
 
 def invalid_item_key(run: RunKey, component_id: str, judge: str, task: str, call_index: int, raw: str) -> str:
@@ -138,7 +147,8 @@ def _raw(component) -> str:
 
 def _call_summary(calls) -> list:
     return [[c.call_index, c.outcome.value, c.reason, [f.model_dump(mode="json") for f in c.findings],
-             [v.model_dump(mode="json") for v in c.verdicts], [i.model_dump(mode="json") for i in c.invalid]] for c in calls]
+             [v.model_dump(mode="json") for v in c.verdicts], [s.model_dump(mode="json") for s in c.screenings],
+             [i.model_dump(mode="json") for i in c.invalid]] for c in calls]
 
 
 def _item(key, kind, status, run, component_id, judge, source, target, hash_parts, lines, locked=False) -> ReviewItem:
@@ -148,7 +158,7 @@ def _item(key, kind, status, run, component_id, judge, source, target, hash_part
 
 def build_items(experiment: Experiment, out: OutputDir, records: list[RunRecord], rows: list[ComponentResult], articles,
                 truth: GroundTruth | None) -> list[ReviewItem]:
-    calls = {task: defaultdict(list) for task in ("mqm", "fact")}
+    calls = {task: defaultdict(list) for task in ("mqm", "fact", "screen")}
     for task, grouped in calls.items():
         for call in out.read_judge_calls(task):
             grouped[(call.judge, RunKey.of(call), call.component_id)].append(call)
@@ -191,6 +201,8 @@ def build_items(experiment: Experiment, out: OutputDir, records: list[RunRecord]
                 for pair in pairs:
                     if pair.translated_text is not None:
                         _mqm_items(items, run, pair, judge.id, calls["mqm"].get((judge.id, run, pair.id), []))
+        for judge in primary:
+            _screening_items(items, run, pairs, judge.id, calls["screen"].get((judge.id, run, WHOLE_RUN), []))
         if truth is not None:
             _fact_items(items, experiment, truth, record, by_id, calls["fact"])
     return items
@@ -204,7 +216,7 @@ def _mqm_items(items, run: RunKey, pair, judge: str, calls) -> None:
     summary = _call_summary(ordered)
     if judgment.status is Status.UNJUDGED:
         reasons = "、".join(f"第 {c.call_index} 次 {c.outcome.value}" + (f"（{_one_line(c.reason)}）" if c.reason else "") for c in ordered)
-        items.append(_item(unjudged_item_key(run, pair.id, judge), ItemKind.UNJUDGED, ItemStatus.UNJUDGED, run, pair.id, judge,
+        items.append(_item(unjudged_item_key(run, pair.id, judge, "mqm"), ItemKind.UNJUDGED, ItemStatus.UNJUDGED, run, pair.id, judge,
                            pair.source_text, pair.translated_text, (summary,), [f"MQM 的兩次請求都失敗：{reasons}"]))
         return
     for key, merged in zip(finding_item_keys(run, pair.id, judge, [m.finding for m in judgment.findings]), judgment.findings):
@@ -212,7 +224,11 @@ def _mqm_items(items, run: RunKey, pair, judge: str, calls) -> None:
         note = "兩次一致" if merged.consistent else "只有一次提出，或兩次沒有配對"
         if merged.severity_mismatch:
             note += "；兩次的 Severity 不同，取較高者"
-        items.append(_item(key, ItemKind.FINDING, ItemStatus.CONSISTENT if merged.consistent else ItemStatus.UNCERTAIN, run, pair.id, judge,
+        if f.dimension is Dimension.FIDELITY_OF_FORCE:   # 不計分、不決定 Gate：併入全文篩查的清單，全部必看
+            status = ItemStatus.SCREENED
+        else:
+            status = ItemStatus.CONSISTENT if merged.consistent else ItemStatus.UNCERTAIN
+        items.append(_item(key, ItemKind.FINDING, status, run, pair.id, judge,
                            pair.source_text, pair.translated_text, (summary,),
                            [f"{f.dimension.value}／{f.subtype}／{f.severity.value}（{note}）：{_one_line(f.reason)}",
                             f"原文片段：「{_one_line(f.source_span)}」；譯文片段：「{_one_line(f.target_span)}」"]))
@@ -221,6 +237,37 @@ def _mqm_items(items, run: RunKey, pair, judge: str, calls) -> None:
             items.append(_item(invalid_item_key(run, pair.id, judge, "mqm", call.call_index, invalid.raw), ItemKind.INVALID, ItemStatus.INVALID,
                                run, pair.id, judge, pair.source_text, pair.translated_text, (invalid.model_dump(mode="json"),),
                                [f"第 {call.call_index} 次的 {invalid.kind} 無效：{invalid.why}", f"Judge 的輸出：{_one_line(invalid.raw, MAX_RAW_SHOWN)}"]))
+
+
+def _screening_items(items, run: RunKey, pairs, judge: str, calls) -> None:
+    judgment = judge_screening(calls, pairs)
+    if judgment.status is Status.INCOMPLETE:
+        return
+    full_source = "\n".join(p.source_text for p in pairs)
+    full_translation = "\n".join(p.translated_text for p in pairs if p.translated_text)
+    ordered = sorted(calls, key=lambda c: c.call_index)
+    summary = _call_summary(ordered)
+    if judgment.status is Status.UNJUDGED:
+        reasons = "、".join(f"第 {c.call_index} 次 {c.outcome.value}" + (f"（{_one_line(c.reason)}）" if c.reason else "") for c in ordered)
+        items.append(_item(unjudged_item_key(run, WHOLE_RUN, judge, "screen"), ItemKind.UNJUDGED, ItemStatus.UNJUDGED, run, WHOLE_RUN, judge,
+                           full_source, full_translation, (summary,), [f"全文篩查的兩次請求都失敗：{reasons}"]))
+        return
+    by_id = {p.id: p for p in pairs}
+    for key, merged in zip(screening_item_keys(run, judge, [m.item for m in judgment.items]), judgment.items):
+        screened = merged.item
+        owner = by_id.get(screened.component_id)
+        kind = f"（{screened.weakening_type.value}）" if screened.weakening_type else ""
+        note = "兩次一致" if merged.consistent else "只有一次提出，或兩次沒有配對"
+        items.append(_item(key, ItemKind.SCREENING, ItemStatus.SCREENED, run, screened.component_id or WHOLE_RUN, judge,
+                           owner.source_text if owner else full_source, owner.translated_text if owner else full_translation,
+                           (full_source, full_translation, summary),
+                           [f"全文篩查：{screened.verdict.value}{kind}（{note}）：{_one_line(screened.reason)}",
+                            f"原文片段：「{_one_line(screened.source_span)}」；譯文片段：「{_one_line(screened.target_span)}」"]))
+    for call in ordered:
+        for invalid in call.invalid:
+            items.append(_item(invalid_item_key(run, WHOLE_RUN, judge, "screen", call.call_index, invalid.raw), ItemKind.INVALID, ItemStatus.INVALID,
+                               run, WHOLE_RUN, judge, full_source, full_translation, (invalid.model_dump(mode="json"),),
+                               [f"全文篩查第 {call.call_index} 次的條目無效：{invalid.why}", f"Judge 的輸出：{_one_line(invalid.raw, MAX_RAW_SHOWN)}"]))
 
 
 def _fact_lines(judgment, fact) -> list[str]:

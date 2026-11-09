@@ -189,6 +189,7 @@ class Workspace(unittest.TestCase):
         self.write_json(self.config_path, self.experiment())
 
     def use_judging(self, judges=(JUDGE,), **judging) -> None:
+        judging.setdefault("screening", False)   # 其他任務的測試不要多出全文篩查的請求；篩查的測試自己打開
         entries = []
         for judge in judges:
             path = os.path.join(self.tmp, f"judge-{judge['id']}.json")

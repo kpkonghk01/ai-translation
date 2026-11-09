@@ -8,71 +8,8 @@ from pathlib import Path
 import gemini_samples
 from fake_transport import FakeTransport
 from fixtures import TERM_LIST, component, ok_response, translation_with
-from gate_helpers import FactCase, combined_transport, translation_without
+from gate_helpers import HASH, KEY, S1_FACT, S2_FACT, WEAK, ReviewCase, combined_transport, translation_without
 from judge_helpers import fact_output, finding
-
-S1_FACT, S2_FACT = "工程延誤半年", "不滿的是市民陳虛構本人"
-WEAK = {"verdict": "Weakened", "type": "e", "quote": "late", "reason": "虛構的理由：語氣被削弱"}
-KEY = re.compile(r"`([a-z-]+-[0-9a-f]{16})`")
-HASH = re.compile(r"輸入 hash：`([0-9a-f]{16})`")
-
-
-class ReviewCase(FactCase):
-    def run_judges(self, mqm=None, fact=None):
-        code, _, err = self.run_cli("judge", transport=combined_transport(mqm, fact))
-        self.assertEqual(code, 0, err)
-        self.assertEqual(self.run_cli("check")[0], 0)
-
-    def review(self, expect=0):
-        code, out, err = self.run_cli("review")
-        self.assertEqual(code, expect, err)
-        return out, err
-
-    def review_text(self) -> str:
-        self.review()
-        with open(os.path.join(self.out_dir, "review.md"), encoding="utf-8") as f:
-            return f.read()
-
-    def report_text(self) -> str:
-        code, _, err = self.run_cli("report")
-        self.assertEqual(code, 0, err)
-        with open(os.path.join(self.out_dir, "report.md"), encoding="utf-8") as f:
-            return f.read()
-
-    @staticmethod
-    def part(text: str, heading: str) -> str:
-        """## 必看 或 ## 抽查 底下的內容。"""
-        return text.split(f"## {heading}\n", 1)[1].split("\n## ", 1)[0]
-
-    @staticmethod
-    def item(text: str, needle: str) -> dict:
-        """審閱清單裡含 needle 的那個項目：{key, hash, text}。"""
-        chunks = [c for c in text.split("\n#### ")[1:] if needle in c]
-        assert len(chunks) == 1, f"含 {needle!r} 的項目有 {len(chunks)} 個"
-        return {"key": KEY.search(chunks[0]).group(1), "hash": HASH.search(chunks[0]).group(1), "text": chunks[0]}
-
-    def decide(self, item: dict, action: str, **fields) -> None:
-        path = os.path.join(self.out_dir, "review-decisions.json")
-        decisions = json.loads(Path(path).read_text(encoding="utf-8"))["decisions"] if os.path.exists(path) else []
-        decisions.append({"key": item["key"], "input_hash": item["hash"], "action": action, "reviewer": "虛構審閱者",
-                          "reviewed_on": "2026-11-09", **fields})
-        self.write_json(path, {"decisions": decisions})
-
-    def set_review(self, **review) -> None:
-        self.extra_experiment["review"] = review
-        self.write_json(self.config_path, self.experiment())
-
-    def all_kinds(self):
-        """必看每一種都出現的世界：Gate 失敗、uncertain 的事實與 Finding、無效的輸出、MQM 的 Unjudged，另有一個一致的 Finding。"""
-        self.run_judges(
-            mqm={("9000001-001", 1): {"findings": [finding()], "source_defects": []},
-                 "9000001-002": gemini_samples.prompt_blocked(),
-                 ("9000001-003", 1): {"findings": [finding(source_span="不存在的片段")], "source_defects": []},
-                 "title": {"findings": [finding(dimension="Fluency", subtype="awkward", severity="minor",
-                                                source_span="翻新工程延誤", target_span="renovation delayed")], "source_defects": []}},
-            fact={"9000001-001": lambda p: fact_output(p, {S1_FACT: WEAK}),
-                  ("9000001-002", 2): lambda p: fact_output(p, {S2_FACT: WEAK})})
-
 
 class ListTest(ReviewCase):
     def test_every_must_see_kind_is_listed_and_the_file_is_in_the_data_directory(self):
@@ -80,7 +17,7 @@ class ListTest(ReviewCase):
         out, _ = self.review()
         text = self.review_text()
         must = self.part(text, "必看")
-        for heading in ("Gate 失敗的事實", "uncertain 的事實", "uncertain 的 Finding", "無效的 Judge 輸出", "Unjudged 的 Component（MQM）"):
+        for heading in ("Gate 失敗的事實", "uncertain 的事實", "uncertain 的 Finding", "無效的 Judge 輸出", "Unjudged 的 Judge 請求（MQM、全文篩查）"):
             self.assertIn(f"### {heading}", must)
         self.assertTrue(os.path.exists(os.path.join(self.out_dir, "review.md")))
         self.assertNotIn("虛構", out)   # 終端只印數量

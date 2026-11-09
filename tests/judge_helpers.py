@@ -64,3 +64,23 @@ def fact_transport(outputs=None):
         return gemini_samples.ok(json.dumps(item, ensure_ascii=False)) if isinstance(item, dict) else item
 
     return FunctionTransport(reply)
+
+
+# ───────────── 全文篩查 ─────────────
+
+def screen_item(verdict="Weakened", type="c", source_span="延誤半年", target_span="late", reason="虛構的理由") -> dict:
+    return {"verdict": verdict, "type": type, "source_span": source_span, "target_span": target_span, "reason": reason}
+
+
+def screen_transport(outputs=None):
+    """outputs：{第幾個全文篩查的請求（從 1 算起，跨 Run 累計）: 輸出}；輸出可以是 dict、函式（收到請求的內容）、Response 或例外。
+    沒有指定的請求回沒有任何條目。"""
+    outputs, seen = outputs or {}, [0]
+
+    def reply(request):
+        seen[0] += 1
+        item = outputs.get(seen[0], {"items": []})
+        item = item(user_payload(request)) if callable(item) else item
+        return gemini_samples.ok(json.dumps(item, ensure_ascii=False)) if isinstance(item, dict) else item
+
+    return FunctionTransport(reply)

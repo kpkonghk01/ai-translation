@@ -50,5 +50,9 @@ def fact_template() -> PromptTemplate:
     return _template("judge-facts")
 
 
+def screen_template() -> PromptTemplate:
+    return _template("judge-screen")
+
+
 def translation_template(direction: Direction, request_mode: RequestMode) -> PromptTemplate:
     return _template(_TEMPLATE_IDS[(direction, request_mode)])

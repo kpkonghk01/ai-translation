@@ -239,6 +239,7 @@ class JudgeEntry(StrictModel):
 
 class JudgingConfig(StrictModel):
     judges: list[JudgeEntry] = Field(min_length=1)
+    screening: bool = True   # judge 預設也做全文篩查；--task screen 不受這個設定影響
     same_family_exceptions: list[SameFamilyException] = []
     mqm_run_limit: dict[Slug, Annotated[int, Field(ge=1)]] = {}   # Approach id → 只有 Run 序號不超過這個數的 Run 做 MQM
     primary_judges: dict[Slug, Slug] = {}   # domain 分組（或 ground_truth.group_overrides 的分組）→ 決定 Gate 的主 Judge 的 id
@@ -462,10 +463,26 @@ class SourceDefect(StrictModel):
 
 class InvalidItem(StrictModel):
     """Judge 的輸出裡不合格的一條：片段不是逐字子字串、Dimension 或 Severity 不在清單內、結構不符。原文保留供審閱。"""
-    kind: Literal["finding", "source_defect", "verdict"]
+    kind: Literal["finding", "source_defect", "verdict", "screening"]
     why: str
     raw: str   # 模型輸出的那一條，存成 JSON 文字（有長度上限）。不存成巢狀結構：太深的結構會讓紀錄寫不進去或讀不回來
     fact: str | None = None   # kind 是 verdict 時：作廢的是哪一條事實（事實 key 的最後一段）；模型回了不認識的 id 時沒有
+
+
+class ScreenVerdict(StrEnum):
+    WEAKENED = "Weakened"
+    ABSENT = "Absent"
+    AMPLIFICATION = "Amplification"
+
+
+class ScreenItem(StrictModel):
+    """全文篩查列出的一處疑似淡化（或誇大），片段已通過逐字驗證。component_id 是原文片段所在的 Component。"""
+    verdict: ScreenVerdict
+    weakening_type: WeakeningType | None = None
+    source_span: NonBlank
+    target_span: str = ""   # Weakened 與 Amplification 必須有；Absent 沒有
+    reason: str = ""
+    component_id: str | None = None
 
 
 class FactVerdict(StrictModel):
@@ -477,12 +494,15 @@ class FactVerdict(StrictModel):
     reason: str = ""
 
 
+WHOLE_RUN = "*"   # 全文篩查是整個 Run 一個請求：紀錄的 Component 寫這個保留值
+
+
 class JudgeCall(RunKey):
     """Judge 對一個 Run 的一個 Component 的一次請求（每個 Component 要評兩次，call_index 是 1 或 2）。
-    task 是 mqm（Finding）或 fact（Must-retain fact 的 verdict）。"""
+    task 是 mqm（Finding）、fact（Must-retain fact 的 verdict）或 screen（全文篩查，整個 Run 一個請求，Component 是 *）。"""
     component_id: str
     judge: Slug
-    task: Literal["mqm", "fact"] = "mqm"
+    task: Literal["mqm", "fact", "screen"] = "mqm"
     call_index: int = Field(ge=1, le=2)
     outcome: Outcome
     reason: str | None = None
@@ -497,6 +517,7 @@ class JudgeCall(RunKey):
     findings: list[JudgeFinding] = []
     source_defects: list[SourceDefect] = []
     verdicts: list[FactVerdict] = []
+    screenings: list[ScreenItem] = []
     invalid: list[InvalidItem] = []
     input_hash: str | None = None   # fact 任務：送出的事實與 anchor 的 hash；ground truth 改了，這筆紀錄就過期
     raw_response: str | None = None
