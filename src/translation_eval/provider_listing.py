@@ -3,8 +3,8 @@
 用法：
   uv run --locked python -I -m translation_eval providers <作者/名稱> [--dry-run]
 
-需要 OPENROUTER_API_KEY，會呼叫 API，所以只由 Pan 在自己的終端機執行。指令本身不寫入任何東西，也不改設定：
-Pan 看過清單、排除位於中國大陸的 provider 之後，自己把要用的 tag 寫進 Approach 設定的 routing.only，並寫上
+需要 OPENROUTER_API_KEY，會呼叫 API，所以經 tools/run-real.sh 執行。指令本身不寫入任何東西，也不改設定：
+Pan 看過清單、確認之後，自己把要用的 tag 寫進 Approach 設定的 routing.only，並寫上
 routing.confirmed_on。終端只印 provider 的名稱、tag 和 API 給的幾個欄位，不印任何文章內容。
 """
 import json
@@ -76,6 +76,6 @@ def handle(args, transport: Transport) -> int:
         any_policy = any_policy or bool(policy)
         print(f"- {_safe(endpoint.get('provider_name', '未寫'))}（only 用：{_safe(endpoint.get('tag', '未寫'))}）：" + "、".join(details + policy))
     if not any_policy:
-        print("API 沒有提供地區或資料政策的欄位，請到 OpenRouter 的模型頁確認各 provider 所在的地區與資料政策。")
-    print("確認後，把要用的 tag 寫進 Approach 設定的 routing.only，並寫上 routing.confirmed_on（確認日期）；排除位於中國大陸的 provider。")
+        print("API 沒有提供地區或資料政策的欄位，請到 OpenRouter 的模型頁確認各 provider 的資料政策。")
+    print("確認後，把要用的 tag 寫進 Approach 設定的 routing.only，並寫上 routing.confirmed_on（確認日期）。")
     return 0

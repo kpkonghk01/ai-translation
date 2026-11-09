@@ -43,7 +43,7 @@ Last updated: 2026-11-06
 | dealigned 模型 | **暫不測**（方案 C、D 的 dealigned 版本）：Pan 本機跑不動；等有 GPU 環境（plan 的 Phase 3 EC2）再說。目前只測 API 方案 A、B、F 與方案 E | Pan，2026-10-28 |
 | 簡體 baseline | `global.hk01.com` 的簡體版由現行服務產生，但編輯可在 CMS 手動校正，所以不等於純服務輸出。**baseline 以重現的純服務輸出為準**（依服務做法整份 JSON 轉換、先 hk2t 再 t2s），global 簡體版只用來驗證重現是否準確。**主 baseline = 服務 HEAD（290bf22）+ opencc 1.4.2（npm 最新）**：LLM 翻譯不會殘留 `舖`、`擡` 這類繁體字，Pan 不想舊版詞典的缺漏影響翻譯品質的比較。prod 現行（v1.12.0 + opencc 1.3.1）只作對照。每份 baseline 在 meta 註明版本。重現方法與驗證結果見 data-pipeline.md | Q23, Q24, Q27 |
 | 技術 | Python ≥ 3.12（現有 `.venv` 為 3.13）+ uv（專案設定與 lockfile），pydantic 定 schema；輸出 JSONL，每行一個「Component × Approach × Direction × Run」；資料放 repo 外或被 `.gitignore` 排除。現有的標準庫工具維持原狀 | Q7, Q39 |
-| 測試 seam | 所有對外呼叫（被測 Approach、Judge、交叉檢驗）經同一個可替換的 HTTP transport；測試注入假 transport，不連網就能跑完整條流程。檢查時一律清掉 key 並設離線旗標，真跑由 Pan 執行 | Q38 |
+| 測試 seam | 所有對外呼叫（被測 Approach、Judge、交叉檢驗）經同一個可替換的 HTTP transport；測試注入假 transport，不連網就能跑完整條流程。檢查時一律清掉 key 並設離線旗標。真跑一律經 `tools/run-real.sh`：它載入 `.env`；agent 不讀 `.env`（permission 設定擋住），但可經這個入口代跑（Pan 於 2026-11-09 同意，原本只由 Pan 執行）。入口只放行會用 key 的子命令，擋不住 agent 改程式去印 key，所以這靠規矩與 commit 前的 review，不是技術上的隔離 | Q38 |
 | 複合事實 | 事實裡任一要點被淡化，即判 Weakened | spec 第 6 節 |
 | 分數正規化 | 預設以每千字原文的罰分正規化，同時列出總罰分；權重 1 / 5 / 25 可調 | spec 第 7 節 |
 | Preview | 單一 `preview.html`，純前端、無外連、不內嵌資料；CSV 解析獨立成 adapter，日後可載入翻譯結果。只做 viewer，只做桌面版 | Q8, Q9 |
@@ -96,7 +96,7 @@ Article JSON
 - 供應商（2026-10-27 查，由摘要工具讀取官方頁面，**簽核前請對照原頁**）：
   - Gemini：只用付費 key；2026-10-26 起新建的 billing project 預設開 AI Studio request log（55 日，可關），要記得關；測試用獨立 project 和 key，不用 portal 的 production key。
   - 阿里雲：只用 International（新加坡）。大陸版條款寫明紀錄會保留並報告當局，政治敏感文章不能送。
-  - OpenRouter（Qwen 交叉檢驗）：每個請求設 `provider.zdr: true`、`data_collection: "deny"`、用 `only` 指定 provider、`allow_fallbacks: false`；**送文章前先列出該模型的 provider 清單給 Pan 確認**，排除位於中國大陸的 provider。經 OpenRouter 跑的 Qwen 多半不經阿里雲平台的內容審查，所以它反映模型本身的行為，與方案 B（阿里雲平台加模型）分開報告。
+  - OpenRouter（Qwen 交叉檢驗）：每個請求設 `provider.zdr: true`、`data_collection: "deny"`、用 `only` 指定 provider、`allow_fallbacks: false`；**送文章前先列出該模型的 provider 清單給 Pan 確認**。不排除位於中國大陸的 provider：Pan 於 2026-11-09 表示沒有這個要求（反正已用阿里雲）；原本的排除條件來自這份整理，不是 Pan 的決定。阿里雲仍只用 International，見上。經 OpenRouter 跑的 Qwen 多半不經阿里雲平台的內容審查，所以它反映模型本身的行為，與方案 B（阿里雲平台加模型）分開報告。
   - 以上三家對「被標記內容」都有保留或人工審閱機制，兒童性侵題材很可能觸發。
 - Anthropic 官方支援地區名單沒有香港，且該頁說明按實體的註冊地、總部或持股判斷。Pan 已表示用來跑的帳號不在香港，資格不是問題；此處僅記錄，由 Ivan 或法務有需要時再確認。
 

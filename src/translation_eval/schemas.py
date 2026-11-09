@@ -148,7 +148,7 @@ class RetryConfig(StrictModel):
 
 
 class OpenRouterRouting(StrictModel):
-    """OpenRouter 的 provider 允許清單：只有 Pan 看過 providers 指令列出的清單、確認過（排除位於中國大陸的 provider），
+    """OpenRouter 的 provider 允許清單：只有 Pan 看過 providers 指令列出的清單、確認過，
     才可以寫進來。清單是空的或沒有確認日期，adapter 就拒絕組出請求。"""
     only: list[ProviderSlug] = []
     confirmed_on: date | None = None

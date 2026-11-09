@@ -21,19 +21,20 @@ Last updated: 2026-10-16
 ## 要回答的問題
 
 1. 哪個方案可以穩定翻譯政治敏感 / 色情內容，而且**不被 block、不拒絕、不淡化**？
-2. 翻譯質素是否可用（以 Gemini 3.1 Flash-Lite 為 baseline 比較）？
+2. 翻譯質素是否可用（以 Gemini 3.5 Flash-Lite 為 baseline 比較）？
 3. 如果用 self-host，throughput 和成本是否可行？
 
 ## 測試方案
 
 | # | 方案 | 類型 | 備註 |
 |---|---|---|---|
-| A | Gemini 3.1 Flash-Lite | API（baseline） | safety settings 全部調到最低，只剩不可關的 block（如 `PROHIBITED_CONTENT`）。portal 已接好 |
+| A | Gemini 3.5 Flash-Lite（`gemini-3.5-flash-lite`；2026-11-09 由 3.1 改） | API（baseline） | safety settings 全部調到最低，只剩不可關的 block（如 `PROHIBITED_CONTENT`）。portal 已接好 |
 | B | 阿里雲 Model Studio（Qwen-MT / Qwen3.6），關 content filter | API | 會申請 whitelist。批出後在 header 加 `X-DashScope-DataInspection: {"input":"disable","output":"disable"}`；模型本身仍可能拒絕。見「待確認」 |
 | C | Self-host dealigned model，40B 以下 MoE | Self-host | 例如 Qwen3.6-35B-A3B、Gemma4-26B-A4B 的 abliterated 版本 |
 | D | Self-host，20B 以下 | Self-host | 例如 Hy-MT2-7B、TranslateGemma-12B（有 dealigned 版本就用） |
 | E | OpenCC `hk2s` | 非 AI，只做繁→簡 | 對照現時的逐字式做法（待確認現時 service 是否 OpenCC） |
 | F（可選） | Hy-MT2-30B-A3B 經 OpenRouter | API | 很便宜（約 US$2 / 1,000 篇），可以順便對照翻譯專用模型 |
+| G（可選） | Qwen3.6-35B-A3B 經 OpenRouter（`qwen/qwen3.6-35b-a3b`） | API | 阿里雲暫時沒有 key，先用它看 Qwen 模型本身的行為；不經阿里雲平台的內容審查，與方案 B 分開報告（Pan 於 2026-11-09 授權自選額外模型；總數 5 個模型以內） |
 
 C、D 在 Phase 1–2 只測質素，可以先在本機（llama.cpp / MLX，RAM 夠的話）或短時間開的 EC2 跑。到 Phase 3 才正式在 EC2 上測效能。
 
@@ -118,7 +119,7 @@ C、D 在 Phase 1–2 只測質素，可以先在本機（llama.cpp / MLX，RAM 
 |---|---|---|
 | Self-host 東京 g6.2xlarge，每日 16h（35B MoE） | 約 US$700–720 | 同左（固定成本） |
 | Self-host 東京 g6.xlarge，每日 16h（20B 以下） | 約 US$580 | 同左（固定成本） |
-| Gemini 3.1 Flash-Lite | 約 US$216 | 約 US$90 |
+| Gemini 3.1 Flash-Lite（估算時的型號；現改用 3.5） | 約 US$216 | 約 US$90 |
 | Hy-MT2-30B-A3B 經 OpenRouter | 約 US$46 | 約 US$20 |
 
 Self-host 比 API 貴 3–7 倍。所以 self-host 的理由是避開 filter / 用 uncensored 模型，不是成本。

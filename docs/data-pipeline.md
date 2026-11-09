@@ -19,6 +19,9 @@
 | `data/baseline-env/` | 重現服務用的固定環境（見下文） |
 | `data/experiments/<實驗 id>/` | 評核框架的輸出：`runs.jsonl`（每行一個 Run）、`translations/`、`raw/`（原始回應）、`components.jsonl`（check 結果）、`report.md` |
 | `data/gt-slices/`、`data/gt-drafts/` | 60 篇 Must-retain fact 的分片、草稿與審閱樣本 |
+| `data/articles-first-batch/`、`data/baseline-first-batch/` | 第一批實驗（`first-batch`）的 60 篇文章與對應的簡體 baseline，從上面各目錄複製而來（做法見「翻譯評測」） |
+| `data/gold-set.json`、`data/gold-parts/` | Gold set（Judge 校準用的已知答案項目；`gold-set.json` 是唯一來源）；`gold-parts/` 只是撰寫時的分檔、文章分配與審查筆記，不再維護 |
+| `data/term-list.json`、`data/term-list-review.md` | Term List（原文詞 → 指定譯法）與給 Pan 抽查的清單（含核對來源） |
 | `refs/`（git 排除） | `media-cms`、`media-cms-api`、`opencc-service` 的淺層 clone；opencc-service 已補全歷史；副本中非 `.example` 的 `.env*` 已刪除 |
 | `.venv/`（git 排除） | Python 的 OpenCC，用於重現服務 |
 
@@ -90,15 +93,29 @@ uv run --locked python -I -m translation_eval import-cms --csv data-prohibited.c
 # 預覽：不送出任何請求，也不需要 key；印出請求數、估計輸入字數和 endpoint
 uv run --locked python -I -m translation_eval translate --config configs/experiments/tracer-bullet.json --dry-run
 
-# 真跑（會呼叫 API）：只由 Pan 在自己的終端機執行，不經過 agent。
-# uv 的 --env-file 把 .env 載入這個行程的環境變數；程式只讀 GEMINI_API_KEY，不讀 .env 檔。
-# agent 的 permission 設定已禁止 --env-file 這個參數。
-uv run --locked --env-file .env python -I -m translation_eval translate --config configs/experiments/tracer-bullet.json --article 60403903 --limit 1
+# 真跑（會呼叫 API、要 key）：一律經 tools/run-real.sh，Pan 或 agent 都用這個入口。
+# 入口只放行 translate、judge、calibrate、crosscheck、providers，並用 uv 的 --env-file 把 .env 載入這個行程的環境變數；
+# 程式只從環境變數讀 key，不讀 .env 檔。agent 的 permission 設定禁止它讀 .env、也禁止它的指令帶 --env-file，所以它只能經這個入口用 key。
+tools/run-real.sh translate --config configs/experiments/tracer-bullet.json --article 60403903 --limit 1
 
 # 以下兩步不用 key，也不連網
 uv run --locked python -I -m translation_eval check --config configs/experiments/tracer-bullet.json
 uv run --locked python -I -m translation_eval report --config configs/experiments/tracer-bullet.json
 ```
+
+- **第一批實驗**（`configs/experiments/first-batch.json`）：60 篇（general 30 篇，含 5 篇對照；china-political 30 篇）× 繁→英與繁→簡 × 方案 A（`gemini-3.5-flash-lite`，每篇 3 次，另加 `main-only` 版本）、F（Hy-MT2-30B-A3B，逐段翻譯）、G（Qwen3.6-35B-A3B，經 OpenRouter）；繁→簡另有 baseline E。這批沒有 Judge，只做翻譯、`check` 與 Block／Refusal 報告。F、G 要先用 `providers` 確認 provider 清單、寫進各自 Approach 設定的 `routing` 才能真跑。一個實驗只有一個文章目錄，而兩組文章原本在不同目錄，所以複製成同一個（這樣同一份報告才能比較 political 與 general 的淡化率差距）：
+
+  ```bash
+  mkdir -p data/articles-first-batch data/baseline-first-batch
+  python3 -I -c '
+  import json, os, shutil
+  for article_id in json.load(open("configs/experiments/first-batch.json"))["articles"]["ids"]:
+      for src, dst in (("data/web-articles", "data/articles-first-batch"), ("data/web-articles-china", "data/articles-first-batch"),
+                       ("data/baseline-service", "data/baseline-first-batch"), ("data/baseline-service-china", "data/baseline-first-batch")):
+          if os.path.exists(f"{src}/{article_id}.json"):
+              shutil.copyfile(f"{src}/{article_id}.json", f"{dst}/{article_id}.json")
+  '
+  ```
 
 - `translate` 可以中斷後重跑同一條指令：已有紀錄的 Run 會略過；`--redo-errors` 重做結果為 `error` 的 Run（`block`、`refusal`、`malformed`、`truncated` 是結果，不會重做）。`--article <id>`（可重覆）只跑指定文章，`--limit <N>` 最多執行 N 個 Run。
 - `check` 與 `report` 每次都從 `runs.jsonl` 整份重算。`report` 發現有 `ok` 的 Run 還沒有 `check` 結果，或 `check` 之後規則、Term List、長度比例範圍改了，會停止，不產生報告；先重新執行 `check`。`check` 另寫 `components.jsonl`（每個 Component 的 Finding 與警示）和 `check-meta.json`（check 當時用的規則版本與輸入，report 靠它判斷結果有沒有過期）。規則版本由實作規則的原始碼的 hash 決定：程式的規則有任何改動，舊的 check 結果就視為過期，重跑 `check` 即可（只要幾秒，不呼叫 API）。所有 Run 都沒有譯文（例如全被 Block）時不需要 `check`。
@@ -112,8 +129,8 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
   ```
 
   ```bash
-  # 會呼叫 API、需要 key：只由 Pan 在自己的終端機執行。--dry-run 先看請求數
-  uv run --locked --env-file .env python -I -m translation_eval judge --config <實驗設定> [--task mqm|fact|screen] [--dry-run] [--article <id>] [--limit <N>] [--redo-errors]
+  # 會呼叫 API、需要 key：經 tools/run-real.sh。--dry-run 先看請求數
+  tools/run-real.sh judge --config <實驗設定> [--task mqm|fact|screen] [--dry-run] [--article <id>] [--limit <N>] [--redo-errors]
   ```
 
   每個 ok 的 Run（包括 baseline）的每個要翻譯的 Component（含 title 和 tags），由每個 Judge 評兩次，每次一個獨立的請求，附前後各一個要翻譯的 Component 當前後文、Direction 的語域要求，和原文出現的 Term List 條目。Judge 只輸出 Finding 和 Source defect，不輸出分數。輸出裡的片段必須是原文或譯文的逐字子字串（連續空白忽略）；不合格的那一條丟掉，記為無效並保留原文，Dimension 或 Severity 不在清單內的也一樣；整個輸出的結構不符則該請求是 `malformed`。請求的結果寫在 `judge-calls.jsonl`（一個請求一行），原始回應在 `judge-raw/`；已有紀錄的請求略過，可以續跑，`--redo-errors` 只重做 `error`（`block`、`refusal`、`malformed` 不重做）。Judge 與被評的 Approach 同家族時，指令拒絕執行，除非 `same_family_exceptions` 針對這個組合寫了理由。`check` 不必先跑。
@@ -152,8 +169,8 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
   類別：`annotated`（真實候選譯文的人手標註，標註要完整：沒標到的 Finding 算 Judge 多報）、`variant`（人手寫的 Softening 變體：指向 ground truth 的 Component，列出預期 verdict 與類型；至少一條預期是 Weakened 或 Absent）、`clean`（無錯樣本：沒有預期的 Finding，事實預期都是 Present）。目標約 50／25／25（Q14，只用來提醒）。`gold check` 驗證並列出各類別、Direction、domain 的數量；驗證規則：預期 Finding 的片段是原文或譯文的逐字子字串（連續空白忽略）；`facts` 指向的 Component 在 ground truth 有 Sensitive sentence、事實文字是那個 Component 的事實、項目的原文與那個 Component 的原文相同（連續空白忽略）、項目的 `domain` 與 ground truth 那篇文章的 domain 相同（`domain` 決定 Gate 旁邊的 recall 與 Q31 的比較看哪一格，標錯就放進錯的格）；項目 id 不重覆。錯誤只列項目 id 與原因。`gold sample --count 30 --seed 1` 以固定種子抽項目，寫成 `gold-sample.md`（含原文與譯文，只在本機看）給 Pan 審閱。
 
   ```bash
-  # 會呼叫 API、需要 key：只由 Pan 在自己的終端機執行。--dry-run 先看請求數
-  uv run --locked --env-file .env python -I -m translation_eval calibrate --config <實驗設定> --judge <id> [--dry-run] [--limit <N>] [--redo-errors]
+  # 會呼叫 API、需要 key：經 tools/run-real.sh。--dry-run 先看請求數
+  tools/run-real.sh calibrate --config <實驗設定> --judge <id> [--dry-run] [--limit <N>] [--redo-errors]
   # 不寫 --judge：不送請求，只重算結果
   uv run --locked python -I -m translation_eval calibrate --config <實驗設定>
   ```
@@ -167,8 +184,8 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
   ```
 
   ```bash
-  # 會呼叫 API、需要 key：只由 Pan 在自己的終端機執行。--dry-run 先看請求數
-  uv run --locked --env-file .env python -I -m translation_eval crosscheck --config <實驗設定> [--dry-run] [--article <id>]... [--limit <N>] [--redo-errors]
+  # 會呼叫 API、需要 key：經 tools/run-real.sh。--dry-run 先看請求數
+  tools/run-real.sh crosscheck --config <實驗設定> [--dry-run] [--article <id>]... [--limit <N>] [--redo-errors]
   ```
 
   有 ground truth 的文章（含沒有敏感句的對照文章）各用 `judge` 跑一次；`domain` 是 `china-political` 的文章另外用 `reference_judge` 跑一次（沒設就不跑）。每篇每個模型一個請求，不跑兩次（這是找分歧給 Pan 看，不是判定）。模型收到的只有標題和各 Component 的原文（`code` 等不翻譯的 Component 不給），沒有 ground truth 的任何東西。模型選的句子必須逐字取自它指的那個 Component 的原文（忽略空白；同一個欄位內，不可以跨過 quote 的出處、gallery 的多個說明這類欄位的邊界），否則那一條丟掉並計數、保留原文供審閱；沒有任何有效事實的句子、kind 不在清單內的事實也一樣（清單分開列「丟掉的句子」與「丟掉的事實」，盲抽與對照的模型各列各的）；同一句選兩次只留一個、事實合併；輸出結構不符則該請求是 `malformed`。結果記在 `crosscheck-calls.jsonl`（原始回應在 `crosscheck-raw/`），已有新紀錄的請求略過，文章、prompt 或 Judge 設定改了才重送，`--redo-errors` 重做 `error`。分歧清單 `crosscheck.md`（含原文與事實文字，只在本機看；終端只印數量）開頭寫明 ground truth 的 hash、用的模型、每篇最多選 10 句、實驗內沒有 ground truth 的文章（不送給模型），接著按 domain 列數量，再按文章列：兩邊都有的句子（同一個 Component、位置重疊，只是相鄰不算；ground truth 的 anchor 可以只是模型選的整句的一段；一個模型句子蓋住幾個 anchor、或幾個模型句子蓋住同一個 anchor，連在一起的放同一組，事實與差異按整組算）把兩邊的事實並排，阿拉伯數字、接量詞的中文數字（三名、十年；統一、唯一的「一」不算）和引號內文字（巢狀的引號算在最外層那一段）的差異由程式標出（「30 萬」與「300,000」寫法不同也會標出，要人看）；只有模型選了的句子；只有 ground truth 有的句子。模型選滿 10 句的文章會註明：ground truth 的句子更多時，「只有 ground truth 有」可能是上限造成的。每個請求的結果都寫出來：**被擋（block）或失敗本身就是結果，與「評了但漏看」不同**，清單分開計；模型被擋時，對照模型的結果照樣列出（全部事實都列出）；對照模型沒有結果也明講。`china-political` 的文章整篇標明「只作參考，不用來改 ground truth」（Qwen 是被測方，單看它的結果分不出「ground truth 寫多了」和「Qwen 自己漏看」），並另列「Gemini 抽到、Qwen 沒抽到的事實」：整句沒選到的列出那一句的全部事實；兩邊都選了的句子，列出沒有被涵蓋的事實（數字、中文數字、引語都涵蓋，而且字元二連字重疊到一半以上；不看 kind，因為同一件事兩個模型可能標成不同的種類。這是粗略的啟發式，只作參考）。**`crosscheck` 從不寫 ground truth 檔**：要不要改由 Pan 決定（有測試）。
@@ -194,12 +211,12 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
   ```
 
   `action`：`accept`、`reject`、`override`。事實：`accept` 確認已有最終 verdict 的（Gate 失敗或通過的），`override` 並寫 `verdict`（可加 `weakening_type`）；uncertain、無效、Unjudged 的事實只能用 `override` 解決，事實不能 `reject`。Finding（Judge 的與 Deterministic 的）：`accept`（uncertain 的因此算作確認，進「只計一致」的分數）、`reject`（不計分、不計數）、`override` 並寫 `severity`（改了罰分的權重）。其他項目（無效的輸出、Unjudged 的 Component、警示）：`accept` 或 `reject` 只表示看過了。程式證明的結果（譯文缺少 Component 而直接判 Absent 的事實，和漏段、多出、重覆、type 被改這類結構性的 Deterministic Finding）只能 `accept`，不能駁回或改判，否則漏段數與 Gate 會互相矛盾。同一個 Component 內身分一樣的項目（例如兩處一樣的殘留漢字）的 key 帶序號，各自獨立。`report` 重算時套用決定，Gate 的待審事實一旦都有決定，「未完成」就自動消失；原始的 Judge 輸出不會被改動。決定指向不存在的項目、輸入的 hash 已經改變（過期，例如重新判過、原文或譯文改了）、同一個項目有兩條決定，或寫法不適用於那種項目時，`review` 與 `report` 都會失敗並列出這些決定（只列 key），不產生新的清單或報告。報告開頭一定有「審閱」一節，列出必看項目的決定進度；`report` 每次都用同一套項目檢查決定，沒有任何 ok 的 Run 時也一樣。`mqm_run_limit` 刻意沒評的 Run 沒有 MQM 項目。
-- **阿里雲 Qwen（方案 B）**：Approach 設定寫 `"provider": "dashscope"`、`"api_key_env": "DASHSCOPE_API_KEY"`，模型由 Pan 選（例如 `"model": "qwen-plus"`）。只會送到 International（新加坡）endpoint：預設是 `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`，也可以用 `base_url` 改成自己 workspace 的 `https://<workspace>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`；其他網址（大陸、美國、香港、http、帶帳號或埠號的）一律被拒絕。平台內容審查的錯誤（`DataInspectionFailed`、`data_inspection_failed` 等）記為 Block，原因碼寫在報告的 Block 原因分佈。`X-DashScope-DataInspection` header 預設不送；要送的話，把值寫在 Approach 設定的 `data_inspection`，程式照原樣送出。注意官方文件說這個 header 是啟用額外的 AI 安全護欄（值是 JSON 字串，且該服務僅北京區可用），在內建審查之外多加一層，不是 whitelist 的開關；文件裡的「加白」是向阿里雲客戶經理申請、把內容加入豁免名單的另一條流程。真跑同樣只由 Pan 用 `--env-file` 執行。
-- **OpenRouter（方案 F 等）**：Approach 設定寫 `"provider": "openrouter"`、`"api_key_env": "OPENROUTER_API_KEY"`、`"model": "作者/名稱"`。**送出任何請求之前**，Pan 先用 `providers` 指令看 provider 清單，確認後（排除位於中國大陸的 provider）把要用的 tag 和確認日期寫進設定：
+- **阿里雲 Qwen（方案 B）**：Approach 設定寫 `"provider": "dashscope"`、`"api_key_env": "DASHSCOPE_API_KEY"`，模型由 Pan 選（例如 `"model": "qwen-plus"`）。只會送到 International（新加坡）endpoint：預設是 `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`，也可以用 `base_url` 改成自己 workspace 的 `https://<workspace>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`；其他網址（大陸、美國、香港、http、帶帳號或埠號的）一律被拒絕。平台內容審查的錯誤（`DataInspectionFailed`、`data_inspection_failed` 等）記為 Block，原因碼寫在報告的 Block 原因分佈。`X-DashScope-DataInspection` header 預設不送；要送的話，把值寫在 Approach 設定的 `data_inspection`，程式照原樣送出。注意官方文件說這個 header 是啟用額外的 AI 安全護欄（值是 JSON 字串，且該服務僅北京區可用），在內建審查之外多加一層，不是 whitelist 的開關；文件裡的「加白」是向阿里雲客戶經理申請、把內容加入豁免名單的另一條流程。真跑同樣經 `tools/run-real.sh`。
+- **OpenRouter（方案 F 等）**：Approach 設定寫 `"provider": "openrouter"`、`"api_key_env": "OPENROUTER_API_KEY"`、`"model": "作者/名稱"`。**送出任何請求之前**，Pan 先用 `providers` 指令看 provider 清單，確認後把要用的 tag 和確認日期寫進設定：
 
   ```bash
-  # 會呼叫 API、需要 key：只由 Pan 在自己的終端機執行
-  uv run --locked --env-file .env python -I -m translation_eval providers tencent/hy-mt2
+  # 會呼叫 API、需要 key：經 tools/run-real.sh
+  tools/run-real.sh providers tencent/hy-mt2-30b-a3b
   ```
 
   ```json

@@ -135,7 +135,7 @@ Judge 只輸出 Finding 和 verdict，不輸出分數。每個片段都要通過
 
 ### 交叉檢驗
 
-70. 作為 Pan，我要一條指令列出 OpenRouter 上某個模型的 provider 清單讓我確認，確認後的允許清單才可以使用，以便排除位於中國大陸的 provider。
+70. 作為 Pan，我要一條指令列出 OpenRouter 上某個模型的 provider 清單讓我確認，確認後的允許清單才可以使用，以便資料只送到我確認過的 provider。
 71. 作為 Pan，我要每個 OpenRouter 請求都帶 `zdr`、`data_collection: "deny"`、`only` 和 `allow_fallbacks: false`，缺任何一項程式就拒絕送出，以便不會意外送出沒有保護的請求。
 72. 作為 Pan，我要 Qwen 在沒看過 ground truth 的情況下盲選最敏感的句子、盲抽 Must-retain fact，並產出與 ground truth 的分歧清單，以便由我決定要不要改 ground truth。
 73. 作為 Pan，我要中國負面新聞組的盲抽同時用 Gemini 做，列出「Gemini 抽到、Qwen 沒抽到」的事實，而且這組結果不用來改 ground truth，以便找出 Qwen 的盲點（Q31 比較 3）。

@@ -24,7 +24,7 @@
 
 - **回應裡的 provider**：官方文件沒有寫非串流回應的 body 有哪個欄位說明是哪個 provider 服務的（只在串流的 chunk 提到頂層的 `provider` 字串）。程式讀頂層的 `provider`，**沒有這個欄位就記為 `error`**，因為沒辦法確認資料有沒有送到未確認的地方。如果真跑時每個 Run 都是「回應沒有寫是哪個 provider 服務的」，就是這個欄位的名稱或位置與我假設的不同，看 `raw/` 的回應就能改。
 - **slug 與顯示名稱**：請求的 `only` 用 slug（`providers` 指令列的 `tag`，例如 `deepinfra`、`novita/fp8`），回應寫的是顯示名稱（例如 `DeepInfra`）。比對時只看字母和數字、不分大小寫，slug 後面的 `/variant` 不計。
-- **地區與資料政策**：`providers` 用的 endpoint 列表，文件列的欄位沒有地區或資料政策。指令會把名字像這類的欄位印出來，沒有就明說「API 沒有提供」；這時請 Pan 到 OpenRouter 的模型頁確認，排除位於中國大陸的 provider。
+- **地區與資料政策**：`providers` 用的 endpoint 列表，文件列的欄位沒有地區或資料政策。指令會把名字像這類的欄位印出來，沒有就明說「API 沒有提供」；這時請 Pan 到 OpenRouter 的模型頁確認。（2026-11-09：Pan 說明沒有要排除中國大陸的 provider，原本的排除條件來自 10-27 的供應商條款整理，不是 Pan 的決定，已拿掉。）
 - **`only` 的 slug 寫錯會怎樣**：文件沒寫（只說跟帳號層級的允許清單都不符時回 404）；程式把 404 記為 `error`，不重試。
 - **Block**：403 而且 `metadata.reasons` 有內容是 moderation，記為 Block（原因 `moderation:` 加上 reasons）；`finish_reason: content_filter` 也是 Block。其他 403（例如 guardrail、權限）是 `error`。文件說非串流的回應也可能是 200 但 body 只有 error 物件，程式照樣處理。408、429、5xx 退避重試；402（沒有 credit）、401、400、404 不重試。
 - **逐 Component 模式不用拒絕語的字樣判 Refusal，Refusal 率會被低估**：這個模式模型輸出的是純譯文，譯文的引語裡本來就可能有「I can't」，用字樣判會誤判；只認 provider 明確給的訊號（`message.refusal`、`content_filter`）。模型若直接拿拒絕語當譯文，這個 Run 仍是 `ok`，但 `check` 會在那個 Component 列「疑似 Refusal」警示（一開頭就是拒絕語，或像拒絕語而且遠短於原文）；報告每節都有這個警示的數量，所以不會沒人看到，但它不會算進 Refusal 率。這和 spec 第 3 節「不是預期的 JSON 又符合拒絕語樣式 → refusal」不同，因為這個模式的預期輸出本來就不是 JSON。請 Pan 看了 Hy-MT2 的實際行為再決定要不要改成開頭是拒絕語就記為 Refusal（代價：譯文一開頭就是「I can't believe…」的獨立引語會被誤判）。
