@@ -476,7 +476,7 @@ class ScreenVerdict(StrEnum):
 
 
 class ScreenItem(StrictModel):
-    """全文篩查列出的一處疑似淡化（或誇大），片段已通過逐字驗證。component_id 是原文片段所在的 Component。"""
+    """全文篩查列出的一處疑似淡化（或比原文更聳動），片段已通過逐字驗證。component_id 是原文片段所在的 Component。"""
     verdict: ScreenVerdict
     weakening_type: WeakeningType | None = None
     source_span: NonBlank

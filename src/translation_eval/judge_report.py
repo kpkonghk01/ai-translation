@@ -14,9 +14,10 @@ from dataclasses import dataclass, field
 from .articles import apply_variant, is_main_type
 from .config import Experiment
 from .consistency import Status, judge_component
+from .screening import judge_screening
 from .pairs import component_pairs
 from .schemas import ComponentResult, Dimension, InputVariant, JudgeCall, ReviewAction, RunKey, RunRecord, Severity, Weights
-from .prompts import judge_template
+from .prompts import fact_template, judge_template, screen_template
 from .review_decisions import Decisions
 from .review_items import finding_item_keys
 from .store import OutputDir
@@ -101,17 +102,18 @@ def score_group(records: list[RunRecord], articles, translations, calls_by_run, 
             role = score.main if pair.is_main else score.peripheral
             keys = finding_item_keys(key, pair.id, judge_id, [m.finding for m in judgment.findings])
             for item_key, merged in zip(keys, judgment.findings):
+                score.severity_mismatches += merged.severity_mismatch
+                if merged.finding.dimension is Dimension.FIDELITY_OF_FORCE:   # 不計分：審閱決定只是「看過了」，不改變這裡的數量
+                    score.fof_consistent += merged.consistent
+                    score.fof_uncertain += not merged.consistent
+                    continue
                 decision = decisions.get(item_key)
                 if decision is not None and decision.action is ReviewAction.REJECT:   # 審閱駁回：不計分，也不計數
+                    score.severity_mismatches -= merged.severity_mismatch
                     continue
                 consistent = merged.consistent or decision is not None   # accept 或 override：審閱者確認了，算作一致
                 severity = (decision.severity if decision else None) or merged.finding.severity
-                score.severity_mismatches += merged.severity_mismatch
-                if merged.finding.dimension is Dimension.FIDELITY_OF_FORCE:
-                    score.fof_consistent += consistent
-                    score.fof_uncertain += not consistent
-                else:
-                    _add(role, merged.finding.dimension, severity, weights, consistent)
+                _add(role, merged.finding.dimension, severity, weights, consistent)
     return score
 
 
@@ -148,16 +150,25 @@ def group_lines(heading: str, score: GroupScore, weights: Weights) -> list[str]:
     ]
 
 
+TASK_TEMPLATES = (("fact", "Must-retain fact 核對", fact_template), ("screen", "全文篩查", screen_template))
+
+
 def header_lines(experiment: Experiment, calls: list[JudgeCall]) -> list[str]:
-    """Judge 的設定、同家族的例外、權重與正規化方式：放在報告開頭，看結果之前先看到。"""
+    """Judge 的設定、同家族的例外、權重與正規化方式：放在報告開頭，看結果之前先看到。calls 是所有任務的請求紀錄。"""
     judging, template = experiment.config.judging, judge_template()
     lines = ["## Judge 設定", ""]
     for judge in experiment.judges:
-        mine = [c for c in calls if c.judge == judge.id]
+        mine = [c for c in calls if c.judge == judge.id and c.task == "mqm"]
         stale = sum(1 for c in mine if (c.prompt_hash, c.config_hash) != (template.hash, judge.config_hash))
         c = judge.config
         lines.append(f"- {c.id}（{c.role}）：家族 {c.family}；provider {c.provider}；模型 {c.model}；prompt judge-mqm {template.hash}；"
                      f"設定 hash {judge.config_hash}（{len(mine)} 個請求）" + (f"；⚠ 有 {stale} 個請求是用不同的設定或 prompt 跑的" if stale else ""))
+        for task, label, load in TASK_TEMPLATES:   # 其他任務的 prompt 也要列出：結果要能重現
+            ran = [c for c in calls if c.judge == judge.id and c.task == task]
+            if ran:
+                other, other_stale = load(), sum(1 for c in ran if (c.prompt_hash, c.config_hash) != (load().hash, judge.config_hash))
+                lines.append(f"  - {c.id} 的{label}：prompt {other.id} {other.hash}（{len(ran)} 個請求）"
+                             + (f"；⚠ 有 {other_stale} 個請求是用不同的設定或 prompt 跑的" if other_stale else ""))
     lines += [f"- 同家族的例外：{e.approach} × {e.judge}：{e.reason}" for e in judging.same_family_exceptions]
     weights = experiment.config.weights
     lines.append(f"- 權重：minor {_number(weights.minor)}、major {_number(weights.major)}、critical {_number(weights.critical)}")
@@ -183,8 +194,29 @@ def source_defect_lines(calls: list[JudgeCall]) -> list[str]:
     return lines + [""]
 
 
+def screening_stats_lines(records: list[RunRecord], articles, translations, calls_by_run) -> list[str]:
+    """全文篩查：評完幾個 Run、Unjudged 率、條目的數量。條目本身只在審閱清單，不計分、不決定 Gate。沒有篩查紀錄就沒有這一行。"""
+    if not any(RunKey.of(r) in calls_by_run for r in records):
+        return []
+    done = unjudged = consistent = uncertain = invalid = 0
+    for record in records:
+        key = RunKey.of(record)
+        calls = calls_by_run.get(key, [])
+        pairs = component_pairs(apply_variant(articles[record.article_id], record.input_variant), translations[key])
+        judgment = judge_screening(calls, pairs)
+        if judgment.status is Status.INCOMPLETE:
+            continue
+        done += 1
+        unjudged += judgment.status is Status.UNJUDGED
+        consistent += sum(1 for m in judgment.items if m.consistent)
+        uncertain += sum(1 for m in judgment.items if not m.consistent)
+        invalid += sum(len(c.invalid) for c in calls)
+    return [f"- 全文篩查：評完 {done}/{len(records)} 個 Run；Unjudged 率 {ratio(unjudged, done)}；條目：一致 {consistent}、uncertain {uncertain}、無效 {invalid}"
+            "（交審閱清單，不計分、不決定 Gate）"]
+
+
 def judge_settings_lines(experiment: Experiment, out: OutputDir) -> list[str]:
-    return header_lines(experiment, out.read_judge_calls()) if experiment.judges else []
+    return header_lines(experiment, out.read_judge_calls(None)) if experiment.judges else []
 
 
 def judge_lines(experiment: Experiment, out: OutputDir, records: list[RunRecord], rows: list[ComponentResult], articles, decisions: Decisions) -> list[str]:
@@ -202,6 +234,9 @@ def judge_lines(experiment: Experiment, out: OutputDir, records: list[RunRecord]
     rows_by_run = defaultdict(list)
     for row in rows:
         rows_by_run[RunKey.of(row)].append(row)
+    screen_by_judge_run = defaultdict(lambda: defaultdict(list))
+    for call in out.read_judge_calls("screen"):
+        screen_by_judge_run[call.judge][RunKey.of(call)].append(call)
     lines = ["## Judge 評核", ""]
     groups = sorted({(r.approach, r.direction, r.input_variant) for r in ok_records})
     for judge in experiment.judges:
@@ -211,5 +246,7 @@ def judge_lines(experiment: Experiment, out: OutputDir, records: list[RunRecord]
                 continue
             score = score_group(members, articles, translations, calls_by_judge_run[judge.id], rows_by_run, experiment.config.weights, judge.id, decisions)
             tag = "" if variant is InputVariant.FULL else f"（{variant}）"
-            lines += group_lines(f"### {approach} × {direction}{tag} × Judge {judge.id}（{judge.config.role}）", score, experiment.config.weights)
+            block = group_lines(f"### {approach} × {direction}{tag} × Judge {judge.id}（{judge.config.role}）", score, experiment.config.weights)
+            screened = screening_stats_lines(members, articles, translations, screen_by_judge_run[judge.id])
+            lines += block[:-1] + screened + block[-1:]   # block 的最後一項是空行
     return lines + source_defect_lines(calls)

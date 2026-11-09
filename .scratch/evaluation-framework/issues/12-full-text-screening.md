@@ -27,3 +27,13 @@
 - **只審 primary 角色的 Judge**，與 ticket 11 一致。
 - 報告還沒有列出篩查的 Unjudged 率（只在審閱清單裡）。
 
+### 2026-11-09 review 之後的修正
+
+- **已經寫好的審閱決定不能因為加了全文篩查就過期**：我把篩查的欄位插進每個項目的 hash，MQM 與 fact 項目的 hash 全變了。現在 MQM 與 fact 的 hash 格式不變，用上一版算出的黃金值釘住（有測試）。
+- **篩查條目可能掛到錯的 Component**：標題常重覆內文的用語，原文片段在好幾個 Component 時，原本取第一個。現在優先取「譯文片段也在它的譯文裡」的那個。
+- **Absent 的條目不留譯文片段**（與事實 verdict 的引用一致）：有寫的驗證過就不留，兩次一個寫一個沒寫才配得起來。
+- **Fidelity-of-force Finding 的審閱決定**：它不計分，所以只能 `accept` 或 `reject`（表示看過了），不能改判 Severity；報告裡 Fidelity-of-force 的一致／uncertain 數量不隨決定改變（原本 accept 會讓 uncertain 變一致，和審閱清單對不上）。**這改了第 11 張寫的行為**（那時寫「Fidelity-of-force 也一樣處理，reject 不計數」）。
+- 報告補上：各任務（Must-retain fact、全文篩查）的 prompt hash，和每組的全文篩查統計（評完幾個 Run、Unjudged 率、條目的一致／uncertain／無效數量）。
+- 整理：三個任務共用請求的前三項（Direction、語域要求、Term List 條目）、verdict 與類型矛盾的判斷抽成一處、`run_call` 的任務分派集中成一個函式；過時的 docstring 和「誇大」（GLOSSARY 禁用詞）改正。
+- 沒有照 review 改的：**驗證忽略所有空白**（與既有規則一致，ticket 的要求是與 ground truth 的驗證相同）；**配對用「第一次出現」**，重覆出現的片語可能把不同的地方配成一處，只影響「一致」的標示。**experiment 角色的 Judge 也會篩查**，但沒有地方讀它的結果（ticket 17 會用）。
+

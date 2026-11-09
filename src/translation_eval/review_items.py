@@ -147,8 +147,8 @@ def _raw(component) -> str:
 
 def _call_summary(calls) -> list:
     return [[c.call_index, c.outcome.value, c.reason, [f.model_dump(mode="json") for f in c.findings],
-             [v.model_dump(mode="json") for v in c.verdicts], [s.model_dump(mode="json") for s in c.screenings],
-             [i.model_dump(mode="json") for i in c.invalid]] for c in calls]
+             [v.model_dump(mode="json") for v in c.verdicts], [i.model_dump(mode="json") for i in c.invalid],
+             *([[s.model_dump(mode="json") for s in c.screenings]] if c.task == "screen" else [])] for c in calls]   # MQM 與 fact 的格式不變：已寫的審閱決定不會因此過期
 
 
 def _item(key, kind, status, run, component_id, judge, source, target, hash_parts, lines, locked=False) -> ReviewItem:

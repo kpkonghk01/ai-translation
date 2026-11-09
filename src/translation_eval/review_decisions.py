@@ -5,7 +5,7 @@ key 不存在（輸入改變、重新判過，或抄錯），或 hash 已經改�
 各種項目能寫的決定：
   事實：accept（確認，只用於已有最終 verdict 的：Gate 失敗或通過的）、override 並寫 verdict（uncertain、無效、Unjudged 的要這樣解決）；
   Finding（Judge 的與 Deterministic 的）：accept（uncertain 的因此算作確認）、reject（不計分）、override 並寫 severity；
-  其他（無效的輸出、Unjudged 的 Component、警示）：accept 或 reject，只表示看過了；
+  其他（無效的輸出、Unjudged 的請求、警示、全文篩查的條目、不計分的 Fidelity-of-force Finding）：accept 或 reject，只表示看過了；
   程式證明的結果（譯文缺少 Component 的事實、結構性的 Deterministic Finding）：只能 accept。
 原始的 Judge 輸出不會被改動：決定只在 report 計算時套用。
 """
@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 from .errors import InputError
 from .loading import read_model
-from .review_items import FINAL_FACT_STATUSES, ItemKind, ReviewItem, check_finding_keys
+from .review_items import FINAL_FACT_STATUSES, ItemKind, ItemStatus, ReviewItem, check_finding_keys
 from .schemas import ComponentResult, ReviewAction, ReviewDecision, ReviewDecisionFile, RunKey
 from .store import OutputDir
 
@@ -52,6 +52,8 @@ def _rule_problem(decision: ReviewDecision, item: ReviewItem) -> str | None:
     action = decision.action
     if item.locked and action is not ReviewAction.ACCEPT:
         return "這是程式證明的結果（譯文缺少 Component，或結構性的 Finding），只能 accept（表示看過了）"
+    if item.kind is ItemKind.FINDING and item.status is ItemStatus.SCREENED and action is ReviewAction.OVERRIDE:
+        return "Fidelity-of-force 不計分，沒有 Severity 可以改判：只能 accept 或 reject（表示看過了）"
     if item.kind is ItemKind.FACT:
         if action is ReviewAction.REJECT:
             return "事實不能駁回：要改判就寫 override 並指定 verdict"

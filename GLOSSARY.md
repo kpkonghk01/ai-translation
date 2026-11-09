@@ -97,7 +97,7 @@ Deterministic check 標出、交人手看但不計分的提示，例如長度比
 _Avoid_: flag；把 Warning 叫作 Finding
 
 **Screening**:
-Judge 對一個 Run 的全文做的一次篩查：列出疑似淡化、缺失或誇大的地方，包括 ground truth 沒寫到的。結果只進審閱清單，不決定 Gate，也不計分。中文寫作「全文篩查」。
+Judge 對一個 Run 的全文做的一次篩查：列出疑似淡化、缺失或比原文更聳動的地方，包括 ground truth 沒寫到的。結果只進審閱清單，不決定 Gate，也不計分。中文寫作「全文篩查」。
 
 **Review list**:
 `review` 產生的本機清單，列出審閱者要看的項目：必看（Gate 失敗、uncertain、無效、Unjudged、警示等，全部列出）與抽查（從其餘項目以固定種子抽出）。每個項目有 key 和輸入的 hash，審閱決定靠它們對上項目。中文寫作「審閱清單」、「必看」、「抽查」。

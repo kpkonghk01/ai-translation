@@ -2,7 +2,6 @@
 import json
 import os
 import shutil
-from pathlib import Path
 
 import gemini_samples
 from fake_transport import FakeTransport
@@ -22,10 +21,6 @@ class ScreenCase(ReviewCase):
         code, out, err = self.run_cli("judge", "--task", "screen", *args, transport=transport)
         self.assertEqual(code, 0, err)
         return transport
-
-    def calls(self):
-        text = Path(self.out_dir, "judge-calls.jsonl").read_text(encoding="utf-8")
-        return [json.loads(line) for line in text.splitlines() if line.strip()]
 
     def screen_calls(self):
         return sorted((c for c in self.calls() if c["task"] == "screen"), key=lambda c: c["call_index"])
@@ -71,11 +66,12 @@ class RequestTest(ScreenCase):
         self.run_cli("judge", "--task", "screen", transport=transport)   # 明講要跑就跑
         self.assertEqual(len(transport.requests), 2)
 
-    def test_the_dry_run_counts_the_screening_requests_and_the_whole_article_in_the_estimate(self):
+    def test_the_dry_run_counts_the_screening_requests_and_sends_nothing(self):
         del os.environ["GEMINI_API_KEY"]
         code, out, err = self.run_cli("judge", "--task", "screen", "--dry-run", transport=FakeTransport())
         self.assertEqual(code, 0, err)
         self.assertIn("請求數：2", out)
+        self.assertFalse(os.path.exists(os.path.join(self.out_dir, "judge-calls.jsonl")))
 
     def test_a_rerun_skips_requests_that_already_have_a_record(self):
         self.screen()
@@ -102,14 +98,16 @@ class ValidationTest(ScreenCase):
             self.assertEqual((call["screenings"], len(call["invalid"])), ([], 1), verdict)
 
     def test_spans_that_are_not_verbatim_a_wrong_verdict_or_type_and_a_wrong_shape_are_dropped_and_kept_for_review(self):
-        bad = [screen_item(source_span="不存在的片段"), screen_item(target_span="not in the translation"), screen_item(verdict="Maybe"),
-               screen_item(verdict="Weakened", type="amplification"), screen_item(verdict="Amplification", type="a"), screen_item(source_span=""),
-               "not an object", screen_item() | {"reason": 5}]
-        for item in bad:
+        bad = [(screen_item(source_span="不存在的片段"), "原文片段不是任何一個 Component"), (screen_item(target_span="not in the translation"), "譯文片段不是逐字子字串"),
+               (screen_item(verdict="Maybe"), "結構不符"), (screen_item(verdict="Weakened", type="amplification"), "與類型矛盾"),
+               (screen_item(verdict="Amplification", type="a"), "與類型矛盾"), (screen_item(verdict="Absent", type="amplification", target_span=""), "與類型矛盾"),
+               (screen_item(source_span=""), "結構不符"), ("not an object", "不是物件"), (screen_item() | {"reason": 5}, "結構不符")]
+        for item, why in bad:
             with self.subTest(str(item)[:50]):
                 call = self.one_call(item)
                 self.assertEqual((call["outcome"], call["screenings"], len(call["invalid"])), ("ok", [], 1))
                 self.assertEqual(call["invalid"][0]["kind"], "screening")
+                self.assertIn(why, call["invalid"][0]["why"])
         call = self.one_call(screen_item(target_span="not in the translation"))
         self.assertEqual(json.loads(call["invalid"][0]["raw"])["target_span"], "not in the translation")   # 原文保留
 
@@ -128,8 +126,7 @@ class ValidationTest(ScreenCase):
 
 class ReviewListTest(ScreenCase):
     def run_world(self, screen=None, mqm=None):
-        code, out, err = self.run_cli("judge", transport=combined_transport(mqm=mqm, screen=screen))
-        self.assertEqual(code, 0, err)
+        self.run_judges(mqm=mqm, screen=screen)
 
     def test_screening_results_are_must_see_and_show_the_spans_the_reason_and_whether_the_two_runs_agree(self):
         self.run_world(screen={1: {"items": [screen_item(), screen_item(verdict="Absent", type=None, source_span="預算超支", target_span="")]},
@@ -183,25 +180,24 @@ class ReviewListTest(ScreenCase):
         self.assertIn("### Fidelity-of-force 的 Finding（MQM）（1）", must)
         self.assertIn("（兩次一致）", self.item(must, "Fidelity-of-force／softening (a)／major")["text"])
 
-    def test_screening_items_can_be_accepted_or_rejected_but_not_overridden(self):
+    def test_screening_items_can_be_accepted_but_not_overridden(self):
         self.run_world(screen={1: {"items": [screen_item()]}, 2: {"items": [screen_item()]}})
         must = self.review_part()
         item = self.item(must, "全文篩查：Weakened")
         self.decide(item, "accept", note="確認要跟進")
-        self.assertEqual(self.run_cli("report")[0], 0)
+        self.assertIn("決定：accept（虛構審閱者，2026-11-09）：確認要跟進", self.item(self.review_part(), "全文篩查：Weakened")["text"])
         os.remove(os.path.join(self.out_dir, "review-decisions.json"))
         self.decide(item, "override", severity="minor")
         code, out, err = self.run_cli("report")
         self.assertNotEqual(code, 0)
         self.assertIn("只能 accept 或 reject", err)
-        self.assertRegex(item["key"], r"^screening-[0-9a-f]{16}$")
 
 
 class NoEffectOnResultsTest(ScreenCase):
     def sections(self, report: str):
         gate = report.split("### a × trad-to-en ・ 分組 general")[1].split("\n##", 1)[0]
         judge = report.split("### a × trad-to-en × Judge j1")[1].split("\n## ", 1)[0]
-        return gate, judge
+        return gate, "\n".join(l for l in judge.splitlines() if not l.startswith("- 全文篩查："))   # 篩查自己的統計行不算：分數與 Gate 不變
 
     def test_screening_results_change_neither_the_gate_nor_the_scores(self):
         fact = {"9000001-001": lambda p: fact_output(p, {S1_FACT: WEAK})}
@@ -216,3 +212,71 @@ class NoEffectOnResultsTest(ScreenCase):
         after = self.sections(self.report_text())
         self.assertEqual(before, after)
         self.assertIn("### 全文篩查的結果（3）", self.part(self.review_text(), "必看"))
+
+
+class FixesTest(ScreenCase):
+    def test_decisions_on_mqm_items_survive_the_screening_results_arriving_later(self):
+        self.use_judging(screening=False)
+        self.run_judges(mqm={("9000001-001", 1): {"findings": [finding(severity="major")], "source_defects": []}})
+        item = self.item(self.review_part(), "Accuracy／mistranslation")
+        self.decide(item, "accept")
+        self.assertEqual(self.run_cli("report")[0], 0)
+        self.assertEqual(self.run_cli("judge", "--task", "screen", transport=screen_transport({1: {"items": [screen_item()]}, 2: {"items": [screen_item()]}}))[0], 0)
+        self.assertEqual(self.run_cli("report")[0], 0)   # 沒有變成「過期」
+
+    def test_item_hashes_written_before_screening_existed_are_unchanged(self):
+        # 黃金值：審閱清單剛做好、全文篩查還沒有的那一版對同一個情境算出來的 hash。格式改了，已經寫好的審閱決定就全部過期
+        self.use_judging(screening=False)
+        self.run_judges(mqm={("9000001-001", 1): {"findings": [finding(severity="major")], "source_defects": []}},
+                        fact={"9000001-001": lambda p: fact_output(p)})
+        self.set_review(sample_rate=1.0)
+        text = self.review_text()
+        self.assertEqual(self.item(text, "Accuracy／mistranslation")["hash"], "cd8c51a9e33109e2")
+        self.assertEqual(self.item(text, "事實（detail）：工程延誤半年")["hash"], "ef8ad2d78f19d3f2")
+
+    def test_an_item_belongs_to_the_component_whose_translation_holds_the_target_span_when_the_source_phrase_repeats(self):
+        # 「翻新工程延誤」同時出現在標題和第一段的原文裡
+        body = self.run_and_owner(screen_item(source_span="翻新工程延誤", target_span="six months late"))
+        title = self.run_and_owner(screen_item(source_span="翻新工程延誤", target_span="renovation delayed"))
+        self.assertEqual((body, title), ("9000001-001", "title"))
+
+    def run_and_owner(self, item) -> str:
+        self.forget_calls()
+        self.screen({1: {"items": [item]}})
+        return self.screen_calls()[0]["screenings"][0]["component_id"]
+
+    def test_an_absent_item_keeps_no_target_span_so_a_call_that_gave_one_still_matches_a_call_that_did_not(self):
+        self.run_judges(screen={1: {"items": [screen_item(verdict="Absent", type=None, source_span="預算超支", target_span="over budget")]},
+                                2: {"items": [screen_item(verdict="Absent", type=None, source_span="預算超支", target_span="")]}})
+        self.assertEqual(self.screen_calls()[0]["screenings"][0]["target_span"], "")
+        self.assertIn("兩次一致", "\n".join(self.agreement_lines()))
+
+    def agreement_lines(self):
+        return [line for line in self.review_part().splitlines() if line.startswith("- 全文篩查：")]
+
+    def test_fidelity_of_force_findings_can_only_be_accepted_or_rejected_and_never_change_the_report_counts(self):
+        fof = {"findings": [finding(dimension="Fidelity-of-force", subtype="softening (a)", severity="major")], "source_defects": []}
+        self.run_judges(mqm={("9000001-001", 1): fof})   # 只有一次提出：uncertain
+        counts = lambda: next(l for l in self.report_text().splitlines() if l.startswith("- Fidelity-of-force（不計分"))   # noqa: E731
+        before = counts()
+        self.assertIn("uncertain 1", before)
+        item = self.item(self.review_part(), "Fidelity-of-force／softening (a)")
+        self.decide(item, "accept")
+        self.assertEqual(counts(), before)
+        os.remove(os.path.join(self.out_dir, "review-decisions.json"))
+        self.decide(item, "reject")
+        self.assertEqual(counts(), before)
+        os.remove(os.path.join(self.out_dir, "review-decisions.json"))
+        self.decide(item, "override", severity="minor")
+        code, out, err = self.run_cli("report")
+        self.assertNotEqual(code, 0)
+        self.assertIn("Fidelity-of-force 不計分", err)
+
+    def test_the_report_lists_the_prompt_of_every_task_and_the_screening_statistics(self):
+        self.run_judges(screen={1: {"items": [screen_item(source_span="不存在的片段")]}, 2: gemini_samples.prompt_blocked()})
+        report = self.report_text()
+        self.assertRegex(report, r"j1 的全文篩查：prompt judge-screen [0-9a-f]{64}（2 個請求）")
+        self.assertIn("全文篩查：評完 1/1 個 Run；Unjudged 率 0/1（0.0%）；條目：一致 0、uncertain 0、無效 1", report)
+        self.forget_calls()
+        self.run_judges(screen={1: gemini_samples.prompt_blocked(), 2: gemini_samples.prompt_blocked()})
+        self.assertIn("Unjudged 率 1/1（100.0%）", self.report_text())

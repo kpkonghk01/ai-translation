@@ -41,4 +41,4 @@
 - **無效的 fact 輸出**（回了不認識的 fact_id、或不是物件）原本不在清單裡。現在列在「無效的 Judge 輸出」。
 - **`mqm_run_limit` 刻意沒評的 Run** 不再有 MQM 項目（原本之前評過的 Run 會有項目，但不計分，決定沒有作用）。
 - 其他：把 `require_checked` 移進 `check.py`，`review` 與 `report` 不再互相 import；清掉未用的 import；GLOSSARY 加「審閱清單」。
-
+- （2026-11-09，第 12 張 review 後更正）Fidelity-of-force Finding 的決定現在只能 accept 或 reject，且不改變報告裡 Fidelity-of-force 的數量；上面「Fidelity-of-force 也一樣處理」不再成立。

@@ -1,4 +1,4 @@
-"""Gate 測試共用：Must-retain fact 的測試用 Workspace、虛構的 ground truth 和譯文的改動。只用虛構資料。"""
+"""Gate、審閱與全文篩查的測試共用：測試用的 Workspace（FactCase、ReviewCase）、虛構的 ground truth、譯文的改動和假 Judge 的路由。只用虛構資料。"""
 import copy
 import json
 import os
@@ -6,9 +6,9 @@ import re
 from pathlib import Path
 
 import gemini_samples
-from fake_transport import FakeTransport
+from fake_transport import FakeTransport, FunctionTransport
 from fixtures import GROUND_TRUTH, Workspace, ok_response
-from judge_helpers import fact_output, finding
+from judge_helpers import fact_output, fact_transport, finding, judge_transport, screen_transport, user_payload
 
 
 class FactCase(Workspace):
@@ -60,8 +60,6 @@ def translation_without(component_id: str):
 
 def combined_transport(mqm=None, fact=None, screen=None):
     """三種請求的假 Judge：fact 的請求（有 sentences）交給 fact_transport，全文篩查的（有 components）交給 screen_transport，其餘交給 judge_transport。"""
-    from fake_transport import FunctionTransport
-    from judge_helpers import fact_transport, judge_transport, screen_transport, user_payload
     mqm_side, fact_side, screen_side = judge_transport(mqm), fact_transport(fact), screen_transport(screen)
 
     def reply(request):
@@ -79,8 +77,8 @@ HASH = re.compile(r"輸入 hash：`([0-9a-f]{16})`")
 
 
 class ReviewCase(FactCase):
-    def run_judges(self, mqm=None, fact=None):
-        code, _, err = self.run_cli("judge", transport=combined_transport(mqm, fact))
+    def run_judges(self, mqm=None, fact=None, screen=None):
+        code, _, err = self.run_cli("judge", transport=combined_transport(mqm, fact, screen))
         self.assertEqual(code, 0, err)
         self.assertEqual(self.run_cli("check")[0], 0)
 
