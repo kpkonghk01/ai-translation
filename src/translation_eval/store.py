@@ -15,13 +15,17 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from .errors import InputError
-from .schemas import CheckMeta, ComponentResult, RunKey, RunRecord, Translation
+from .schemas import CheckMeta, ComponentResult, JudgeCall, RunKey, RunRecord, Translation
 
 REDACTED = "[REDACTED]"
 
 
 def run_stem(key: RunKey) -> str:
     return f"{key.article_id}.{key.approach}.{key.direction}.{key.input_variant}.r{key.run_index}"
+
+
+def judge_call_key(call: JudgeCall) -> tuple:
+    return (*RunKey.of(call).model_dump().values(), call.component_id, call.judge, call.task, call.call_index)
 
 
 def _scrub(text: str, secrets: tuple[str, ...]) -> str:
@@ -47,6 +51,10 @@ class OutputDir:
     @property
     def components_path(self) -> Path:
         return self.root / "components.jsonl"
+
+    @property
+    def judge_calls_path(self) -> Path:
+        return self.root / "judge-calls.jsonl"
 
     @property
     def check_meta_path(self) -> Path:
@@ -76,6 +84,42 @@ class OutputDir:
         if not records:
             raise InputError(f"{self.runs_path}：沒有 Run 紀錄，先執行 translate")
         return records
+
+    def read_judge_calls(self) -> list[JudgeCall]:
+        if not self.judge_calls_path.exists():
+            return []
+        calls = []
+        with open(self.judge_calls_path, encoding="utf-8") as f:
+            for n, line in enumerate(f, 1):
+                if not line.strip():
+                    continue
+                try:
+                    calls.append(JudgeCall.model_validate_json(line))
+                except ValidationError as e:
+                    raise InputError(f"{self.judge_calls_path}：第 {n} 行不是合法的 Judge 紀錄（{e.error_count()} 個錯誤）") from e
+        return calls
+
+    def write_judge_call(self, call: JudgeCall, raw: bytes | None, *, secrets: tuple[str, ...] = (), replaces_existing: bool = False) -> JudgeCall:
+        """原始回應按 Run 與 Judge 存成 jsonl（每個請求一行，重做的不蓋掉舊的），最後才寫 Judge 紀錄。"""
+        stem = f"{run_stem(call)}.{call.judge}"
+        if raw is not None:
+            line = json.dumps({"component": call.component_id, "call": call.call_index,
+                               "body": raw.decode("utf-8", errors="replace")}, ensure_ascii=False)
+            path = self.root / "judge-raw" / f"{stem}.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(_scrub(line, secrets) + "\n")
+            call = call.model_copy(update={"raw_response": f"judge-raw/{stem}.jsonl"})
+        text = _scrub(call.model_dump_json(), secrets) + "\n"
+        if replaces_existing:
+            key = judge_call_key(call)
+            kept = "".join(c.model_dump_json() + "\n" for c in self.read_judge_calls() if judge_call_key(c) != key)
+            self._replace(self.judge_calls_path, kept + text)
+        else:
+            self.root.mkdir(parents=True, exist_ok=True)
+            with open(self.judge_calls_path, "a", encoding="utf-8") as f:
+                f.write(text)
+        return call
 
     def read_translation(self, record: RunRecord) -> Translation:
         if record.translation is None:

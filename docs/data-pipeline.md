@@ -102,6 +102,22 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
 
 - `translate` 可以中斷後重跑同一條指令：已有紀錄的 Run 會略過；`--redo-errors` 重做結果為 `error` 的 Run（`block`、`refusal`、`malformed`、`truncated` 是結果，不會重做）。`--article <id>`（可重覆）只跑指定文章，`--limit <N>` 最多執行 N 個 Run。
 - `check` 與 `report` 每次都從 `runs.jsonl` 整份重算。`report` 發現有 `ok` 的 Run 還沒有 `check` 結果，或 `check` 之後規則、Term List、長度比例範圍改了，會停止，不產生報告；先重新執行 `check`。`check` 另寫 `components.jsonl`（每個 Component 的 Finding 與警示）和 `check-meta.json`（check 當時用的規則版本與輸入，report 靠它判斷結果有沒有過期）。規則版本由實作規則的原始碼的 hash 決定：程式的規則有任何改動，舊的 check 結果就視為過期，重跑 `check` 即可（只要幾秒，不呼叫 API）。所有 Run 都沒有譯文（例如全被 Block）時不需要 `check`。
+- **Judge（MQM）**：實驗設定的 `judging` 列出 Judge 設定檔（欄位與 Approach 設定相同，另加 `role`：`primary` 決定 Gate，`experiment` 只作實驗；`temperature` 固定 0，只用 `article-json`），並可以寫 `same_family_exceptions`、`mqm_run_limit`；頂層的 `weights` 是每個 Severity 的罰分（預設 minor 1、major 5、critical 25）：
+
+  ```json
+  "judging": {"judges": [{"config": "configs/judges/j1.json"}],
+              "same_family_exceptions": [{"approach": "a", "judge": "j1", "reason": "中國組以 Gemini 為主 Judge（Q31）"}],
+              "mqm_run_limit": {"a": 1}},
+  "weights": {"minor": 1, "major": 5, "critical": 25}
+  ```
+
+  ```bash
+  # 會呼叫 API、需要 key：只由 Pan 在自己的終端機執行。--dry-run 先看請求數
+  uv run --locked --env-file .env python -I -m translation_eval judge --config <實驗設定> [--dry-run] [--article <id>] [--limit <N>] [--redo-errors]
+  ```
+
+  每個 ok 的 Run（包括 baseline）的每個要翻譯的 Component（含 title 和 tags），由每個 Judge 評兩次，每次一個獨立的請求，附前後各一個要翻譯的 Component 當前後文、Direction 的語域要求，和原文出現的 Term List 條目。Judge 只輸出 Finding 和 Source defect，不輸出分數。輸出裡的片段必須是原文或譯文的逐字子字串（連續空白忽略）；不合格的那一條丟掉，記為無效並保留原文，Dimension 或 Severity 不在清單內的也一樣；整個輸出的結構不符則該請求是 `malformed`。請求的結果寫在 `judge-calls.jsonl`（一個請求一行），原始回應在 `judge-raw/`；已有紀錄的請求略過，可以續跑，`--redo-errors` 只重做 `error`（`block`、`refusal`、`malformed` 不重做）。Judge 與被評的 Approach 同家族時，指令拒絕執行，除非 `same_family_exceptions` 針對這個組合寫了理由。`check` 不必先跑。
+  `report` 計算一致性和分數：兩次的 Finding 若同一 Dimension、譯文片段重疊（譯文片段都是空的就看原文片段），就是同一個 Finding，Severity 不同取較高者；配對不到的是 uncertain；只有一次成功時全部是 uncertain；兩次都失敗是 Unjudged，並記下原因。罰分 = Severity 的權重，Fidelity-of-force 不計分；Deterministic 的 Finding 一起計；Main 與 Peripheral 分開，列出「只計一致的」與「連 uncertain 一起計」兩個數字，以及每千字原文的罰分（分母只含評完的 Component）。改了權重只要重跑 `report`。報告另有 Source defect 清單，以「文章、Component、原文片段」去重。
 - **阿里雲 Qwen（方案 B）**：Approach 設定寫 `"provider": "dashscope"`、`"api_key_env": "DASHSCOPE_API_KEY"`，模型由 Pan 選（例如 `"model": "qwen-plus"`）。只會送到 International（新加坡）endpoint：預設是 `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`，也可以用 `base_url` 改成自己 workspace 的 `https://<workspace>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`；其他網址（大陸、美國、香港、http、帶帳號或埠號的）一律被拒絕。平台內容審查的錯誤（`DataInspectionFailed`、`data_inspection_failed` 等）記為 Block，原因碼寫在報告的 Block 原因分佈。`X-DashScope-DataInspection` header 預設不送；要送的話，把值寫在 Approach 設定的 `data_inspection`，程式照原樣送出。注意官方文件說這個 header 是啟用額外的 AI 安全護欄（值是 JSON 字串，且該服務僅北京區可用），在內建審查之外多加一層，不是 whitelist 的開關；文件裡的「加白」是向阿里雲客戶經理申請、把內容加入豁免名單的另一條流程。真跑同樣只由 Pan 用 `--env-file` 執行。
 - **OpenRouter（方案 F 等）**：Approach 設定寫 `"provider": "openrouter"`、`"api_key_env": "OPENROUTER_API_KEY"`、`"model": "作者/名稱"`。**送出任何請求之前**，Pan 先用 `providers` 指令看 provider 清單，確認後（排除位於中國大陸的 provider）把要用的 tag 和確認日期寫進設定：
 

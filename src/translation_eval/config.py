@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from .errors import InputError
 from .loading import read_model
-from .schemas import ApproachConfig, Direction, ExperimentConfig, InputVariant, LengthRatioRange
+from .schemas import ApproachConfig, Direction, ExperimentConfig, InputVariant, JudgeConfig, LengthRatioRange
 from .terms import LoadedTermList, load_term_list
 
 
@@ -26,10 +26,25 @@ class PlannedApproach:
 
 
 @dataclass(frozen=True)
+class PlannedJudge:
+    config: JudgeConfig
+    config_hash: str
+
+    @property
+    def id(self) -> str:
+        return self.config.id
+
+
+@dataclass(frozen=True)
 class Experiment:
     config: ExperimentConfig
     approaches: list[PlannedApproach]
     term_list: LoadedTermList
+    judges: list[PlannedJudge]
+
+    def approach_config(self, approach_id: str) -> ApproachConfig | None:
+        """LLM Approach 的設定；baseline（不經 API）沒有。"""
+        return next((p.config for p in self.approaches if p.id == approach_id), None)
 
 
 def config_hash(approach: ApproachConfig) -> str:
@@ -61,7 +76,30 @@ def load_experiment(path: str) -> Experiment:
         approaches.append(PlannedApproach(approach, entry.runs, config_hash(approach), tuple(entry.input_variants)))
     clashes = [b.id for b in config.baselines if b.id in seen]
     problems += [f"baseline 的 id 與 Approach 的 id 重覆：{i}" for i in clashes]
+    judges = load_judges(config, seen, problems)
     if problems:
         raise InputError(problems)
     term_list = load_term_list(config.term_list) if config.term_list else LoadedTermList.unused()
-    return Experiment(config=config, approaches=approaches, term_list=term_list)
+    return Experiment(config=config, approaches=approaches, term_list=term_list, judges=judges)
+
+
+def load_judges(config: ExperimentConfig, approach_ids: set[str], problems: list[str]) -> list[PlannedJudge]:
+    if config.judging is None:
+        return []
+    judges, seen = [], set()
+    for entry in config.judging.judges:
+        judge = read_model(entry.config, JudgeConfig)
+        if judge.id in seen:
+            problems.append(f"Judge id 重覆：{judge.id}")
+        elif judge.id in approach_ids:
+            problems.append(f"Judge 的 id 與 Approach 的 id 重覆：{judge.id}")
+        else:
+            seen.add(judge.id)
+            judges.append(PlannedJudge(judge, config_hash(judge)))
+    for exception in config.judging.same_family_exceptions:
+        if exception.approach not in approach_ids or exception.judge not in seen:
+            problems.append(f"同家族的例外指向不存在的 Approach 或 Judge：{exception.approach} × {exception.judge}")
+    for approach_id in config.judging.mqm_run_limit:
+        if approach_id not in approach_ids:
+            problems.append(f"mqm_run_limit 指向不存在的 Approach：{approach_id}")
+    return judges

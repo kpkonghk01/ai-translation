@@ -2,6 +2,7 @@
 
 用法（在 repo 根目錄）：
   uv run --locked python -I -m translation_eval translate --config <實驗設定> [--dry-run] [--article <id>] [--limit <N>] [--redo-errors]
+  uv run --locked python -I -m translation_eval judge --config <實驗設定> [--dry-run] [--article <id>] [--limit <N>] [--redo-errors]
   uv run --locked python -I -m translation_eval providers <作者/名稱> [--dry-run]   （OpenRouter 的 provider 清單，需要 key）
   uv run --locked python -I -m translation_eval import-cms --csv <CMS 匯出> [--out data/cms-articles]
   uv run --locked python -I -m translation_eval import-baseline --config <實驗設定>
@@ -12,7 +13,7 @@
 import argparse
 import sys
 
-from . import baselines, check, cms, provider_listing, report, translate
+from . import baselines, check, cms, judging, provider_listing, report, translate
 from .errors import InputError
 from .transport import Transport, TransportForbidden, UrllibTransport
 
@@ -21,6 +22,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="translation_eval", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     t = sub.add_parser("translate", help="把文章送去各個 Approach 翻譯")
+    j = sub.add_parser("judge", help="Judge 評核每個 Component（MQM），每個評兩次")
+    j.add_argument("--dry-run", action="store_true", help="不送出請求，只印出請求數和 endpoint")
+    j.add_argument("--article", action="append", default=[], help="只評這篇文章（可重覆）")
+    j.add_argument("--limit", type=_positive_int, help="最多執行幾個請求")
+    j.add_argument("--redo-errors", action="store_true", help="重做結果為 error 的請求")
     b = sub.add_parser("import-baseline", help="把方案 E 等 baseline 目錄匯入成 Run")
     c = sub.add_parser("check", help="對 ok 的 Run 做 Deterministic check")
     r = sub.add_parser("report", help="產生 Block／Refusal 報告")
@@ -30,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     m = sub.add_parser("import-cms", help="把 CMS 匯出（CSV）轉成文章檔")
     m.add_argument("--csv", required=True, help="CMS 匯出的 CSV")
     m.add_argument("--out", default="data/cms-articles", help="文章檔的輸出目錄（預設 data/cms-articles）")
-    for p in (t, b, c, r):
+    for p in (t, j, b, c, r):
         p.add_argument("--config", required=True, help="實驗設定（JSON）")
         p.add_argument("--data-dir", default="data", help="輸出目錄（預設 data）")
     t.add_argument("--dry-run", action="store_true", help="不送出請求，只印出請求數、估計輸入字數和 endpoint")
@@ -52,6 +58,8 @@ def main(argv=None, transport: Transport | None = None) -> int:
     try:
         if args.command == "translate":
             return translate.handle(args, transport or UrllibTransport())
+        if args.command == "judge":
+            return judging.handle(args, transport or UrllibTransport())
         if args.command == "providers":
             return provider_listing.handle(args, transport or UrllibTransport())
         if args.command == "import-cms":

@@ -5,7 +5,7 @@
 import re
 from datetime import date
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -174,6 +174,49 @@ class LengthRatioRange(StrictModel):
         return self
 
 
+class JudgeRole(StrEnum):
+    PRIMARY = "primary"   # 決定 Gate
+    EXPERIMENT = "experiment"   # 只作實驗，結果單獨報告
+
+
+class JudgeConfig(ApproachConfig):
+    """Judge 設定：與 Approach 設定相同，另加角色。temperature 固定 0；輸出是 JSON，所以只用 article-json、不切塊。"""
+    role: JudgeRole
+    temperature: float | None = Field(default=0.0, ge=0, le=2)
+
+    @model_validator(mode="after")
+    def _judge_rules(self):
+        if self.temperature != 0:
+            raise ValueError("Judge 的 temperature 固定是 0")
+        if self.request_mode is not RequestMode.ARTICLE_JSON or self.max_input_chars is not None:
+            raise ValueError("Judge 只用 article-json 而且不切塊：它的輸出是 JSON")
+        return self
+
+
+class SameFamilyException(StrictModel):
+    """Judge 與被評的 Approach 同家族時，要針對這個組合寫明理由才可以執行；所有例外都會列在報告開頭。"""
+    approach: Slug
+    judge: Slug
+    reason: NonBlank
+
+
+class JudgeEntry(StrictModel):
+    config: str
+
+
+class JudgingConfig(StrictModel):
+    judges: list[JudgeEntry] = Field(min_length=1)
+    same_family_exceptions: list[SameFamilyException] = []
+    mqm_run_limit: dict[Slug, Annotated[int, Field(ge=1)]] = {}   # Approach id → 只有 Run 序號不超過這個數的 Run 做 MQM
+
+
+class Weights(StrictModel):
+    """每個 Finding 的罰分：按 Severity。改了只要重算報告，不用重跑 Judge。"""
+    minor: float = Field(default=1, ge=0)
+    major: float = Field(default=5, ge=0)
+    critical: float = Field(default=25, ge=0)
+
+
 class BaselineEntry(StrictModel):
     """方案 E（Current service）這類不經 API 的 baseline：Run 由 import-baseline 從目錄匯入，不由 translate 產生。"""
     id: Slug
@@ -187,6 +230,8 @@ class ExperimentConfig(StrictModel):
     directions: list[Direction] = Field(min_length=1)
     approaches: list[ApproachEntry] = Field(min_length=1)
     baselines: list[BaselineEntry] = []
+    judging: JudgingConfig | None = None
+    weights: Weights = Weights()
     term_list: str | None = None   # Term List 檔的路徑；不設就不注入、也不做 Terminology 檢查
     length_ratio: dict[Direction, LengthRatioRange] = {}   # 覆寫預設的長度比例範圍（見 config.py）
 
@@ -341,6 +386,53 @@ class RunRecord(RunKey):
             if missing:
                 raise ValueError("不是 baseline 的 Run 缺少：" + "、".join(missing))
         return self
+
+
+# ───────────── Judge ─────────────
+
+class JudgeFinding(StrictModel):
+    """Judge 指出的一個問題，已通過逐字驗證。"""
+    dimension: Dimension
+    subtype: NonBlank
+    severity: Severity
+    source_span: str   # 原文的逐字片段；可以是空的（例如漏譯時看不到對應的原文片段時），但兩個片段不能同時是空的
+    target_span: str
+    reason: str
+
+
+class SourceDefect(StrictModel):
+    source_span: NonBlank
+    issue: NonBlank
+
+
+class InvalidItem(StrictModel):
+    """Judge 的輸出裡不合格的一條：片段不是逐字子字串、Dimension 或 Severity 不在清單內、結構不符。原文保留供審閱。"""
+    kind: Literal["finding", "source_defect"]
+    why: str
+    raw: Any
+
+
+class JudgeCall(RunKey):
+    """Judge 對一個 Run 的一個 Component 的一次請求（每個 Component 要評兩次，call_index 是 1 或 2）。"""
+    component_id: str
+    judge: Slug
+    task: Literal["mqm"] = "mqm"
+    call_index: int = Field(ge=1, le=2)
+    outcome: Outcome
+    reason: str | None = None
+    attempts: list[Attempt]
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    thought_tokens: int | None = None
+    model_version: str | None = None
+    served_provider: str | None = None
+    prompt_hash: str
+    config_hash: str
+    findings: list[JudgeFinding] = []
+    source_defects: list[SourceDefect] = []
+    invalid: list[InvalidItem] = []
+    raw_response: str | None = None
+    created_at: str
 
 
 # ───────────── Component 結果 ─────────────

@@ -11,7 +11,9 @@ from collections import Counter, defaultdict
 
 from .check import current_check_meta
 from .config import Experiment, PlannedApproach, length_ranges, load_experiment
+from .articles import load_article
 from .errors import InputError
+from .judge_report import judge_lines
 from .schemas import ComponentResult, Dimension, Direction, InputVariant, Outcome, RunKey, RunRecord, WarningKind
 from .store import OutputDir
 
@@ -42,7 +44,7 @@ def _counts(values, none_label: str = "未回報") -> str:
     return "、".join(f"{v if v is not None else none_label}（{n} 個 Run）" for v, n in sorted(Counter(values).items(), key=lambda kv: str(kv[0])))
 
 
-def render(experiment: Experiment, records: list[RunRecord], rows: list[ComponentResult]) -> str:
+def render(experiment: Experiment, records: list[RunRecord], rows: list[ComponentResult], extra_lines: list[str] = ()) -> str:
     cfg = experiment.config
     lines = [
         f"# 評核報告：{cfg.id}", "",
@@ -80,6 +82,7 @@ def render(experiment: Experiment, records: list[RunRecord], rows: list[Componen
     for key in sections:
         lines += section_lines(*key, planned_runs.get(key), records_by_section[key], rows_by_section[key])
     lines += block_incentive_lines(records)
+    lines += extra_lines
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
@@ -217,6 +220,7 @@ def handle(args) -> int:
             problems.append(f"…另有 {len(unchecked) - MAX_LISTED} 個")
         raise InputError(problems)
     require_fresh_check(experiment, out, records)   # 先列出沒檢查過的 Run（較具體）；都檢查過了，才看結果是不是過期
-    out.write_report(render(experiment, records, rows))
+    articles = {r.article_id: load_article(experiment.config.articles.dir, r.article_id) for r in records if r.outcome is Outcome.OK}
+    out.write_report(render(experiment, records, rows, judge_lines(experiment, out, records, rows, articles)))
     print(f"已寫入 {out.report_path}（{len(records)} 個 Run）")
     return 0

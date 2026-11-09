@@ -108,6 +108,10 @@ TERM_LIST = {"terms": [
     {"source": "從未出現的詞", "category": "place", "translations": {"trad-to-en": ["Never Mentioned"]}},
 ]}
 
+# 測試用的 Judge：家族寫 claude 是為了與被測的 gemini 家族不同；provider 用 gemini 只是借它的假 transport
+JUDGE = {"id": "j1", "role": "primary", "family": "claude", "provider": "gemini", "model": "gemini-3.1-pro", "api_key_env": "GEMINI_API_KEY",
+         "timeout_seconds": 30, "retry": {"max_attempts": 2, "base_delay_seconds": 0}}
+
 APPROACH = {
     "id": "a",
     "family": "gemini",
@@ -169,6 +173,15 @@ class Workspace(unittest.TestCase):
 
     def use_baseline(self, directory: str, baseline_id: str = "e", direction: str = "trad-to-simplified") -> None:
         self.extra_experiment["baselines"] = [{"id": baseline_id, "dir": directory, "direction": direction}]
+        self.write_json(self.config_path, self.experiment())
+
+    def use_judging(self, judges=(JUDGE,), **judging) -> None:
+        entries = []
+        for judge in judges:
+            path = os.path.join(self.tmp, f"judge-{judge['id']}.json")
+            self.write_json(path, judge)
+            entries.append({"config": path})
+        self.extra_experiment["judging"] = {"judges": entries, **judging}
         self.write_json(self.config_path, self.experiment())
 
     def use_term_list(self, term_list: dict) -> str:
