@@ -1,0 +1,14 @@
+{
+  "id": "pilot",
+  "articles": {
+    "dir": "data/articles-first-batch",
+    "ids": ["60398632", "60300726"]
+  },
+  "directions": ["trad-to-en", "trad-to-simplified"],
+  "approaches": [
+    {"config": "configs/approaches/a-gemini-flash-lite.json", "runs": 1},
+    {"config": "configs/approaches/f-hy-mt2.json", "runs": 1},
+    {"config": "configs/approaches/g-qwen-openrouter.json", "runs": 1}
+  ],
+  "term_list": "data/term-list.json"
+}
