@@ -46,3 +46,10 @@
 - `providers` 只呼叫 `/models/{作者}/{名稱}/endpoints`。因為請求一律強制 `zdr: true`，Pan 其實需要知道哪些 endpoint 支援 ZDR；OpenRouter 文件似乎另有 ZDR endpoint 的清單，我沒辦法確認它的格式，所以沒做。請 Pan 看 `providers` 的輸出夠不夠用；不夠的話再補。
 - 回應寫的 provider 名稱與 slug 只比較字母和數字：`Nebius AI Studio` 對 slug `nebius` 會被判為不在清單內（寧可擋下也不放行）。真跑時若遇到，把 slug 改成顯示名稱的寫法即可。
 - 有好幾個請求的 Run，tokens 是各請求的總和；若某個請求的 usage 讀不出來，總和會少算，不會報錯。latency 只加每個請求最後一次嘗試的耗時。
+
+### 2026-11-11 真跑發現：Hy-MT2 經 Tencent 對部分單元回空內容；關閉思考沒有用
+
+- **現象**：Tencent 對部分單元回 HTTP 200，但 `content` 是 null，輸出的 token 全被記成 reasoning（`reasoning` 欄也是 null），Run 因此記為 error（「回應格式不認識」）。同一個單元每次都一樣失敗（確定性）。整批累積 8 個 F Run（繁→英 4、繁→簡 4）：繁→英 10/211 個單元失敗（5%），繁→簡 44/211（21%）；Run 成功的是繁→英 2/4、繁→簡 0/4。失敗的單元不限於短標題（正文段落也有），也找不到字數或字形上的共同特徵。一個單元失敗整個 Run 就是 error，所以 F 的 Run 大多拿不到完整譯文。
+- **Pan 決定關閉思考再試**：加了 Approach 設定 `reasoning_off`（只有 openrouter 用，請求帶 `reasoning.effort = none`，OpenRouter 文件寫的開關；沒設就不送，沒設的設定 hash 不變，有測試）。用同樣兩篇文章真跑（`configs/experiments/pilot-f-nothink.json`）：**失敗的是同樣的 11 個單元，reasoning token 也沒變**。OpenRouter 對這個 endpoint 列的參數裡沒有 `reasoning`，模型卡也沒有思考開關，所以是 Tencent 忽略了這個參數。`f-hy-mt2-nothink.json` 沒有採用，只留作這次實測的紀錄。
+- **還沒試的、而且會改變 F 的請求，所以要 Pan 決定**：(1) 模型卡建議的請求形式是單一 user 訊息、沒有 system prompt（模型卡寫「沒有預設的 system prompt」），我們一律送 system prompt；(2) 模型卡建議 temperature 0.7、top_p 1，我們沒送；(3) 換成同系列的 7B 或 1.8B（OpenRouter 上也有）；(4) 讓空內容的單元不使整個 Run 失敗（要定義它算什麼）；(5) 不測 F。1、2 要在框架加功能才能試：我不能用 key 直接送臨時請求，真跑只能經 `tools/run-real.sh` 呼叫框架。
+

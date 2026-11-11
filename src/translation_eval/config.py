@@ -56,7 +56,10 @@ class Experiment:
 
 
 def config_hash(approach: ApproachConfig) -> str:
-    canonical = json.dumps(approach.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
+    settings = approach.model_dump(mode="json")
+    if not settings["reasoning_off"]:   # 後來才加的欄位：沒開時不進 hash，已有 Run 的 hash 才不會變（否則報告會把它們都標成「與目前設定不同」）
+        del settings["reasoning_off"]
+    canonical = json.dumps(settings, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

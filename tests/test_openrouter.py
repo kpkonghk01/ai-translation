@@ -63,6 +63,46 @@ class RequestTest(OpenRouterCase):
         self.assertEqual(body["response_format"], {"type": "json_object"})
 
 
+class ReasoningSwitchTest(OpenRouterCase):
+    """Approach 設定的 reasoning_off：關閉模型的思考，用 OpenRouter 文件寫的開關（reasoning.effort = none）。沒設就不送這個欄位。"""
+
+    def test_reasoning_off_sends_effort_none(self):
+        self.use_approach({**APPROACH, "reasoning_off": True})
+        _, transport, _, _ = self.translate(ok_response())
+        self.assertEqual(json.loads(transport.requests[0].body)["reasoning"], {"effort": "none"})
+
+    def test_no_reasoning_field_is_sent_unless_asked(self):
+        for name, approach in (("unset", APPROACH), ("explicitly false", {**APPROACH, "reasoning_off": False})):
+            with self.subTest(name):
+                self.use_approach(approach)
+                _, transport, _, _ = self.translate(ok_response())
+                self.assertNotIn("reasoning", json.loads(transport.requests[0].body))
+
+    def test_the_switch_is_recorded_in_the_config_hash_but_leaves_existing_hashes_alone(self):
+        # 黃金值：新增欄位之前，這份設定的 hash。沒設 reasoning_off 的設定，hash 不可以變，否則已有的 Run 都會被報告標成「與目前設定不同」
+        UNCHANGED = "3d3344df13e4415c4d6f66f7d542cf8f7ad05b94a08b07a19fe67dbae29e0572"
+        hashes = {}
+        for name, approach in (("unset", APPROACH), ("false", {**APPROACH, "reasoning_off": False}), ("on", {**APPROACH, "reasoning_off": True})):
+            self.use_approach(approach)
+            self.translate(ok_response())
+            [record] = self.read_runs()
+            hashes[name] = record["config_hash"]
+        self.assertEqual((hashes["unset"], hashes["false"]), (UNCHANGED, UNCHANGED))
+        self.assertNotEqual(hashes["on"], UNCHANGED)
+
+    def test_the_report_says_when_reasoning_is_off(self):
+        self.use_approach({**APPROACH, "reasoning_off": True})
+        self.translate(ok_response())
+        self.assertEqual(self.run_cli("check")[0], 0)
+        self.assertEqual(self.run_cli("report")[0], 0)
+        self.assertIn("reasoning：關閉", self.output_text("report.md"))
+        self.use_approach(APPROACH)
+        self.translate(ok_response())
+        self.assertEqual(self.run_cli("check")[0], 0)
+        self.assertEqual(self.run_cli("report")[0], 0)
+        self.assertNotIn("reasoning", self.output_text("report.md"))
+
+
 class RoutingRequiredTest(OpenRouterCase):
     def assert_refuses(self, approach):
         """真跑被拒絕：非 0 結束，沒有送出請求，沒有寫出任何檔案。（--dry-run 只顯示，不拒絕，另有測試）"""
@@ -112,6 +152,9 @@ class ConfigTest(OpenRouterCase):
             ("unknown routing field", {**APPROACH, "routing": {**ROUTING, "fallbacks": True}}, "fallbacks"),
             ("a slash in a gemini model", {"id": "a", "family": "gemini", "provider": "gemini", "model": "google/gemini",
                                            "api_key_env": "GEMINI_API_KEY"}, "model"),
+            ("reasoning_off on another provider", {"id": "a", "family": "gemini", "provider": "gemini", "model": "gemini-3.1-flash-lite",
+                                                   "api_key_env": "GEMINI_API_KEY", "reasoning_off": True}, "reasoning_off"),
+            ("reasoning_off that is not a boolean", {**APPROACH, "reasoning_off": "yes please"}, "reasoning_off"),
         ):
             with self.subTest(name):
                 self.use_approach(approach)

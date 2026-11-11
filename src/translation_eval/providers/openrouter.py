@@ -60,6 +60,8 @@ class OpenRouterAdapter:
             body["temperature"] = approach.temperature
         if approach.max_output_tokens is not None:
             body["max_tokens"] = approach.max_output_tokens
+        if approach.reasoning_off:
+            body["reasoning"] = {"effort": "none"}   # OpenRouter 文件寫的「完全關閉思考」的開關
         headers = {"content-type": "application/json", "Authorization": f"Bearer {api_key}"}
         return Request("POST", ENDPOINT, headers, json.dumps(body, ensure_ascii=False).encode("utf-8"), approach.timeout_seconds)
 

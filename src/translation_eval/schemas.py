@@ -169,6 +169,7 @@ class ApproachConfig(StrictModel):
     base_url: str | None = None   # 只有 dashscope 用；不設就用 DASHSCOPE_DEFAULT_BASE_URL
     data_inspection: HeaderValue | None = None   # 只有 dashscope 用：X-DashScope-DataInspection 的值；不設就不送這個 header
     routing: OpenRouterRouting | None = None   # 只有 openrouter 用
+    reasoning_off: bool = False   # 只有 openrouter 用：請求帶 reasoning.effort = none，關閉模型的思考；不設就不送這個欄位，用模型的預設
     request_mode: RequestMode = RequestMode.ARTICLE_JSON
     max_input_chars: int | None = Field(default=None, ge=1)   # 只用於 article-json：超過就按 Component 順序切塊，每塊一個請求
     temperature: float | None = Field(default=None, ge=0, le=2)   # None：不送，用 API 預設
@@ -194,6 +195,8 @@ class ApproachConfig(StrictModel):
             raise ValueError("max_input_chars 只用於 article-json（切塊）；per-component 每個請求本來就只有一段文字")
         if self.provider != "openrouter" and self.routing is not None:
             raise ValueError("routing 只有 openrouter 用")
+        if self.provider != "openrouter" and self.reasoning_off:
+            raise ValueError("reasoning_off 只有 openrouter 用")
         if self.provider == "openrouter":
             if self.model.count("/") != 1:
                 raise ValueError("openrouter 的 model 要寫成「作者/名稱」")
