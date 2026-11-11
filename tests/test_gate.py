@@ -225,6 +225,16 @@ class CompletenessTest(GateCase):
         self.assertIn("計畫的 Run 還缺 1 個", gate)
         self.assertIn("狀態：未完成", gate)
 
+    def test_an_empty_run_leaves_the_gate_unfinished_too(self):
+        shutil.rmtree(self.data_dir)
+        self.runs = 2
+        self.write_json(self.config_path, self.experiment())
+        self.run_cli("translate", transport=FakeTransport(ok_response(), gemini_samples.candidate_with({"role": "model"})))
+        gate = self.section(self.gate(), "### a × trad-to-en ・ 分組 general")
+        self.assertIn("空內容（empty）的 Run 1 個", gate)
+        self.assertNotIn("error 的 Run", gate)
+        self.assertIn("狀態：未完成", gate)
+
     def test_an_error_run_leaves_the_gate_unfinished_but_a_block_does_not_by_itself(self):
         shutil.rmtree(self.data_dir)
         self.runs = 2

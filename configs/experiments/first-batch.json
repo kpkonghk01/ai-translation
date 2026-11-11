@@ -17,6 +17,7 @@
   "approaches": [
     {"config": "configs/approaches/a-gemini-flash-lite.json", "runs": 3, "input_variants": ["full", "main-only"]},
     {"config": "configs/approaches/f-hy-mt2.json", "runs": 1},
+    {"config": "configs/approaches/f7-hy-mt2-7b.json", "runs": 1},
     {"config": "configs/approaches/g-qwen-openrouter.json", "runs": 1}
   ],
   "baselines": [{"id": "e", "dir": "data/baseline-first-batch", "direction": "trad-to-simplified"}],

@@ -8,7 +8,7 @@
 main-only 的 Run 沒有送的 Component，它的句子不在這個 Run 的核對範圍。
 只由該分組的主 Judge 決定；實驗設定沒有為這個分組指定主 Judge 時，用第一個角色是 primary 的 Judge，並標示「主 Judge 暫定」。
 仍有 uncertain、無效、Unjudged、尚未評完或過期的事實時，Gate 標為「未完成」，列出待審的數量；沒有任何句子有結果、計畫的 Run 還沒有全部
-有紀錄、或有 error 的 Run（不是內容造成的結果，要重做）時也是「未完成」：證據不齊就不下結論。block 與 refusal 的 Run 是結果，不是缺漏。
+有紀錄、或有 error 或 empty（空內容）的 Run（不是內容造成的結果，要重做）時也是「未完成」：證據不齊就不下結論。block 與 refusal 的 Run 是結果，不是缺漏。
 同一個 Component 內 anchor 一樣的兩個 item 是同一句：只要其中一條事實失敗，這一句就失敗。
 """
 from collections import Counter, defaultdict
@@ -150,6 +150,8 @@ def gate_group_lines(heading: str, judge_text: str, recall: str, gate: GroupGate
         reasons.append(f"計畫的 Run 還缺 {missing_runs} 個（沒有紀錄）")
     if skipped[Outcome.ERROR]:
         reasons.append(f"error 的 Run {skipped[Outcome.ERROR]} 個（不是內容造成的結果，先用 --redo-errors 重做）")
+    if skipped[Outcome.EMPTY]:
+        reasons.append(f"空內容（empty）的 Run {skipped[Outcome.EMPTY]} 個（provider 沒有給輸出，不是內容造成的結果，先用 --redo-errors 重做）")
     status = "完成" if not reasons else "未完成；" + "；".join(reasons)
     upper = f"；95% 上限 {_percent(clopper_pearson_upper(failed, evaluated))}" if evaluated else ""
     per_run = "、".join(

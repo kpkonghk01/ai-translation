@@ -65,14 +65,20 @@ def opens_with_refusal(text: str) -> bool:
     return bool(_REFUSAL.match(text.lstrip(" \t\r\n\"'“‘「『")))
 
 
+EMPTY_REASON = "輸出是空的"
+
+
+def empty_output(**meta) -> Interpretation:
+    """正常結束，但沒有任何輸出：這次請求沒有拿到東西，不是模型對內容的反應（Tencent 的 Hy-MT2 對部分輸入會回 content: null）。
+    和 error 一樣沒有結果，--redo-errors 會重做；它不是 malformed（輸出有，但格式不對）。"""
+    return Interpretation(Outcome.EMPTY, EMPTY_REASON, **meta)
+
+
 def classify_plain_text(text: str) -> tuple[Outcome, str | None, str | None]:
-    """逐 Component 模式：預期的輸出就是純譯文。空的是 malformed。拒絕語的字樣在這裡不判：譯文的引語裡本來就可能有
+    """逐 Component 模式：預期的輸出就是純譯文（空的輸出在這之前已由 adapter 記為 empty）。拒絕語的字樣在這裡不判：譯文的引語裡本來就可能有
     「I can't」，只認 provider 明確給的訊號（message.refusal、content_filter）。模型若直接拿拒絕語當譯文，這個請求仍是 ok，
     但 check 會在那個 Component 列出疑似 Refusal 的警示（一開頭就是拒絕語，或遠短於原文），所以不會沒人看到。"""
-    stripped = text.strip()
-    if not stripped:
-        return Outcome.MALFORMED, "輸出是空的", None
-    return Outcome.OK, None, stripped
+    return Outcome.OK, None, text.strip()
 
 
 def classify_text(text: str) -> tuple[Outcome, str | None, dict | None]:

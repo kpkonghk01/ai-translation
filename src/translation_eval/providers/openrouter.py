@@ -49,9 +49,11 @@ class OpenRouterAdapter:
         problems = self.problems(approach)
         if problems:   # 呼叫者應該已經用 problems() 擋下；這裡再擋一次，沒有保護欄位的請求不可以組出來
             raise InputError(problems)
+        messages = ([{"role": "user", "content": f"{system_prompt}\n\n{user_text}"}] if approach.single_user_message
+                    else [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_text}])
         body = {
             "model": approach.model,
-            "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_text}],
+            "messages": messages,
             "provider": {"zdr": True, "data_collection": "deny", "only": list(approach.routing.only), "allow_fallbacks": False},
         }
         if approach.request_mode is RequestMode.ARTICLE_JSON:

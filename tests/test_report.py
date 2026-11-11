@@ -44,7 +44,7 @@ class ReportTest(Workspace):
         self.assertIn("- Run：計畫 5，已有紀錄 5", text)
         self.assertIn("- Block 率：按 Run 2/5（40.0%）；按文章 1/1（100.0%）；原因分佈：output:SAFETY 1、prompt:PROHIBITED_CONTENT 1", text)
         self.assertIn("- Refusal 率：1/5（20.0%）", text)
-        self.assertIn("- 其他失敗：malformed 0/5（0.0%）、truncated 0/5（0.0%）、error 0/5（0.0%）", text)
+        self.assertIn("- 其他失敗：malformed 0/5（0.0%）、truncated 0/5（0.0%）、empty 0/5（0.0%）、error 0/5（0.0%）", text)
         self.assertIn("- 漏段數：1（已檢查 2 個 ok 的 Run、共 12 個 Component）", text)
 
     def test_other_failures_are_counted_apart_from_block_and_refusal(self):
@@ -55,7 +55,7 @@ class ReportTest(Workspace):
         text = self.report_text()
         self.assertIn("- Block 率：按 Run 0/5（0.0%）；按文章 0/1（0.0%）；原因分佈：無", text)
         self.assertIn("- Refusal 率：0/5（0.0%）", text)
-        self.assertIn("- 其他失敗：malformed 1/5（20.0%）、truncated 1/5（20.0%）、error 2/5（40.0%）", text)
+        self.assertIn("- 其他失敗：malformed 1/5（20.0%）、truncated 1/5（20.0%）、empty 0/5（0.0%）、error 2/5（40.0%）", text)
 
     def test_header_lists_the_experiment_the_approach_the_prompt_hash_and_the_model_versions_actually_returned(self):
         self.mixed_runs()

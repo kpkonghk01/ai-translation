@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     j.add_argument("--dry-run", action="store_true", help="不送出請求，只印出請求數和 endpoint")
     j.add_argument("--article", action="append", default=[], help="只評這篇文章（可重覆）")
     j.add_argument("--limit", type=_positive_int, help="最多執行幾個請求")
-    j.add_argument("--redo-errors", action="store_true", help="重做結果為 error 的請求")
+    j.add_argument("--redo-errors", action="store_true", help="重做結果為 error 或 empty 的請求")
     b = sub.add_parser("import-baseline", help="把方案 E 等 baseline 目錄匯入成 Run")
     c = sub.add_parser("check", help="對 ok 的 Run 做 Deterministic check")
     r = sub.add_parser("report", help="產生 Block／Refusal 報告")
@@ -42,12 +42,12 @@ def build_parser() -> argparse.ArgumentParser:
     cal.add_argument("--judge", help="要校準的 Judge 的 id；不寫就只重算結果")
     cal.add_argument("--dry-run", action="store_true", help="不送出請求，只印出請求數和 endpoint")
     cal.add_argument("--limit", type=_positive_int, help="最多執行幾個請求")
-    cal.add_argument("--redo-errors", action="store_true", help="重做結果為 error 的請求")
+    cal.add_argument("--redo-errors", action="store_true", help="重做結果為 error 或 empty 的請求")
     xc = sub.add_parser("crosscheck", help="模型盲選最敏感的句子、盲抽事實，與 ground truth 對照（要 key）")
     xc.add_argument("--dry-run", action="store_true", help="不送出請求，只印出請求數和 endpoint")
     xc.add_argument("--article", action="append", default=[], help="只跑這篇文章（可重覆）")
     xc.add_argument("--limit", type=_positive_int, help="最多執行幾個請求")
-    xc.add_argument("--redo-errors", action="store_true", help="重做結果為 error 的請求")
+    xc.add_argument("--redo-errors", action="store_true", help="重做結果為 error 或 empty 的請求")
     g = sub.add_parser("gold", help="Gold set：驗證並列出數量，或抽樣給 Pan 審閱")
     g_sub = g.add_subparsers(dest="gold_command", required=True)
     g_check = g_sub.add_parser("check", help="驗證 Gold set，列出各類別、Direction、domain 的數量")
@@ -67,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--dry-run", action="store_true", help="不送出請求，只印出請求數、估計輸入字數和 endpoint")
     t.add_argument("--article", action="append", default=[], help="只跑這篇文章（可重覆）")
     t.add_argument("--limit", type=_positive_int, help="最多執行幾個 Run")
-    t.add_argument("--redo-errors", action="store_true", help="重做結果為 error 的 Run")
+    t.add_argument("--redo-errors", action="store_true", help="重做結果為 error 或 empty 的 Run")
     return parser
 
 

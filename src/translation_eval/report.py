@@ -27,7 +27,7 @@ from .report_text import ratio, shown
 from .review import completion_lines
 from .review_decisions import apply_check_decisions, check_decisions, load_decisions
 from .review_items import build_items
-from .schemas import ComponentResult, Dimension, Direction, InputVariant, Outcome, RunKey, RunRecord, WarningKind
+from .schemas import ComponentResult, Dimension, Direction, InputVariant, Outcome, REDO_OUTCOMES, RunKey, RunRecord, WarningKind
 from .store import OutputDir
 
 WARNING_LABELS = {
@@ -116,8 +116,8 @@ def block_incentive_lines(records: list[RunRecord]) -> list[str]:
         return []
     full, main_only = InputVariant.FULL, InputVariant.MAIN_ONLY
     lines = ["## Block 誘因實驗（full 與 main-only）", "",
-             "只比較兩個輸入版本都有紀錄的文章；只有一個版本的不在內。error 的 Run 不是內容造成的結果，不計入比較；"
-             "某個版本只有 error 的文章也不比較（先用 --redo-errors 重做）。「結果不同」指文章在兩個輸入版本下被 Block 的比例不一樣，"
+             "只比較兩個輸入版本都有紀錄的文章；只有一個版本的不在內。error 與 empty 的 Run 不是內容造成的結果，不計入比較；"
+             "某個版本只有 error 或 empty 的文章也不比較（先用 --redo-errors 重做）。「結果不同」指文章在兩個輸入版本下被 Block 的比例不一樣，"
              "括號裡是各版本被 Block 的 Run 數／Run 數。", ""]
     for approach_id, direction in sorted({(r.approach, r.direction) for r in records if r.input_variant is main_only}):
         runs = {v: [r for r in records if section_key(r) == (approach_id, direction, v)] for v in (full, main_only)}
@@ -126,7 +126,7 @@ def block_incentive_lines(records: list[RunRecord]) -> list[str]:
         if not recorded_in_both:
             lines += ["沒有兩個輸入版本都有紀錄的文章。", ""]
             continue
-        usable = {v: [r for r in rs if r.outcome is not Outcome.ERROR] for v, rs in runs.items()}
+        usable = {v: [r for r in rs if r.outcome not in REDO_OUTCOMES] for v, rs in runs.items()}
         common = recorded_in_both & {r.article_id for r in usable[full]} & {r.article_id for r in usable[main_only]}
         compared = {v: [r for r in rs if r.article_id in common] for v, rs in usable.items()}
         different = []
@@ -139,7 +139,7 @@ def block_incentive_lines(records: list[RunRecord]) -> list[str]:
                   f"- main-only：{block_rates(compared[main_only])}",
                   f"- 結果不同的文章：{'、'.join(different) or '無'}"]
         if recorded_in_both - common:
-            lines.append(f"- 因某個輸入版本只有 error 的 Run 而未比較：{len(recorded_in_both - common)} 篇（先用 --redo-errors 重做）")
+            lines.append(f"- 因某個輸入版本只有 error 或 empty 的 Run 而未比較：{len(recorded_in_both - common)} 篇（先用 --redo-errors 重做）")
         lines.append("")
     return lines
 
@@ -163,13 +163,18 @@ def approach_lines(planned: PlannedApproach, records: list[RunRecord], *, summar
         f"### {approach.id}", "",
         f"- 模型家族：{approach.family}；provider：{approach.provider}；模型：{approach.model}",
         f"- 請求模式：{approach.request_mode}" + (f"（輸入上限 {approach.max_input_chars} 字，超過就按 Component 切塊）" if approach.max_input_chars else "") + f"；temperature：{temperature}；max_output_tokens：{max_tokens}；timeout：{approach.timeout_seconds} 秒；併發：{approach.concurrency}"
-        + ("；reasoning：關閉" if approach.reasoning_off else ""),
+        + ("；reasoning：關閉" if approach.reasoning_off else "")
+        + ("；單一 user 訊息（不送 system prompt）" if approach.single_user_message else ""),
         f"- 重試：最多 {approach.retry.max_attempts} 次嘗試，退避起點 {approach.retry.base_delay_seconds} 秒",
         f"- 每篇每個 Direction 每個輸入版本的 Run 次數：{planned.runs}（輸入版本：{'、'.join(planned.input_variants)}）",
         f"- 設定 hash：{hash_text}",
         f"- 實際回應的模型版本：{_counts((r.model_version for r in records), summary=summary) or '無'}",
     ] + ([f"- 實際服務的 provider：{_counts((r.served_provider for r in records), none_label='回應沒有寫', summary=summary) or '無'}"]
          if approach.provider == "openrouter" else []) + [""]
+
+
+def _outcome_counts(outcomes) -> str:
+    return "、".join(f"{o.value} {n}" for o, n in sorted(Counter(outcomes).items(), key=lambda item: item[0].value))
 
 
 def section_lines(approach_id: str, direction: str, variant: InputVariant, planned: int | None,
@@ -189,13 +194,17 @@ def section_lines(approach_id: str, direction: str, variant: InputVariant, plann
     warning_counts = Counter(w.kind for r in rows for w in r.warnings)
     findings = "、".join(f"{d.value} {finding_counts[d]}" for d in Dimension)
     warnings = "、".join(f"{WARNING_LABELS[k]} {warning_counts[k]}" for k in WarningKind)
-    others = "、".join(f"{o.value} {ratio(by_outcome[o], n)}" for o in (Outcome.MALFORMED, Outcome.TRUNCATED, Outcome.ERROR))
+    others = "、".join(f"{o.value} {ratio(by_outcome[o], n)}" for o in (Outcome.MALFORMED, Outcome.TRUNCATED, Outcome.EMPTY, Outcome.ERROR))
+    redone = [r for r in records if r.redone_from is not None]
+    redo_line = [f"- 重做過的 Run：{len(redone)} 個；重做之前的結果：{_outcome_counts(r.redone_from for r in redone)}；"
+                 f"重做之後：{_outcome_counts(r.outcome for r in redone)}"] if redone else []
     return [
         f"## {approach_id} × {direction}" + ("" if variant is InputVariant.FULL else f"（{variant}）"), "",
         f"- Run：{recorded}",
         f"- Block 率：{block_rates(records)}；原因分佈：{reason_text}",
         f"- Refusal 率：{ratio(by_outcome[Outcome.REFUSAL], n)}",
         f"- 其他失敗：{others}",
+        *redo_line,
         f"- 漏段數：{omissions}（已檢查 {checked_runs} 個 ok 的 Run、共 {n_components} 個 Component）",
         f"- Deterministic Finding：{findings}（已檢查 {checked_runs} 個 ok 的 Run、共 {n_components} 個 Component）",
         f"- 警示：{warnings}",

@@ -31,6 +31,11 @@ def ok(text: str, provider: str | None = "DeepInfra") -> Response:
     return _response(200, _completion({"content": text}, "stop", provider))
 
 
+def with_content(content, provider: str | None = "DeepInfra") -> Response:
+    """正常結束（stop），但 content 不是文字：例如 null（Tencent 的 Hy-MT2 對部分輸入會這樣）。"""
+    return _response(200, _completion({"content": content}, "stop", provider))
+
+
 def finished(text: str, finish_reason, provider: str | None = "DeepInfra") -> Response:
     return _response(200, _completion({"content": text}, finish_reason, provider))
 

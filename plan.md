@@ -33,7 +33,8 @@ Last updated: 2026-10-16
 | C | Self-host dealigned model，40B 以下 MoE | Self-host | 例如 Qwen3.6-35B-A3B、Gemma4-26B-A4B 的 abliterated 版本 |
 | D | Self-host，20B 以下 | Self-host | 例如 Hy-MT2-7B、TranslateGemma-12B（有 dealigned 版本就用） |
 | E | OpenCC `hk2s` | 非 AI，只做繁→簡 | 對照現時的逐字式做法（待確認現時 service 是否 OpenCC） |
-| F（可選） | Hy-MT2-30B-A3B 經 OpenRouter | API | 很便宜（約 US$2 / 1,000 篇），可以順便對照翻譯專用模型 |
+| F（可選） | Hy-MT2-30B-A3B 經 OpenRouter | API | 很便宜（約 US$2 / 1,000 篇），可以順便對照翻譯專用模型。2026-11-11 實測：Tencent 對約 2–3 成的請求回空內容（見 ticket 06），Run 大多拿不到完整譯文 |
+| F7（可選） | Hy-MT2-7B 經 OpenRouter（`tencent/hy-mt2-7b`） | API | 同系列的 7B：同樣的 Tencent、同樣的請求，pilot 沒有空內容，所以加進第一批當 Hy-MT2 的資料點（Pan 於 2026-11-11 同意試；總數 5 個模型以內）。1.8B 試過，繁→簡幾乎沒轉成簡體，不用 |
 | G（可選） | Qwen3.6-35B-A3B 經 OpenRouter（`qwen/qwen3.6-35b-a3b`） | API | 阿里雲暫時沒有 key，先用它看 Qwen 模型本身的行為；不經阿里雲平台的內容審查，與方案 B 分開報告（Pan 於 2026-11-09 授權自選額外模型；總數 5 個模型以內） |
 
 C、D 在 Phase 1–2 只測質素，可以先在本機（llama.cpp / MLX，RAM 夠的話）或短時間開的 EC2 跑。到 Phase 3 才正式在 EC2 上測效能。

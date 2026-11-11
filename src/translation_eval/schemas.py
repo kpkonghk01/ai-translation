@@ -46,7 +46,12 @@ class Outcome(StrEnum):
     REFUSAL = "refusal"
     MALFORMED = "malformed"
     TRUNCATED = "truncated"
+    EMPTY = "empty"   # 正常結束，但沒有任何輸出（content 是 null、空字串或只有空白）：這次請求沒有拿到東西
     ERROR = "error"
+
+
+# 沒有結果、重做可能就有結果的類別：--redo-errors 重做這些；block、refusal、malformed、truncated 是結果，不重做
+REDO_OUTCOMES = frozenset({Outcome.ERROR, Outcome.EMPTY})
 
 
 class Dimension(StrEnum):
@@ -170,6 +175,7 @@ class ApproachConfig(StrictModel):
     data_inspection: HeaderValue | None = None   # 只有 dashscope 用：X-DashScope-DataInspection 的值；不設就不送這個 header
     routing: OpenRouterRouting | None = None   # 只有 openrouter 用
     reasoning_off: bool = False   # 只有 openrouter 用：請求帶 reasoning.effort = none，關閉模型的思考；不設就不送這個欄位，用模型的預設
+    single_user_message: bool = False   # 只有 openrouter 用：不送 system 訊息，prompt 與要翻譯的文字合成一個 user 訊息（有些翻譯專用模型沒有 system prompt）
     request_mode: RequestMode = RequestMode.ARTICLE_JSON
     max_input_chars: int | None = Field(default=None, ge=1)   # 只用於 article-json：超過就按 Component 順序切塊，每塊一個請求
     temperature: float | None = Field(default=None, ge=0, le=2)   # None：不送，用 API 預設
@@ -197,6 +203,8 @@ class ApproachConfig(StrictModel):
             raise ValueError("routing 只有 openrouter 用")
         if self.provider != "openrouter" and self.reasoning_off:
             raise ValueError("reasoning_off 只有 openrouter 用")
+        if self.provider != "openrouter" and self.single_user_message:
+            raise ValueError("single_user_message 只有 openrouter 用")
         if self.provider == "openrouter":
             if self.model.count("/") != 1:
                 raise ValueError("openrouter 的 model 要寫成「作者/名稱」")
@@ -478,6 +486,7 @@ class RunRecord(RunKey):
     prompt_hash: str | None = None
     served_provider: str | None = None   # OpenRouter：回應寫的、實際服務這個請求的 provider（有好幾個就都列出）
     worst_unit: str | None = None   # 一個 Run 有好幾個請求，而且結果不是 ok：結果最差的是哪一個
+    redone_from: Outcome | None = None   # 這個 Run 是重做的：被它取代的那筆紀錄的結果（error 或 empty）；沒重做過就是 None
     term_list_hash: str | None = None   # 模型看到的 Term List（原文詞與譯法）的 hash；沒有設 Term List 時為 None
     config_hash: str | None = None
     baseline_label: str | None = None   # baseline 的 Run：來源的 meta.baseline 標籤（服務與 opencc 的版本）

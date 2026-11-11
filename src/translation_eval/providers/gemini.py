@@ -7,7 +7,7 @@
 import json
 import re
 
-from ..outcome import Interpretation, UnrecognisedResponse, classify_text, lenient, token_count
+from ..outcome import Interpretation, UnrecognisedResponse, classify_text, empty_output, lenient, token_count
 from ..schemas import ApproachConfig, Outcome, RequestMode
 from ..transport import Request, Response
 
@@ -115,7 +115,10 @@ class GeminiAdapter:
             return Interpretation(Outcome.TRUNCATED, "MAX_TOKENS", **meta)
         if finish != "STOP":
             return Interpretation(Outcome.ERROR, f"finishReason {str(finish)[:40]}", **meta)
-        outcome, reason, payload = classify(_output_text(candidate))
+        text = _output_text(candidate)
+        if not text.strip():   # 正常結束卻沒有輸出
+            return empty_output(**meta)
+        outcome, reason, payload = classify(text)
         if outcome is Outcome.OK:
             meta = self._meta(body)
         return Interpretation(outcome, reason, payload, **meta)

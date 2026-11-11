@@ -3,7 +3,7 @@
 只處理 200 的 completion：choices、finish_reason、usage、message.refusal、content。HTTP 錯誤和各家自己的
 錯誤碼（內容審查等）由各 adapter 處理。不認識的格式一律是 error，絕不當作 ok。
 """
-from ..outcome import Interpretation, UnrecognisedResponse, classify_text, lenient, token_count
+from ..outcome import Interpretation, UnrecognisedResponse, classify_text, empty_output, lenient, token_count
 from ..schemas import Outcome
 
 
@@ -47,9 +47,13 @@ def interpret_completion(body, classify=classify_text) -> Interpretation:
         raise UnrecognisedResponse
     if refusal and refusal.strip():   # message.refusal：模型自己拒絕
         return Interpretation(Outcome.REFUSAL, "message.refusal 有內容", **meta)
-    content = message.get("content")
-    if not isinstance(content, str):
+    if "content" not in message:   # 欄位都沒有是格式不認識；有欄位但是 null，才是「沒有輸出」
         raise UnrecognisedResponse
+    content = message["content"]
+    if content is not None and not isinstance(content, str):
+        raise UnrecognisedResponse
+    if content is None or not content.strip():   # 正常結束卻沒有輸出（content 可以是 null）
+        return empty_output(**meta)
     outcome, reason, payload = classify(content)
     if outcome is Outcome.OK:
         meta = usage_meta(body)

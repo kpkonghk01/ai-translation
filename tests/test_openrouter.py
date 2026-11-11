@@ -103,6 +103,97 @@ class ReasoningSwitchTest(OpenRouterCase):
         self.assertNotIn("reasoning", self.output_text("report.md"))
 
 
+class SingleUserMessageTest(OpenRouterCase):
+    """Approach 設定的 single_user_message：不送 system 訊息，prompt 與要翻譯的文字合成一個 user 訊息
+    （有些翻譯專用模型的模型卡寫它沒有 system prompt）。內容不變，只是放的位置；沒設就照原樣。"""
+
+    def request_body(self, approach):
+        self.use_approach(approach)
+        _, transport, _, _ = self.translate(ok_response())
+        return json.loads(transport.requests[0].body)
+
+    def test_the_prompt_and_the_text_go_in_one_user_message(self):
+        system, user = self.request_body(APPROACH)["messages"]
+        [only] = self.request_body({**APPROACH, "single_user_message": True})["messages"]
+        self.assertEqual(only, {"role": "user", "content": system["content"] + "\n\n" + user["content"]})
+
+    def test_nothing_else_in_the_request_changes(self):
+        usual = self.request_body(APPROACH)
+        single = self.request_body({**APPROACH, "single_user_message": True})
+        self.assertEqual({k: v for k, v in single.items() if k != "messages"}, {k: v for k, v in usual.items() if k != "messages"})
+
+    def test_it_is_off_unless_asked(self):
+        self.assertEqual([m["role"] for m in self.request_body({**APPROACH, "single_user_message": False})["messages"]], ["system", "user"])
+
+    def test_the_hash_of_a_config_without_it_is_unchanged_and_the_report_marks_it_when_on(self):
+        UNCHANGED = "3d3344df13e4415c4d6f66f7d542cf8f7ad05b94a08b07a19fe67dbae29e0572"   # 與 ReasoningSwitchTest 同一份設定、新增欄位之前的 hash
+        hashes = {}
+        for name, approach in (("false", {**APPROACH, "single_user_message": False}), ("on", {**APPROACH, "single_user_message": True})):
+            self.use_approach(approach)
+            self.translate(ok_response())
+            [record] = self.read_runs()
+            hashes[name] = record["config_hash"]
+            self.assertEqual(self.run_cli("check")[0], 0)
+            self.assertEqual(self.run_cli("report")[0], 0)
+            self.assertEqual("單一 user 訊息" in self.output_text("report.md"), name == "on")
+        self.assertEqual(hashes["false"], UNCHANGED)
+        self.assertNotEqual(hashes["on"], UNCHANGED)
+
+
+class EmptyContentTest(OpenRouterCase):
+    """回應正常結束，但沒有任何輸出（content 是 null、空字串或只有空白）：結果是 empty，不是 error、不是 malformed。
+    它不是模型對內容的反應，而是這次請求沒有拿到東西，所以和 error 一樣，--redo-errors 會重做；
+    重做之後的紀錄記下上次是 error 還是 empty，報告也列出。"""
+    runs = 3
+
+    def run_translate(self, *scripted, args=()):
+        self.write_json(self.config_path, self.experiment())
+        transport = FakeTransport(*scripted)
+        code, _, err = self.run_cli("translate", *args, transport=transport)
+        self.assertEqual(code, 0, err)
+        return transport
+
+    def outcomes(self):
+        return {r["run_index"]: (r["outcome"], r.get("redone_from")) for r in self.read_runs()}
+
+    def test_redo_errors_redoes_empty_and_error_runs_and_each_new_record_says_what_it_replaced(self):
+        self.run_translate(samples.with_content(None), samples.error(400), ok_response())
+        self.assertEqual(self.outcomes(), {1: ("empty", None), 2: ("error", None), 3: ("ok", None)})
+        transport = self.run_translate(ok_response(), ok_response(), args=("--redo-errors",))
+        self.assertEqual(len(transport.requests), 2)   # 第三個 Run 是 ok，不重做
+        self.assertEqual(self.outcomes(), {1: ("ok", "empty"), 2: ("ok", "error"), 3: ("ok", None)})
+
+    def test_malformed_and_truncated_are_results_and_are_not_redone(self):
+        self.run_translate(samples.ok("Here is the translation."), samples.finished('{"title": "Fict', "length"), ok_response())
+        transport = self.run_translate(args=("--redo-errors",))
+        self.assertEqual(transport.requests, [])
+        self.assertEqual(self.outcomes(), {1: ("malformed", None), 2: ("truncated", None), 3: ("ok", None)})
+
+    def test_without_redo_errors_nothing_is_redone(self):
+        self.run_translate(samples.with_content(None), ok_response(), ok_response())
+        self.assertEqual(self.run_translate().requests, [])
+
+    def test_an_empty_response_is_not_retried_inside_the_run(self):
+        # 同一個請求再問一次多半一樣是空的；要不要重做由 --redo-errors 決定，不在 Run 裡自動重試
+        transport = self.run_translate(samples.with_content(None), ok_response(), ok_response())
+        self.assertEqual(len(transport.requests), 3)
+
+    def test_the_report_lists_what_was_redone_and_what_came_out(self):
+        self.run_translate(samples.with_content(None), samples.error(400), ok_response())
+        self.run_translate(samples.with_content(None), ok_response(), args=("--redo-errors",))
+        self.assertEqual(self.run_cli("check")[0], 0)
+        self.assertEqual(self.run_cli("report")[0], 0)
+        report = self.output_text("report.md")
+        self.assertIn("重做過的 Run：2 個；重做之前的結果：empty 1、error 1；重做之後：empty 1、ok 1", report)
+        self.assertIn("empty 1/3", report)   # 「其他失敗」那一行也有 empty
+
+    def test_the_report_has_no_redo_line_when_nothing_was_redone(self):
+        self.run_translate(samples.with_content(None), ok_response(), ok_response())
+        self.assertEqual(self.run_cli("check")[0], 0)
+        self.assertEqual(self.run_cli("report")[0], 0)
+        self.assertNotIn("重做過的 Run", self.output_text("report.md"))
+
+
 class RoutingRequiredTest(OpenRouterCase):
     def assert_refuses(self, approach):
         """真跑被拒絕：非 0 結束，沒有送出請求，沒有寫出任何檔案。（--dry-run 只顯示，不拒絕，另有測試）"""
@@ -155,6 +246,9 @@ class ConfigTest(OpenRouterCase):
             ("reasoning_off on another provider", {"id": "a", "family": "gemini", "provider": "gemini", "model": "gemini-3.1-flash-lite",
                                                    "api_key_env": "GEMINI_API_KEY", "reasoning_off": True}, "reasoning_off"),
             ("reasoning_off that is not a boolean", {**APPROACH, "reasoning_off": "yes please"}, "reasoning_off"),
+            ("single_user_message on another provider", {"id": "a", "family": "gemini", "provider": "gemini", "model": "gemini-3.1-flash-lite",
+                                                         "api_key_env": "GEMINI_API_KEY", "single_user_message": True}, "single_user_message"),
+            ("single_user_message that is not a boolean", {**APPROACH, "single_user_message": "maybe"}, "single_user_message"),
         ):
             with self.subTest(name):
                 self.use_approach(approach)
@@ -259,6 +353,10 @@ class ResultClassTest(OpenRouterCase):
             "finish reason error": (samples.choice_error(), "error", None),
             "error object with status 200": (samples.error_with_200(400), "error", "HTTP 400"),
             "refusal field": (samples.provider_refusal(), "refusal", None),
+            "content is null": (samples.with_content(None), "empty", "輸出是空的"),
+            "content is an empty string": (samples.ok(""), "empty", "輸出是空的"),
+            "content is only whitespace": (samples.ok("  \n "), "empty", "輸出是空的"),
+            "content is a number": (samples.with_content(5), "error", None),
             "refusal wording": (samples.ok("I'm sorry, but I can't help with translating this article."), "refusal", None),
             "prose that is not a refusal": (samples.ok("Here is the translation of the article."), "malformed", None),
             "json that is not an article": (samples.ok('{"answer": 42}'), "malformed", None),

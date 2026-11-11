@@ -261,12 +261,12 @@ class PerComponentTest(UnitCase):
         self.translate(self.echo)
         self.assertEqual(self.record()["prompt_id"], "translate-trad-to-en-component")
 
-    def test_output_is_stripped_and_an_empty_output_is_malformed_at_that_unit(self):
+    def test_output_is_stripped_and_an_empty_output_is_empty_at_that_unit(self):
         self.translate(lambda r: gemini_samples.ok("  EN:" + user_message(r) + "\n"))
         self.assertEqual(self.translation()["title"], "EN:虛構標題")
         self.translate(lambda r: gemini_samples.ok("   ") if user_message(r) == "市民反應" else self.echo(r))
         record = self.record()
-        self.assertEqual((record["outcome"], record["worst_unit"]), ("malformed", f"{ID}-002.text"))
+        self.assertEqual((record["outcome"], record["worst_unit"]), ("empty", f"{ID}-002.text"))
 
     def test_refusal_wording_in_a_translation_is_not_by_itself_a_refusal(self):
         # 譯文的引語裡本來就可能有「I can't」；這個模式只認 provider 明確給的訊號。疑似 Refusal 由 check 的警示攔住
@@ -348,6 +348,23 @@ class OpenRouterPerComponentTest(Workspace):
             self.assertEqual(body["provider"], {"zdr": True, "data_collection": "deny", "only": ["deepinfra", "novita"], "allow_fallbacks": False})
             self.assertNotIn("response_format", body)
         self.assertEqual(self.read_runs()[0]["served_provider"], "DeepInfra, Novita")
+
+    def test_an_empty_response_is_worse_than_an_error_and_the_rest_of_the_run_still_goes_out(self):
+        calls = []
+
+        def reply(request):
+            calls.append(1)
+            if len(calls) == 2:
+                return openrouter_samples.with_content(None)
+            if len(calls) == 3:
+                return openrouter_samples.error(400)
+            return openrouter_samples.ok("EN:x", "DeepInfra")
+        transport = FunctionTransport(reply)
+        code, _, err = self.run_cli("translate", transport=transport)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(transport.requests), 13)   # 空內容不重試，也不讓後面的請求不送
+        [record] = self.read_runs()
+        self.assertEqual((record["outcome"], record["worst_unit"], record["reason"]), ("empty", "tags[1]", "輸出是空的"))
 
     def test_an_unlisted_provider_wins_over_a_worse_result_and_stops_the_run_at_once(self):
         calls = []

@@ -103,7 +103,7 @@ uv run --locked python -I -m translation_eval check --config configs/experiments
 uv run --locked python -I -m translation_eval report --config configs/experiments/tracer-bullet.json
 ```
 
-- **第一批實驗**（`configs/experiments/first-batch.json`）：60 篇（general 30 篇，含 5 篇對照；china-political 30 篇）× 繁→英與繁→簡 × 方案 A（`gemini-3.5-flash-lite`，每篇 3 次，另加 `main-only` 版本）、F（Hy-MT2-30B-A3B，逐段翻譯）、G（Qwen3.6-35B-A3B，經 OpenRouter）；繁→簡另有 baseline E。這批沒有 Judge，只做翻譯、`check` 與 Block／Refusal 報告。F、G 要先用 `providers` 確認 provider 清單、寫進各自 Approach 設定的 `routing` 才能真跑。一個實驗只有一個文章目錄，而兩組文章原本在不同目錄，所以複製成同一個（這樣同一份報告才能比較 political 與 general 的淡化率差距）：
+- **第一批實驗**（`configs/experiments/first-batch.json`）：60 篇（general 30 篇，含 5 篇對照；china-political 30 篇）× 繁→英與繁→簡 × 方案 A（`gemini-3.5-flash-lite`，每篇 3 次，另加 `main-only` 版本）、F（Hy-MT2-30B-A3B，逐段翻譯；Tencent 對部分請求回空內容，Run 大多拿不到完整譯文，結果會是 `empty`）、F7（Hy-MT2-7B，同樣逐段翻譯）、G（Qwen3.6-35B-A3B，經 OpenRouter）；繁→簡另有 baseline E。這批沒有 Judge，只做翻譯、`check` 與 Block／Refusal 報告。F、F7、G 要先用 `providers` 確認 provider 清單、寫進各自 Approach 設定的 `routing` 才能真跑。一個實驗只有一個文章目錄，而兩組文章原本在不同目錄，所以複製成同一個（這樣同一份報告才能比較 political 與 general 的淡化率差距）：
 
   ```bash
   mkdir -p data/articles-first-batch data/baseline-first-batch
@@ -117,7 +117,7 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
   '
   ```
 
-- `translate` 可以中斷後重跑同一條指令：已有紀錄的 Run 會略過；`--redo-errors` 重做結果為 `error` 的 Run（`block`、`refusal`、`malformed`、`truncated` 是結果，不會重做）。`--article <id>`（可重覆）只跑指定文章，`--limit <N>` 最多執行 N 個 Run。
+- `translate` 可以中斷後重跑同一條指令：已有紀錄的 Run 會略過；`--redo-errors` 重做結果為 `error` 或 `empty`（空內容：provider 正常結束，但沒有任何輸出，見 GLOSSARY）的 Run（`block`、`refusal`、`malformed`、`truncated` 是結果，不會重做）。重做的 Run 取代舊紀錄，並在 `redone_from` 記下舊紀錄的結果（`error` 或 `empty`）；報告每個 Approach × Direction 一節有「重做過的 Run」一行，列出重做之前與之後的結果。空內容不在 Run 內自動重試。`--article <id>`（可重覆）只跑指定文章，`--limit <N>` 最多執行 N 個 Run。
 - `check` 與 `report` 每次都從 `runs.jsonl` 整份重算。`report` 發現有 `ok` 的 Run 還沒有 `check` 結果，或 `check` 之後規則、Term List、長度比例範圍改了，會停止，不產生報告；先重新執行 `check`。`check` 另寫 `components.jsonl`（每個 Component 的 Finding 與警示）和 `check-meta.json`（check 當時用的規則版本與輸入，report 靠它判斷結果有沒有過期）。規則版本由實作規則的原始碼的 hash 決定：程式的規則有任何改動，舊的 check 結果就視為過期，重跑 `check` 即可（只要幾秒，不呼叫 API）。所有 Run 都沒有譯文（例如全被 Block）時不需要 `check`。
 - **Judge（MQM）**：實驗設定的 `judging` 列出 Judge 設定檔（欄位與 Approach 設定相同，另加 `role`：`primary` 決定 Gate，`experiment` 只作實驗；`temperature` 固定 0，只用 `article-json`），並可以寫 `same_family_exceptions`、`mqm_run_limit`；頂層的 `weights` 是每個 Severity 的罰分（預設 minor 1、major 5、critical 25）：
 
@@ -225,6 +225,7 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
 
   允許清單是空的或沒有確認日期時，`translate` 會在送出任何請求之前就停止（`--dry-run` 只顯示「尚未確認」）。每個請求都帶 `provider.zdr: true`、`data_collection: "deny"`、`only`、`allow_fallbacks: false`；回應寫的 provider 不在 `only` 內（或沒有寫）時，這個 Run 記為 `error`，Run 紀錄的 `served_provider` 和報告都會列出實際服務的 provider。`providers` 指令不寫入任何東西；API 沒有提供各 provider 的地區和資料政策時，它會明說，要到 OpenRouter 的模型頁自己確認。
   Approach 設定可以寫 `"reasoning_off": true`（只有 openrouter 用）：請求多帶 `"reasoning": {"effort": "none"}`，這是 OpenRouter 文件寫的關閉思考的開關；不寫就不送，用模型的預設。模型或 provider 不支援這個參數時，OpenRouter 會當它不存在（Hy-MT2-30B-A3B 經 Tencent 就是這樣，2026-11-11 實測：開了與沒開，失敗的單元與 reasoning token 都一樣）。開了之後設定 hash 會變，報告的 Approach 設定那一行寫「reasoning：關閉」；沒開的設定 hash 不變。
+  `"single_user_message": true`（只有 openrouter 用）：不送 system 訊息，prompt 與要翻譯的文字合成一個 user 訊息（中間空一行），其他欄位都不變；不寫就照原樣送 system 與 user 兩個訊息。實測（2026-11-11，同樣兩篇文章）：Hy-MT2-30B-A3B 改用它沒有變好，反而全部變成空內容；7B 與 1.8B 用不用都沒有空內容。報告的 Approach 設定那一行寫「單一 user 訊息」。
 - **請求模式與切塊**：Approach 設定的 `request_mode` 預設是 `article-json`（整篇 JSON 進、同結構 JSON 出）。`max_input_chars` 設了之後（只用於 `article-json`），文章按 Component 順序切成每塊不超過上限的連續幾塊，每塊一個請求；title 和 tags 只在第一塊。`request_mode: "per-component"` 給不擅長處理 JSON 的翻譯專用模型：每個要翻譯的字串一個請求，送純文字、收純文字，再組回同結構的譯文。兩種模式的 Run 紀錄格式相同：一個 Run 一筆紀錄，結果取最差的請求（block > refusal > malformed > truncated > error > ok），`worst_unit` 記下是哪一個，遇到 block 就不再送後面的請求；tokens 和 latency 是各請求的總和，每次嘗試都標明屬於哪個請求，原始回應存成 `raw/` 底下的 `.jsonl`（每行一個請求）。逐 Component 模式不用拒絕語的字樣判 Refusal（譯文的引語裡本來就可能有「I can't」），只認 provider 明確給的訊號；模型直接拿拒絕語當譯文時，Run 仍是 `ok`，但 `check` 會在那個 Component 列疑似 Refusal 的警示，不會算進 Refusal 率。資料被送到不在允許清單內的 provider 時，這個 Run 立刻停止、記為 `error`，優先於其他結果。
 - **繁→簡與方案 E**：實驗設定的 `directions` 可以寫 `trad-to-simplified`，LLM Approach 就會跑繁→簡（prompt 是 `translate-trad-to-simplified`）。方案 E（Current service）不經 API：實驗設定寫 `"baselines": [{"id": "e", "dir": "data/baseline-service", "direction": "trad-to-simplified"}]`，然後執行
 

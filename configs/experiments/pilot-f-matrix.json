@@ -1,0 +1,37 @@
+{
+  "id": "pilot-f-matrix",
+  "articles": {
+    "dir": "data/articles-first-batch",
+    "ids": [
+      "60398632",
+      "60300726"
+    ]
+  },
+  "directions": [
+    "trad-to-en",
+    "trad-to-simplified"
+  ],
+  "approaches": [
+    {
+      "config": "configs/approaches/f-try-f30u.json",
+      "runs": 1
+    },
+    {
+      "config": "configs/approaches/f-try-f7s.json",
+      "runs": 1
+    },
+    {
+      "config": "configs/approaches/f-try-f7u.json",
+      "runs": 1
+    },
+    {
+      "config": "configs/approaches/f-try-f18s.json",
+      "runs": 1
+    },
+    {
+      "config": "configs/approaches/f-try-f18u.json",
+      "runs": 1
+    }
+  ],
+  "term_list": "data/term-list.json"
+}

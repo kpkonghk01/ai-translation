@@ -53,3 +53,11 @@
 - **Pan 決定關閉思考再試**：加了 Approach 設定 `reasoning_off`（只有 openrouter 用，請求帶 `reasoning.effort = none`，OpenRouter 文件寫的開關；沒設就不送，沒設的設定 hash 不變，有測試）。用同樣兩篇文章真跑（`configs/experiments/pilot-f-nothink.json`）：**失敗的是同樣的 11 個單元，reasoning token 也沒變**。OpenRouter 對這個 endpoint 列的參數裡沒有 `reasoning`，模型卡也沒有思考開關，所以是 Tencent 忽略了這個參數。`f-hy-mt2-nothink.json` 沒有採用，只留作這次實測的紀錄。
 - **還沒試的、而且會改變 F 的請求，所以要 Pan 決定**：(1) 模型卡建議的請求形式是單一 user 訊息、沒有 system prompt（模型卡寫「沒有預設的 system prompt」），我們一律送 system prompt；(2) 模型卡建議 temperature 0.7、top_p 1，我們沒送；(3) 換成同系列的 7B 或 1.8B（OpenRouter 上也有）；(4) 讓空內容的單元不使整個 Run 失敗（要定義它算什麼）；(5) 不測 F。1、2 要在框架加功能才能試：我不能用 key 直接送臨時請求，真跑只能經 `tools/run-real.sh` 呼叫框架。
 
+### 2026-11-11 Pan 決定：試單一 user 訊息、試 7B／1.8B、空內容獨立分類
+
+- **空內容獨立分類**：新的結果類別 `empty`（GLOSSARY「Empty」）：正常結束但沒有輸出（content 是 null、空字串或只有空白；Gemini 與 OpenRouter／DashScope 都一樣）。以前 Gemini 的空輸出記成 malformed、OpenRouter 的 `content: null` 記成「回應格式不認識」的 error，現在統一。`--redo-errors` 重做 error 與 empty（translate、judge、calibrate、crosscheck 都一樣），malformed、truncated 仍是結果、不重做；空內容不在 Run 內自動重試（同一個請求多半一樣是空的）。重做的 Run 記下 `redone_from`（上次是 error 還是 empty），報告「重做過的 Run」一行列出重做前後的結果；Judge、校準、交叉檢驗的重做還沒記 `redone_from`。Gate 對 empty 的 Run 與 error 一樣標「未完成」。`content` 這個欄位不存在仍是 error（格式不認識），只有欄位在、值是 null 才是 empty。「Run 的結果取最差的請求」排序：block > refusal > malformed > truncated > empty > error > ok。
+- **`single_user_message`**（只有 openrouter 用）：不送 system 訊息，prompt 與要翻譯的文字合成一個 user 訊息。
+- **pilot 結果**（同樣兩篇文章，兩個方向；`configs/experiments/pilot-f-matrix.json`，各組設定在 `configs/approaches/f-try-*.json`，只留作這次實測的紀錄）：30B 改單一 user 訊息，70 個單元有 21 個空內容（30%），4 個 Run 全失敗（連原本成功的繁→英也失敗，所以這個做法沒有變好）；7B（system／單一 user）0/70；1.8B（兩種）0/70，但 1.8B 的繁→簡幾乎沒轉成簡體（兩篇文章 23 個 Component 有 183／218 個殘留繁體字 Finding），不能用。7B 用與其他模型一樣的 system prompt 就沒問題。
+- **第一批加了 F7（Hy-MT2-7B，`configs/approaches/f7-hy-mt2-7b.json`）**，30B（F）仍留在實驗內：它的空內容本身是結果。7B 的允許清單與 30B 一樣是 `tencent/fp8`（`providers` 看到兩個模型都只有 Tencent 一家），確認日期 2026-11-11。整批在 pilot 之後停過一次，以新程式續跑（已有的 127 個 Run 不變）；整批裡舊的 F 紀錄是 error（那時還沒有 empty 這一類），跑完後用 `--redo-errors` 重做一次，標籤會改成 empty。
+- 沒做的：7B 的長期表現只看過 pilot 的 70 個單元；整批跑完才知道空內容率。
+

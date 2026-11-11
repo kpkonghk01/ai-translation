@@ -55,10 +55,14 @@ class Experiment:
         return next((p.config for p in self.approaches if p.id == approach_id), None)
 
 
+LATER_SWITCHES = ("reasoning_off", "single_user_message")
+
+
 def config_hash(approach: ApproachConfig) -> str:
     settings = approach.model_dump(mode="json")
-    if not settings["reasoning_off"]:   # 後來才加的欄位：沒開時不進 hash，已有 Run 的 hash 才不會變（否則報告會把它們都標成「與目前設定不同」）
-        del settings["reasoning_off"]
+    for later_switch in LATER_SWITCHES:   # 後來才加的開關：沒開時不進 hash，已有 Run 的 hash 才不會變（否則報告會把它們都標成「與目前設定不同」）
+        if not settings[later_switch]:
+            del settings[later_switch]
     canonical = json.dumps(settings, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 

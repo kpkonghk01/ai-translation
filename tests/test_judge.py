@@ -286,6 +286,14 @@ class ResumeTest(JudgeCase):
         self.assertEqual(sorted(c["outcome"] for c in self.calls_of("9000001-001")), ["block", "ok"])
         self.assertEqual(len(self.calls()), 10)
 
+    def test_redo_errors_also_redoes_an_empty_call(self):
+        self.judge(judge_transport({("9000001-001", 1): gemini_samples.candidate_with({"role": "model"}), ("9000001-001", 2): gemini_samples.prompt_blocked()}))
+        self.assertEqual(sorted(c["outcome"] for c in self.calls_of("9000001-001")), ["block", "empty"])
+        transport = judge_transport()
+        self.judge(transport, "--redo-errors")
+        self.assertEqual(len(transport.requests), 1)
+        self.assertEqual(sorted(c["outcome"] for c in self.calls_of("9000001-001")), ["block", "ok"])
+
     def test_article_and_limit_options_narrow_the_requests(self):
         transport = judge_transport()
         self.judge(transport, "--limit", "3")

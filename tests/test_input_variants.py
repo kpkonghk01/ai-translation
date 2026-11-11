@@ -210,7 +210,7 @@ class BlockIncentiveReportTest(Workspace):
         self.run_cli("translate", transport=FakeTransport(gemini_samples.prompt_blocked(), gemini_samples.unknown_format()))
         section = self.report_text().split("## Block 誘因實驗")[1].split("\n## ")[0]
         self.assertIn("比較的文章：0 篇", section)
-        self.assertIn("因某個輸入版本只有 error 的 Run 而未比較：1 篇", section)
+        self.assertIn("因某個輸入版本只有 error 或 empty 的 Run 而未比較：1 篇", section)
         self.assertIn("結果不同的文章：無", section)
 
     def test_there_is_no_incentive_section_when_no_main_only_run_exists(self):

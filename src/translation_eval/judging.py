@@ -32,7 +32,7 @@ from .outcome import Interpretation, classify_text
 from .pairs import ComponentPair, component_pairs
 from .prompts import PromptTemplate, fact_template, judge_template, screen_template
 from .providers import adapter_for
-from .schemas import (CALLS_PER_TASK, WHOLE_RUN, Dimension, Direction, FactVerdict, InvalidItem, InvalidKind, JudgeCall, JudgeFinding, Outcome, RunKey, RunRecord,
+from .schemas import (CALLS_PER_TASK, REDO_OUTCOMES, WHOLE_RUN, Dimension, Direction, FactVerdict, InvalidItem, InvalidKind, JudgeCall, JudgeFinding, Outcome, RunKey, RunRecord,
                       ScreenItem, ScreenVerdict, SourceDefect, Task, Verdict, WeakeningType, type_contradicts)
 from .store import OutputDir, judge_call_id, judge_call_key
 from .terms import LoadedTermList, entries_in
@@ -439,11 +439,11 @@ MESSAGE_BUILDERS = {Task.MQM: user_message, Task.FACT: fact_message, Task.SCREEN
 
 def select_pending(plan: list, existing: dict, *, redo_errors: bool, limit: int | None, is_stale) -> tuple[list, int]:
     """plan 裡還沒有新紀錄的請求，和已有新紀錄而略過的數量（正式評核、校準、交叉檢驗共用）。plan 的每一項有 key；existing 是 key → 紀錄。
-    error 的請求只在 redo_errors 時重做；is_stale(紀錄, 請求) 為真（輸入、prompt 或設定改了）的重送；limit 只限制要送的數量。"""
+    error 或 empty 的請求只在 redo_errors 時重做；is_stale(紀錄, 請求) 為真（輸入、prompt 或設定改了）的重送；limit 只限制要送的數量。"""
     pending, skipped = [], 0
     for call in plan:
         done = existing.get(call.key)
-        if done is None or (redo_errors and done.outcome is Outcome.ERROR) or is_stale(done, call):
+        if done is None or (redo_errors and done.outcome in REDO_OUTCOMES) or is_stale(done, call):
             pending.append(call)
         else:
             skipped += 1

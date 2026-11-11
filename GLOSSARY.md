@@ -60,7 +60,7 @@ _Avoid_: 基線
 _Avoid_: trial；attempt（見 Attempt，那是 Run 之內的一次送出）
 
 **Attempt**:
-一個 Run 內同一個請求的一次送出；請求遇到暫時性失敗時會再送，所以一個 Run 可以有多個 Attempt。Block 和 Refusal 是 Run 的結果，不會再送；要重複量度，就增加 Run 次數。
+一個 Run 內同一個請求的一次送出；請求遇到暫時性失敗時會再送，所以一個 Run 可以有多個 Attempt。Block 和 Refusal 是 Run 的結果，不會再送；Empty（空內容）也不在 Run 內自動重送，由 `--redo-errors` 決定；要重複量度，就增加 Run 次數。
 _Avoid_: 用來指整個 Run
 
 **Input variant**:
@@ -75,6 +75,10 @@ _Avoid_: 拒絕（見 Refusal）, filter hit
 **Refusal**:
 模型正常回應，但內容是「無法翻譯」之類而不是譯文。
 _Avoid_: block, 拒譯
+
+**Empty**:
+Provider 正常結束（沒有報錯、沒有被擋），但回應沒有任何輸出（內容是 null、空字串或只有空白）。這次請求沒有拿到東西，不是模型對內容的反應，所以不算 Block 或 Refusal，也不算 malformed（輸出有，但格式不對）。和 error 一樣沒有結果、重做可能就有，`--redo-errors` 會重做；重做的 Run 記下上次是 error 還是 empty。中文寫作「空內容」。
+_Avoid_: 空回應, malformed
 
 ### Evaluation
 
@@ -172,7 +176,7 @@ _Avoid_: threshold, KPI
 _Avoid_: 原文錯誤（泛指時可用）
 
 **Unjudged**:
-Judge 的兩次請求都沒有結果（被 block、拒絕、輸出壞掉或出錯）而未能評核的 Component 或事實；原因（block、refusal、malformed、error）列出。既不是通過，也不是「沒有 Finding」，交人手處理。
+Judge 的兩次請求都沒有結果（被 block、拒絕、輸出壞掉或出錯）而未能評核的 Component 或事實；原因（block、refusal、malformed、empty、error）列出。既不是通過，也不是「沒有 Finding」，交人手處理。
 
 **Gold set**:
 已知答案的 Component 集合，用來量度 Judge 的準確度：含人手標註真實譯文的 Finding、人手寫的 Softening 變體，以及無錯樣本。

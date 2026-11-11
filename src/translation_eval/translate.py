@@ -5,7 +5,7 @@
       [--dry-run] [--article <id>]... [--limit <N>] [--redo-errors]
 
 Run 的 key 是「文章 × Approach × Direction × 輸入版本 × Run 序號」。已經有紀錄的 Run 會略過，所以中斷後
-重跑同一條指令即可續跑；error 的 Run 要加 --redo-errors 才會重做。
+重跑同一條指令即可續跑；error 或 empty 的 Run 要加 --redo-errors 才會重做。
 
 一個 Run 可能要送出好幾個請求（切塊、逐 Component，見 units.py）：結果取最差的一個（block > refusal > malformed >
 truncated > error > ok），並記下是哪一個；遇到 block 就不再送後面的請求，因為結果已經是最差的了。
@@ -25,14 +25,14 @@ from .exchange import Exchange, send_with_retries
 from .outcome import Interpretation, classify_plain_text, classify_text, refusal_or_malformed
 from .prompts import PromptTemplate, translation_template
 from .providers import adapter_for
-from .schemas import Article, Direction, Outcome, RequestMode, RunKey, RunRecord, Translation
+from .schemas import Article, Direction, Outcome, REDO_OUTCOMES, RequestMode, RunKey, RunRecord, Translation
 from .store import OutputDir
 from .terms import LoadedTermList, entries_in
 from .transport import Transport
 from .units import Unit, merge_chunks, merge_components, plan_units
 
 # 結果由差到不差：一個 Run 的結果取最差的請求
-SEVERITY = {Outcome.BLOCK: 5, Outcome.REFUSAL: 4, Outcome.MALFORMED: 3, Outcome.TRUNCATED: 2, Outcome.ERROR: 1, Outcome.OK: 0}
+SEVERITY = {Outcome.BLOCK: 6, Outcome.REFUSAL: 5, Outcome.MALFORMED: 4, Outcome.TRUNCATED: 3, Outcome.EMPTY: 2, Outcome.ERROR: 1, Outcome.OK: 0}
 
 def plan(experiment, article_ids):
     """要執行的 Run。文章放在最外層：用 --limit 試跑時，會先把第一篇的所有 Run 跑完，而不是每篇各跑一個。"""
@@ -69,7 +69,7 @@ def handle(args, transport: Transport) -> int:
     pending, skipped = [], 0
     for key, planned in plan(experiment, article_ids):
         record = done.get(key)
-        if record is None or (args.redo_errors and record.outcome is Outcome.ERROR):
+        if record is None or (args.redo_errors and record.outcome in REDO_OUTCOMES):
             pending.append((key, planned))
         else:
             skipped += 1
@@ -97,7 +97,7 @@ def handle(args, transport: Transport) -> int:
     outcomes = Counter()
     for key, planned in pending:
         record, violation = translate_one(transport, key, planned, articles[key.article_id], out, experiment.term_list,
-                                          replaces_existing=key in done)
+                                          redone_from=done[key].outcome if key in done else None)
         outcomes[record.outcome] += 1
         print(f"{key.label}: {record.outcome}")
         if violation:   # 資料已經送到不在允許清單內的 provider：不能再送下一個 Run
@@ -167,8 +167,9 @@ def assemble_translation(sent: Article, units: list[Unit], payloads: list, json_
 
 
 def translate_one(transport: Transport, key: RunKey, planned: PlannedApproach, article: Article, out: OutputDir,
-                  term_list: LoadedTermList, *, replaces_existing: bool) -> tuple[RunRecord, bool]:
-    """翻譯一個 Run 並記錄。第二個回傳值是：有沒有請求的回應來自不在允許清單內的 provider。"""
+                  term_list: LoadedTermList, *, redone_from: Outcome | None) -> tuple[RunRecord, bool]:
+    """翻譯一個 Run 並記錄。redone_from：這個 Run 重做的是哪一種結果的舊紀錄（沒有舊紀錄就是 None）。
+    第二個回傳值是：有沒有請求的回應來自不在允許清單內的 provider。"""
     approach = planned.config
     adapter = adapter_for(approach)
     json_mode = approach.request_mode is RequestMode.ARTICLE_JSON
@@ -206,6 +207,7 @@ def translate_one(transport: Transport, key: RunKey, planned: PlannedApproach, a
         model_version=next((r.model_version for _, _, r in results if r.model_version), None),
         served_provider=", ".join(served) or None,
         worst_unit=worst_unit.label if several and worst.outcome is not Outcome.OK else None,
+        redone_from=redone_from,
         prompt_id=template.id,
         prompt_hash=template.hash,
         term_list_hash=term_list.prompt_hash,
@@ -213,6 +215,6 @@ def translate_one(transport: Transport, key: RunKey, planned: PlannedApproach, a
         created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
     )
     raw = _raw_lines([(unit, ex) for unit, ex, _ in results]) if several else results[0][1].raw_body
-    written = out.write_run(record, raw, translation, secrets=(api_key,), replaces_existing=replaces_existing,
+    written = out.write_run(record, raw, translation, secrets=(api_key,), replaces_existing=redone_from is not None,
                             raw_extension="jsonl" if several else "body")
     return written, any(r.provider_violation for _, _, r in results)
