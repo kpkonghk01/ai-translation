@@ -77,7 +77,7 @@ _Avoid_: 拒絕（見 Refusal）, filter hit
 _Avoid_: block, 拒譯
 
 **Empty**:
-Provider 正常結束（沒有報錯、沒有被擋），但回應沒有任何輸出（內容是 null、空字串或只有空白）。這次請求沒有拿到東西，不是模型對內容的反應，所以不算 Block 或 Refusal，也不算 malformed（輸出有，但格式不對）。和 error 一樣沒有結果、重做可能就有，`--redo-errors` 會重做；重做的 Run 記下上次是 error 還是 empty。中文寫作「空內容」。
+Provider 正常結束（沒有報錯、沒有被擋），但回應沒有任何輸出（內容是 null、空字串或只有空白）。這次請求沒有拿到東西，不是模型對內容的反應，所以不算 Block 或 Refusal，也不算 malformed（輸出有，但格式不對）。和 error 一樣沒有結果、重做可能就有，`--redo-errors` 會重做；重做的 Run 或請求（翻譯、Judge、校準、交叉檢驗）記下上次是 error 還是 empty。中文寫作「空內容」。
 _Avoid_: 空回應, malformed
 
 ### Evaluation

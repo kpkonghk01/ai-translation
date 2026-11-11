@@ -227,7 +227,7 @@ class OutputDir:
                   secrets: tuple[str, ...] = (), replaces_existing: bool = False, raw_extension: str = "body") -> RunRecord:
         """先寫譯文和原始回應，最後才寫 Run 紀錄：有紀錄的 Run 一定有它的檔案。
 
-        replaces_existing 用於重做 error 的 Run：舊紀錄到新紀錄寫出的這一刻才被換掉。
+        replaces_existing 用於重做 error 或 empty 的 Run：舊紀錄到新紀錄寫出的這一刻才被換掉。
         所以中途停止（例如 transport 拒絕送出）時，還沒重做的舊紀錄不會不見。"""
         stem = run_stem(record)
         updates = {}

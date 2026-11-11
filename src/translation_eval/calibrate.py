@@ -20,7 +20,7 @@ from .config import Experiment, PlannedJudge
 from .errors import InputError, provider_violation_stop
 from .gold import GoldSet, count_lines, item_hash, item_pair, item_sentences, load_gold_for
 from .ground_truth import GroundTruth, Sentence, input_hash
-from .judging import (fact_request_message, interpret_facts, interpret_output, mqm_message, print_endpoint, require_judges_ready,
+from .judging import (fact_request_message, interpret_facts, interpret_output, mqm_message, print_endpoint, redone_from, require_judges_ready,
                       select_pending, send_judge_request, task_templates)
 from .pairs import ComponentPair
 from .prompts import PromptTemplate
@@ -70,8 +70,8 @@ def gold_message(call: PlannedGoldCall, term_list: LoadedTermList) -> str:
 
 
 def run_gold_call(transport: Transport, call: PlannedGoldCall, template: PromptTemplate, term_list: LoadedTermList, out: OutputDir, *,
-                  replaces_existing: bool) -> tuple[GoldCall, bool]:
-    """送出一個請求並記錄。第二個回傳值是：回應是不是來自不在允許清單內的 provider。"""
+                  replaced: GoldCall | None) -> tuple[GoldCall, bool]:
+    """送出一個請求並記錄。replaced：被它取代的舊紀錄（沒有就是 None）。第二個回傳值是：回應是不是來自不在允許清單內的 provider。"""
     exchange, api_key = send_judge_request(transport, call.judge, template, gold_message(call, term_list))
     judge = call.judge.config
     result, pair = exchange.interpretation, item_pair(call.item)
@@ -85,8 +85,8 @@ def run_gold_call(transport: Transport, call: PlannedGoldCall, template: PromptT
         input_tokens=result.input_tokens, output_tokens=result.output_tokens, thought_tokens=result.thought_tokens,
         model_version=result.model_version, served_provider=result.served_provider, prompt_hash=template.hash, config_hash=call.judge.config_hash,
         item_hash=call.item_hash, input_hash=call.input_hash, findings=findings, source_defects=defects, verdicts=verdicts, invalid=invalid,
-        created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
-    return out.write_gold_call(record, exchange.raw_body, secrets=(api_key,), replaces_existing=replaces_existing), result.provider_violation
+        redone_from=redone_from(replaced), created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    return out.write_gold_call(record, exchange.raw_body, secrets=(api_key,), replaces_existing=replaced is not None), result.provider_violation
 
 
 def select_judge(experiment: Experiment, judge_id: str) -> PlannedJudge:
@@ -110,7 +110,7 @@ def handle(args, transport: Transport) -> int:
     require_judges_ready([judge] if pending else [])
     outcomes = Counter()
     for call in pending:
-        record, violation = run_gold_call(transport, call, templates[call.task], experiment.term_list, out, replaces_existing=call.key in existing)
+        record, violation = run_gold_call(transport, call, templates[call.task], experiment.term_list, out, replaced=existing.get(call.key))
         outcomes[record.outcome] += 1
         if violation:   # 資料已經送到不在允許清單內的 provider：不能再送下一個請求
             raise provider_violation_stop(f"Judge {judge.id}", sum(outcomes.values()))

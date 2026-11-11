@@ -285,6 +285,7 @@ class ResumeTest(JudgeCase):
         self.assertEqual(len(transport.requests), 1)   # 只有 error 的那一個；block 不重做
         self.assertEqual(sorted(c["outcome"] for c in self.calls_of("9000001-001")), ["block", "ok"])
         self.assertEqual(len(self.calls()), 10)
+        self.assertEqual({c["outcome"]: c.get("redone_from") for c in self.calls_of("9000001-001")}, {"block": None, "ok": "error"})
 
     def test_redo_errors_also_redoes_an_empty_call(self):
         self.judge(judge_transport({("9000001-001", 1): gemini_samples.candidate_with({"role": "model"}), ("9000001-001", 2): gemini_samples.prompt_blocked()}))
@@ -293,6 +294,8 @@ class ResumeTest(JudgeCase):
         self.judge(transport, "--redo-errors")
         self.assertEqual(len(transport.requests), 1)
         self.assertEqual(sorted(c["outcome"] for c in self.calls_of("9000001-001")), ["block", "ok"])
+        self.assertEqual({c["outcome"]: c.get("redone_from") for c in self.calls_of("9000001-001")}, {"block": None, "ok": "empty"})
+        self.assertEqual(len([c for c in self.calls() if c.get("redone_from")]), 1)   # 其他呼叫都不是重做的
 
     def test_article_and_limit_options_narrow_the_requests(self):
         transport = judge_transport()

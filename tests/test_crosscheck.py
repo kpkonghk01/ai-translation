@@ -164,6 +164,8 @@ class RequestTest(CrosscheckCase):
         self.run_ok("--redo-errors", transport=again)
         self.assertEqual(len(again.requests), 1)
         self.assertEqual(len(self.calls()), 3)   # 重做的換掉舊的
+        self.assertEqual([c.get("redone_from") for c in self.calls() if (c["judge"], c["article_id"]) == ("q1", "9000001")], ["error"])
+        self.assertEqual(len([c for c in self.calls() if c.get("redone_from")]), 1)
 
     def test_article_and_limit_select_what_runs(self):
         transport = routed()
@@ -354,6 +356,19 @@ class CoverageTest(CrosscheckCase):
 class ReferenceAndFailureTest(CrosscheckCase):
     def political(self) -> str:
         return self.output_text("crosscheck.md").split("## 文章 9000002")[1]
+
+    def assert_a_failed_request_is_not_called_a_result(self, sample, label):
+        self.run_ok(transport=routed(qwen=lambda article_id: sample if article_id == "9000002" else qwen_picks(article_id)))
+        political = self.political()
+        self.assertIn(f"盲抽的模型 Judge q1：請求結果是 {label}", political)
+        self.assertIn("沒有拿到結果，先用 --redo-errors 重做", political)
+        self.assertNotIn("這本身就是結果", political)   # 被擋才是結果；error 與 empty 只是沒有拿到
+
+    def test_an_error_request_is_not_called_a_result_and_the_report_says_to_redo_it(self):
+        self.assert_a_failed_request_is_not_called_a_result(gemini_samples.client_error(), "error")
+
+    def test_an_empty_request_is_not_called_a_result_and_the_report_says_to_redo_it(self):
+        self.assert_a_failed_request_is_not_called_a_result(gemini_samples.candidate_with({"role": "model"}), "empty")
 
     def test_a_blocked_blind_model_is_a_result_of_its_own_and_the_reference_model_is_still_listed(self):
         self.run_ok(transport=routed(qwen=lambda article_id: gemini_samples.prompt_blocked() if article_id == "9000002" else qwen_picks(article_id)))

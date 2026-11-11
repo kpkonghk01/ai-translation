@@ -164,7 +164,7 @@ def approach_lines(planned: PlannedApproach, records: list[RunRecord], *, summar
         f"- 模型家族：{approach.family}；provider：{approach.provider}；模型：{approach.model}",
         f"- 請求模式：{approach.request_mode}" + (f"（輸入上限 {approach.max_input_chars} 字，超過就按 Component 切塊）" if approach.max_input_chars else "") + f"；temperature：{temperature}；max_output_tokens：{max_tokens}；timeout：{approach.timeout_seconds} 秒；併發：{approach.concurrency}"
         + ("；reasoning：關閉" if approach.reasoning_off else "")
-        + ("；單一 user 訊息（不送 system prompt）" if approach.single_user_message else ""),
+        + ("；單一 user 訊息（不送 system 訊息，prompt 併進 user 訊息）" if approach.single_user_message else ""),
         f"- 重試：最多 {approach.retry.max_attempts} 次嘗試，退避起點 {approach.retry.base_delay_seconds} 秒",
         f"- 每篇每個 Direction 每個輸入版本的 Run 次數：{planned.runs}（輸入版本：{'、'.join(planned.input_variants)}）",
         f"- 設定 hash：{hash_text}",
@@ -194,7 +194,7 @@ def section_lines(approach_id: str, direction: str, variant: InputVariant, plann
     warning_counts = Counter(w.kind for r in rows for w in r.warnings)
     findings = "、".join(f"{d.value} {finding_counts[d]}" for d in Dimension)
     warnings = "、".join(f"{WARNING_LABELS[k]} {warning_counts[k]}" for k in WarningKind)
-    others = "、".join(f"{o.value} {ratio(by_outcome[o], n)}" for o in (Outcome.MALFORMED, Outcome.TRUNCATED, Outcome.EMPTY, Outcome.ERROR))
+    others = "、".join(f"{o.value} {ratio(by_outcome[o], n)}" for o in Outcome if o not in (Outcome.OK, Outcome.BLOCK, Outcome.REFUSAL))
     redone = [r for r in records if r.redone_from is not None]
     redo_line = [f"- 重做過的 Run：{len(redone)} 個；重做之前的結果：{_outcome_counts(r.redone_from for r in redone)}；"
                  f"重做之後：{_outcome_counts(r.outcome for r in redone)}"] if redone else []

@@ -394,7 +394,7 @@ def handle(args, transport: Transport) -> int:
 
     templates, outcomes = task_templates(), Counter()
     for call in pending:
-        record, violation = run_call(transport, call, templates[call.task], experiment.term_list, out, replaces_existing=call.key in existing)
+        record, violation = run_call(transport, call, templates[call.task], experiment.term_list, out, replaced=existing.get(call.key))
         outcomes[record.outcome] += 1
         if violation:   # 資料已經送到不在允許清單內的 provider：不能再送下一個請求
             raise provider_violation_stop(f"Judge {call.judge.id}", sum(outcomes.values()))
@@ -477,9 +477,15 @@ def send_judge_request(transport: Transport, judge: PlannedJudge, template: Prom
     return send_with_retries(transport, adapter, request, judge.config, classify_text), api_key
 
 
+def redone_from(replaced) -> Outcome | None:
+    """被這次請求取代的舊紀錄（沒有就是 None）若是 error 或 empty，就是重做：記下它的結果。取代過期的 ok 之類的紀錄不是重做。
+    （正式評核、校準、交叉檢驗共用。）"""
+    return replaced.outcome if replaced is not None and replaced.outcome in REDO_OUTCOMES else None
+
+
 def run_call(transport: Transport, call: PlannedCall, template: PromptTemplate, term_list: LoadedTermList, out: OutputDir, *,
-             replaces_existing: bool) -> tuple[JudgeCall, bool]:
-    """送出一個請求並記錄。第二個回傳值是：回應是不是來自不在允許清單內的 provider。"""
+             replaced: JudgeCall | None) -> tuple[JudgeCall, bool]:
+    """送出一個請求並記錄。replaced：被它取代的舊紀錄（沒有就是 None）。第二個回傳值是：回應是不是來自不在允許清單內的 provider。"""
     exchange, api_key = send_judge_request(transport, call.judge, template, MESSAGE_BUILDERS[call.task](call, term_list))
     result, judge = exchange.interpretation, call.judge.config
     outcome, reason, fields, invalid = interpret_call(call, result)
@@ -489,7 +495,7 @@ def run_call(transport: Transport, call: PlannedCall, template: PromptTemplate, 
         input_tokens=result.input_tokens, output_tokens=result.output_tokens, thought_tokens=result.thought_tokens,
         model_version=result.model_version, served_provider=result.served_provider,
         prompt_hash=template.hash, config_hash=call.judge.config_hash, invalid=invalid, **fields,
-        created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        redone_from=redone_from(replaced), created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
     )
-    written = out.write_judge_call(record, exchange.raw_body, secrets=(api_key,), replaces_existing=replaces_existing)
+    written = out.write_judge_call(record, exchange.raw_body, secrets=(api_key,), replaces_existing=replaced is not None)
     return written, result.provider_violation

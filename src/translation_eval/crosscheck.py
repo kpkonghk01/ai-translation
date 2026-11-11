@@ -25,10 +25,10 @@ from .articles import load_article, text_of
 from .config import Experiment, PlannedJudge, load_experiment
 from .errors import InputError, provider_violation_stop
 from .ground_truth import GroundTruth, Sentence, load_ground_truth
-from .judging import (is_verbatim, print_endpoint, raw_text, require_judges_ready, select_pending, send_judge_request)
+from .judging import (is_verbatim, print_endpoint, raw_text, redone_from, require_judges_ready, select_pending, send_judge_request)
 from .outcome import Interpretation
 from .prompts import PromptTemplate, crosscheck_template
-from .schemas import (Article, CrosscheckCall, CrosscheckSentence, Domain, GtFact, InvalidItem, InvalidKind, Outcome)
+from .schemas import (Article, CrosscheckCall, CrosscheckSentence, Domain, GtFact, InvalidItem, InvalidKind, Outcome, REDO_OUTCOMES)
 from .store import OutputDir, crosscheck_call_key
 from .textrules import one_line, chinese_numbers, digit_strings, quoted_phrases, squash
 from .translate import select_articles
@@ -154,8 +154,8 @@ def is_current(recorded: CrosscheckCall, call: PlannedCrosscheck, template: Prom
     return (recorded.input_hash, recorded.prompt_hash, recorded.config_hash) == (call.input_hash, template.hash, call.judge.config_hash)
 
 
-def run_crosscheck(transport: Transport, call: PlannedCrosscheck, template: PromptTemplate, out: OutputDir, *, replaces_existing: bool) -> tuple[CrosscheckCall, bool]:
-    """送出一個請求並記錄。第二個回傳值是：回應是不是來自不在允許清單內的 provider。"""
+def run_crosscheck(transport: Transport, call: PlannedCrosscheck, template: PromptTemplate, out: OutputDir, *, replaced: CrosscheckCall | None) -> tuple[CrosscheckCall, bool]:
+    """送出一個請求並記錄。replaced：被它取代的舊紀錄（沒有就是 None）。第二個回傳值是：回應是不是來自不在允許清單內的 provider。"""
     exchange, api_key = send_judge_request(transport, call.judge, template, call.message)
     result, judge = exchange.interpretation, call.judge.config
     outcome, reason, sentences, invalid = interpret_crosscheck(result, component_texts(call.article))
@@ -163,8 +163,9 @@ def run_crosscheck(transport: Transport, call: PlannedCrosscheck, template: Prom
         article_id=call.article_id, judge=judge.id, outcome=outcome, reason=reason, attempts=exchange.attempts,
         input_tokens=result.input_tokens, output_tokens=result.output_tokens, thought_tokens=result.thought_tokens,
         model_version=result.model_version, served_provider=result.served_provider, prompt_hash=template.hash, config_hash=call.judge.config_hash,
-        input_hash=call.input_hash, sentences=sentences, invalid=invalid, created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
-    return out.write_crosscheck_call(record, exchange.raw_body, secrets=(api_key,), replaces_existing=replaces_existing), result.provider_violation
+        input_hash=call.input_hash, sentences=sentences, invalid=invalid, redone_from=redone_from(replaced),
+        created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    return out.write_crosscheck_call(record, exchange.raw_body, secrets=(api_key,), replaces_existing=replaced is not None), result.provider_violation
 
 
 # ───────────── 與 ground truth 對照 ─────────────
@@ -290,11 +291,14 @@ def _model_fact_lines(facts) -> list[str]:
 
 
 def call_status(call: CrosscheckCall | None) -> str:
-    """一個請求的結果，一行。被擋或失敗本身就是結果，不是「沒有結果」。"""
+    """一個請求的結果，一行。被擋、拒絕這類本身就是結果，不是「沒有結果」；error 與 empty 是沒有拿到結果，要重做。"""
     if call is None:
         return "還沒有結果（尚未跑，或請求已過期）"
     if call.outcome is not Outcome.OK:
-        return f"請求結果是 {call.outcome.value}" + (f"（{one_line(call.reason)}）" if call.reason else "") + "：這本身就是結果，與「評了但漏看」不同"
+        what = f"請求結果是 {call.outcome.value}" + (f"（{one_line(call.reason)}）" if call.reason else "")
+        if call.outcome in REDO_OUTCOMES:
+            return what + "：沒有拿到結果，先用 --redo-errors 重做，與「評了但漏看」不同"
+        return what + "：這本身就是結果，與「評了但漏看」不同"
     dropped_sentences, dropped_facts = dropped_counts(call)
     full = f"；選滿 {MAX_SENTENCES} 句（ground truth 的句子更多時，「只有 ground truth 有」可能是上限造成的）" if len(call.sentences) >= MAX_SENTENCES else ""
     return f"選了 {len(call.sentences)} 句；丟掉的句子 {dropped_sentences}、丟掉的事實 {dropped_facts}（句子不是逐字取自原文，或事實的 kind 不合）{full}"
@@ -418,7 +422,7 @@ def handle(args, transport: Transport) -> int:
     require_judges_ready([c.judge for c in pending])
     outcomes = Counter()
     for call in pending:
-        record, violation = run_crosscheck(transport, call, template, out, replaces_existing=call.key in existing)
+        record, violation = run_crosscheck(transport, call, template, out, replaced=existing.get(call.key))
         outcomes[record.outcome] += 1
         if violation:   # 資料已經送到不在允許清單內的 provider：不能再送下一個請求
             raise provider_violation_stop(f"Judge {call.judge.id}", sum(outcomes.values()))

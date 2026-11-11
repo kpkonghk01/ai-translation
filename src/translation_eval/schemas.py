@@ -574,6 +574,7 @@ class RequestRecord(StrictModel):
     served_provider: str | None = None
     prompt_hash: str
     config_hash: str
+    redone_from: Outcome | None = None   # 這個請求是重做的：被它取代的舊紀錄的結果（error 或 empty）；沒重做過就是 None
     raw_response: str | None = None
     created_at: str
 

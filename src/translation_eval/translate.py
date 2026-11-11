@@ -8,7 +8,7 @@ Run 的 key 是「文章 × Approach × Direction × 輸入版本 × Run 序號�
 重跑同一條指令即可續跑；error 或 empty 的 Run 要加 --redo-errors 才會重做。
 
 一個 Run 可能要送出好幾個請求（切塊、逐 Component，見 units.py）：結果取最差的一個（block > refusal > malformed >
-truncated > error > ok），並記下是哪一個；遇到 block 就不再送後面的請求，因為結果已經是最差的了。
+truncated > empty > error > ok），並記下是哪一個；遇到 block 就不再送後面的請求，因為結果已經是最差的了。
 """
 import json
 import os
@@ -96,8 +96,9 @@ def handle(args, transport: Transport) -> int:
 
     outcomes = Counter()
     for key, planned in pending:
+        previous = done.get(key)
         record, violation = translate_one(transport, key, planned, articles[key.article_id], out, experiment.term_list,
-                                          redone_from=done[key].outcome if key in done else None)
+                                          redone_from=previous.outcome if previous else None)
         outcomes[record.outcome] += 1
         print(f"{key.label}: {record.outcome}")
         if violation:   # 資料已經送到不在允許清單內的 provider：不能再送下一個 Run

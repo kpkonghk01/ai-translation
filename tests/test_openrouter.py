@@ -17,6 +17,11 @@ APPROACH = {"id": "f", "family": "hunyuan", "provider": "openrouter", "model": "
             "timeout_seconds": 30, "retry": {"max_attempts": 3, "base_delay_seconds": 0}, "routing": ROUTING}
 
 
+# 黃金值：APPROACH 這份設定在新增 reasoning_off、single_user_message 之前的 hash。沒開這些開關的設定，hash 不可以變，
+# 否則已有的 Run 都會被報告標成「與目前設定不同」
+UNCHANGED_CONFIG_HASH = "3d3344df13e4415c4d6f66f7d542cf8f7ad05b94a08b07a19fe67dbae29e0572"
+
+
 def ok_response(provider="DeepInfra"):
     return samples.ok(json.dumps(good_translation(source_article()), ensure_ascii=False), provider)
 
@@ -79,16 +84,14 @@ class ReasoningSwitchTest(OpenRouterCase):
                 self.assertNotIn("reasoning", json.loads(transport.requests[0].body))
 
     def test_the_switch_is_recorded_in_the_config_hash_but_leaves_existing_hashes_alone(self):
-        # 黃金值：新增欄位之前，這份設定的 hash。沒設 reasoning_off 的設定，hash 不可以變，否則已有的 Run 都會被報告標成「與目前設定不同」
-        UNCHANGED = "3d3344df13e4415c4d6f66f7d542cf8f7ad05b94a08b07a19fe67dbae29e0572"
         hashes = {}
         for name, approach in (("unset", APPROACH), ("false", {**APPROACH, "reasoning_off": False}), ("on", {**APPROACH, "reasoning_off": True})):
             self.use_approach(approach)
             self.translate(ok_response())
             [record] = self.read_runs()
             hashes[name] = record["config_hash"]
-        self.assertEqual((hashes["unset"], hashes["false"]), (UNCHANGED, UNCHANGED))
-        self.assertNotEqual(hashes["on"], UNCHANGED)
+        self.assertEqual((hashes["unset"], hashes["false"]), (UNCHANGED_CONFIG_HASH, UNCHANGED_CONFIG_HASH))
+        self.assertNotEqual(hashes["on"], UNCHANGED_CONFIG_HASH)
 
     def test_the_report_says_when_reasoning_is_off(self):
         self.use_approach({**APPROACH, "reasoning_off": True})
@@ -126,7 +129,6 @@ class SingleUserMessageTest(OpenRouterCase):
         self.assertEqual([m["role"] for m in self.request_body({**APPROACH, "single_user_message": False})["messages"]], ["system", "user"])
 
     def test_the_hash_of_a_config_without_it_is_unchanged_and_the_report_marks_it_when_on(self):
-        UNCHANGED = "3d3344df13e4415c4d6f66f7d542cf8f7ad05b94a08b07a19fe67dbae29e0572"   # 與 ReasoningSwitchTest 同一份設定、新增欄位之前的 hash
         hashes = {}
         for name, approach in (("false", {**APPROACH, "single_user_message": False}), ("on", {**APPROACH, "single_user_message": True})):
             self.use_approach(approach)
@@ -136,8 +138,8 @@ class SingleUserMessageTest(OpenRouterCase):
             self.assertEqual(self.run_cli("check")[0], 0)
             self.assertEqual(self.run_cli("report")[0], 0)
             self.assertEqual("單一 user 訊息" in self.output_text("report.md"), name == "on")
-        self.assertEqual(hashes["false"], UNCHANGED)
-        self.assertNotEqual(hashes["on"], UNCHANGED)
+        self.assertEqual(hashes["false"], UNCHANGED_CONFIG_HASH)
+        self.assertNotEqual(hashes["on"], UNCHANGED_CONFIG_HASH)
 
 
 class EmptyContentTest(OpenRouterCase):

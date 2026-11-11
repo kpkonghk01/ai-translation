@@ -230,6 +230,8 @@ class RunTest(CalibrationCase):
         self.calibrate("--judge", "j1", "--redo-errors", transport=again)
         self.assertEqual(len(again.requests), 1)
         self.assertEqual([c["outcome"] for c in self.gold_calls() if (c["item_id"], c["task"], c["call_index"]) == ("g01", "mqm", 1)], ["ok"])
+        self.assertEqual([c.get("redone_from") for c in self.gold_calls() if (c["item_id"], c["task"], c["call_index"]) == ("g01", "mqm", 1)], ["error"])
+        self.assertEqual(len([c for c in self.gold_calls() if c.get("redone_from")]), 1)
 
     def test_the_dry_run_sends_nothing_writes_nothing_and_needs_no_key(self):
         del os.environ["GEMINI_API_KEY"]
