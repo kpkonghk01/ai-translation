@@ -118,6 +118,11 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
   ```
 
 - `translate` 可以中斷後重跑同一條指令：已有紀錄的 Run 會略過；`--redo-errors` 重做結果為 `error` 或 `empty`（空內容：provider 正常結束，但沒有任何輸出，見 GLOSSARY）的 Run（`block`、`refusal`、`malformed`、`truncated` 是結果，不會重做）。重做的 Run 取代舊紀錄，並在 `redone_from` 記下舊紀錄的結果（`error` 或 `empty`）；報告每個 Approach × Direction 一節有「重做過的 Run」一行，列出重做之前與之後的結果。空內容不在 Run 內自動重試。`--article <id>`（可重覆）只跑指定文章，`--limit <N>` 最多執行 N 個 Run。
+- **展示報告**（給非技術讀者，例如上司）：`showcase` 讀 `runs.jsonl`，寫出一頁 HTML（`showcase.html`，在實驗的輸出目錄，只在本機看）。內容是結論、各模型的結果表、測了什麼、重複跑與只送標題與正文的結果、完整數字；沒有文章內容、沒有文章編號，也沒有任何外部資源（離線也能開）。模型名用 Approach 設定的 `display_name`（baseline 在實驗設定的 `baselines` 條目也可以寫），沒有就用 `model`，不用代號；`display_name` 不進設定 hash，改名不會讓已有的 Run 被標成「與目前設定不同」，兩個模型的名稱相同會停止（明寫的重名在載入設定時就停止，沒寫而 model 相同的在 `showcase` 時停止）。主表只看完整文章、每篇每個方向的第 1 次，每個模型的分母才一樣；組別（一般題材、中國政治題材）來自 ground truth，沒有就是全部文章一組。不需要先 `check`，隨時可以執行；還沒跑完時頁面頂部寫「仍在進行」。Judge 的結果不放在這一頁。
+
+  ```bash
+  uv run --locked python -I -m translation_eval showcase --config configs/experiments/first-batch.json
+  ```
 - `check` 與 `report` 每次都從 `runs.jsonl` 整份重算。`report` 發現有 `ok` 的 Run 還沒有 `check` 結果，或 `check` 之後規則、Term List、長度比例範圍改了，會停止，不產生報告；先重新執行 `check`。`check` 另寫 `components.jsonl`（每個 Component 的 Finding 與警示）和 `check-meta.json`（check 當時用的規則版本與輸入，report 靠它判斷結果有沒有過期）。規則版本由實作規則的原始碼的 hash 決定：程式的規則有任何改動，舊的 check 結果就視為過期，重跑 `check` 即可（只要幾秒，不呼叫 API）。所有 Run 都沒有譯文（例如全被 Block）時不需要 `check`。
 - **Judge（MQM）**：實驗設定的 `judging` 列出 Judge 設定檔（欄位與 Approach 設定相同，另加 `role`：`primary` 決定 Gate，`experiment` 只作實驗；`temperature` 固定 0，只用 `article-json`），並可以寫 `same_family_exceptions`、`mqm_run_limit`；頂層的 `weights` 是每個 Severity 的罰分（預設 minor 1、major 5、critical 25）：
 

@@ -4,6 +4,7 @@
 """
 import hashlib
 import json
+from collections import Counter
 from dataclasses import dataclass
 
 from .errors import InputError
@@ -60,6 +61,7 @@ OFF_BY_DEFAULT_SWITCHES = ("reasoning_off", "single_user_message")
 
 def config_hash(approach: ApproachConfig) -> str:
     settings = approach.model_dump(mode="json")
+    del settings["display_name"]   # 只是給人看的名稱，不影響請求
     for switch in OFF_BY_DEFAULT_SWITCHES:   # 後來才加的開關：沒開時不進 hash，已有 Run 的 hash 才不會變（否則報告會把它們都標成「與目前設定不同」）
         if not settings[switch]:
             del settings[switch]
@@ -91,6 +93,8 @@ def load_experiment(path: str) -> Experiment:
         approaches.append(PlannedApproach(approach, entry.runs, config_hash(approach), tuple(entry.input_variants)))
     clashes = [b.id for b in config.baselines if b.id in seen]
     problems += [f"baseline 的 id 與 Approach 的 id 重覆：{i}" for i in clashes]
+    named = [a.config.display_name for a in approaches if a.config.display_name] + [b.display_name for b in config.baselines if b.display_name]
+    problems += [f"顯示名稱重覆：{name}" for name, n in Counter(named).items() if n > 1]
     judges = load_judges(config, seen, problems)
     problems += gate_config_problems(config, judges)
     problems += comparison_problems(config, approaches)

@@ -167,6 +167,7 @@ class OpenRouterRouting(StrictModel):
 
 class ApproachConfig(StrictModel):
     id: Slug
+    display_name: NonBlank | None = None   # 給人看的名稱（展示報告用）。不進設定 hash，所以改名不會讓已有的 Run 被標成「與目前設定不同」
     family: str = Field(min_length=1)
     provider: Literal["gemini", "dashscope", "openrouter"]
     model: ModelName
@@ -334,6 +335,7 @@ class ReviewConfig(StrictModel):
 class BaselineEntry(StrictModel):
     """方案 E（Current service）這類不經 API 的 baseline：Run 由 import-baseline 從目錄匯入，不由 translate 產生。"""
     id: Slug
+    display_name: NonBlank | None = None   # 給人看的名稱（展示報告用）
     dir: str
     direction: Direction
 

@@ -20,7 +20,7 @@
     {"config": "configs/approaches/f7-hy-mt2-7b.json", "runs": 1},
     {"config": "configs/approaches/g-qwen-openrouter.json", "runs": 1}
   ],
-  "baselines": [{"id": "e", "dir": "data/baseline-first-batch", "direction": "trad-to-simplified"}],
+  "baselines": [{"id": "e", "display_name": "現行服務（OpenCC 加自訂詞庫）", "dir": "data/baseline-first-batch", "direction": "trad-to-simplified"}],
   "ground_truth": {"paths": ["data/gt-drafts/draft-a.json", "data/gt-drafts/draft-b.json", "data/gt-drafts/draft-c.json", "data/gt-drafts/draft-d.json"], "status": "draft"},
   "calibration": {"gold_set": "data/gold-set.json"},
   "term_list": "data/term-list.json"

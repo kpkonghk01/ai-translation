@@ -1,5 +1,6 @@
 {
   "id": "f7",
+  "display_name": "Hy-MT2-7B（騰訊）",
   "family": "tencent-hy",
   "provider": "openrouter",
   "model": "tencent/hy-mt2-7b",
