@@ -8,9 +8,10 @@
 - 成功的例子：同一段原文，各模型（第 1 個方向、完整文章、第 1 次）的譯文並排。優先用對照文章（不敏感的）；
   文章要所有模型都成功翻譯才能比，沒有就換下一篇。
 - 被寫輕的例子（有 --judged-in 才有）：Judge 評核過的實驗（通常是抽樣實驗；要有 judging、ground truth 和事實核對的紀錄，而且已經 check）裡，
-  每種淡化類型取一個被判淡化的事實（取這種類型在紀錄裡的第一個，不是挑過的；只取完整文章、譯文有這一段的；人改判成沒淡化的不取，
-  人改判的類型以人為準）：要保留的事實、原文與譯文（同一個 Component）、Judge 的引用與理由、白話的類型、有沒有人審過。沒有單一類型的（Judge 兩次判的類型不同，或人改判時沒有寫類型）另成一張，排在最後。
-  Judge 的判定不一定對，所以頁面寫明初步、尚未經人審的，要讀的人自己對照原文與譯文。
+  每個（方向、題材組）一個小節（方向依實驗設定的順序，組是一般題材在前），小節裡每種淡化類型取一個被判淡化的事實（取這種類型在這一格的紀錄裡的第一個，
+  不是挑過的；只取完整文章、譯文有這一段的；人改判成沒淡化的不取，人改判的類型以人為準）：要保留的事實、原文與譯文（同一個 Component）、
+  Judge 的引用與理由、白話的類型、有沒有人審過。沒有單一類型的（Judge 兩次判的類型不同，或人改判時沒有寫類型）另成一張，排在小節最後。
+  沒有被判淡化的事實的格子也有小節，寫明沒有。Judge 的判定不一定對，所以頁面寫明初步、尚未經人審的，要讀的人自己對照原文與譯文。
 - 沒有成功的例子：showcase 的每一張例子卡（被擋、空內容、輸出格式壞、出錯……），多附這一個 Run 的文章的原文片段，並說明回來的是什麼。
   provider 回應裡的字不放：說明由程式按結果類別寫。
 片段：第一個 40 至 160 字的段落（paragraph 或 highlight）；沒有就取第一個有字的，超過 160 字的切掉並標「…」。
@@ -27,7 +28,7 @@ from .review_decisions import Decisions
 from .review_items import ItemKind, ItemStatus, ReviewItem
 from .schemas import (Article, Direction, FAILING_VERDICTS, InputVariant, Outcome, ReviewAction, ReviewDecision, RunRecord, Translation,
                       WeakeningType)
-from .report_text import DIRECTION_LABELS, WEAKENING_LABELS, group_label
+from .report_text import DIRECTION_LABELS, WEAKENING_LABELS, group_label, ordered_groups
 from .showcase import STYLE, Loaded, example_html, first_full_runs, load, ordered_kinds, runs_by_kind, shown_records
 
 EXCERPT_MIN, EXCERPT_MAX = 40, 160
@@ -135,17 +136,31 @@ def failing_type(item: ReviewItem, decision: ReviewDecision | None) -> tuple[boo
     return item.status is ItemStatus.FAILED, item.weakening
 
 
-def weakened_examples(items: list[ReviewItem], decisions: Decisions) -> list[tuple[ReviewItem, WeakeningType | None]]:
-    """被判淡化的事實，每種類型取紀錄裡的第一個（類型的順序依 WeakeningType，兩次不一致的在最後）。
+Cell = tuple[Direction, str]   # （方向, 題材組）
+
+
+def cell_of(item: ReviewItem, judged: Judged) -> Cell:
+    return item.run.direction, judged.truth.group_of(item.run.article_id)
+
+
+def weakened_examples(judged: Judged) -> dict[Cell, dict[WeakeningType | None, ReviewItem]]:
+    """被判淡化的事實，每一格（方向、題材組）每種類型取紀錄裡的第一個。沒有被判淡化事實的格子不在裡面。
     只取完整文章的、譯文有這一段的（程式證明的漏段沒有譯文可看）。"""
-    first: dict[WeakeningType | None, ReviewItem] = {}
-    for item in items:
+    first: dict[Cell, dict[WeakeningType | None, ReviewItem]] = {}
+    for item in judged.items:
         if item.kind is not ItemKind.FACT or item.run.input_variant is not InputVariant.FULL or item.translation_text is None:
             continue
-        failing, kind = failing_type(item, decisions.get(item.key))
+        failing, kind = failing_type(item, judged.decisions.get(item.key))
         if failing:
-            first.setdefault(kind, item)
-    return [(first[kind], kind) for kind in (*WeakeningType, None) if kind in first]
+            first.setdefault(cell_of(item, judged), {}).setdefault(kind, item)
+    return first
+
+
+def weakened_cells(judged: Judged) -> list[Cell]:
+    """有事實可以核對的格子：方向依實驗設定的順序，題材組依顯示順序（一般題材在前）。"""
+    present = {cell_of(item, judged) for item in judged.items if item.kind is ItemKind.FACT and item.run.input_variant is InputVariant.FULL}
+    groups = ordered_groups(group for _, group in present)
+    return [(direction, group) for direction in judged.experiment.config.directions for group in groups if (direction, group) in present]
 
 
 def review_text(decision: ReviewDecision | None) -> str:
@@ -162,7 +177,7 @@ def weakened_card(item: ReviewItem, kind: WeakeningType | None, judged: Judged) 
     where = f"{names[item.run.approach]}、{DIRECTION_LABELS.get(item.run.direction, str(item.run.direction))}、{group}"
     heading = NO_SINGLE_TYPE if kind is None else WEAKENING_LABELS[kind]
     judge_lines = "".join(f'<p class="judge">{escape(line)}</p>' for line in item.lines[1:])
-    return (f'<li class="weakened"><h3>{escape(heading)}</h3><p class="meta">{escape(where)}</p>'
+    return (f'<li class="weakened"><h4>{escape(heading)}</h4><p class="meta">{escape(where)}</p>'
             f'<p class="fact">要保留的事實：{escape(item.fact_text or "")}</p>'
             f'<div class="pair">{text_block("原文", None, item.source_text)}{text_block("譯文", None, item.translation_text or "")}</div>'
             f'{judge_lines}<p class="meta">{escape(review_text(judged.decisions.get(item.key)))}</p></li>')
@@ -171,15 +186,21 @@ def weakened_card(item: ReviewItem, kind: WeakeningType | None, judged: Judged) 
 def weakened_html(judged: Judged) -> str:
     """「被寫輕的例子」一節：譯出來了，但要保留的事實被寫輕或不見。"""
     heading = "<h2>被寫輕的例子：真實的譯文出了什麼問題（初步）</h2>"
-    examples = weakened_examples(judged.items, judged.decisions)
+    examples = weakened_examples(judged)
     if not examples:
         return f'<section>{heading}<p class="note">這一批沒有被判淡化的事實可以舉例。</p></section>'
     judges = {j.id: j.config.display_name or j.config.model for j in judged.experiment.judges}
-    who = "、".join(sorted({judges[item.judge] for item, _ in examples}))
-    intro = (f"譯出來了，但原文要保留的事實被寫輕或不見。每種類型取一個真實的例子（取這種類型在紀錄裡的第一個，不是挑過的）。"
+    who = "、".join(sorted({judges[item.judge] for picked in examples.values() for item in picked.values()}))
+    intro = (f"譯出來了，但原文要保留的事實被寫輕或不見。每個方向、每個題材組，每種類型取一個真實的例子（取在紀錄裡的第一個，不是挑過的）。"
              f"初步結果：被判淡化的是 AI（{who}）的判定，不一定對，請對照原文與譯文自己看。")
-    cards = "".join(weakened_card(item, kind, judged) for item, kind in examples)
-    return f'<section>{heading}<p class="note">{escape(intro)}</p><ul class="weakened-cards">{cards}</ul></section>'
+    cells = []
+    for cell in weakened_cells(judged):
+        direction, group = cell
+        picked = examples.get(cell, {})
+        cards = "".join(weakened_card(picked[kind], kind, judged) for kind in (*WeakeningType, None) if kind in picked)
+        body = f'<ul class="weakened-cards">{cards}</ul>' if cards else '<p class="note">這一格沒有被判淡化的事實。</p>'
+        cells.append(f"<h3>{escape(DIRECTION_LABELS.get(direction, str(direction)))}・{escape(group_label(group))}</h3>{body}")
+    return f'<section>{heading}<p class="note">{escape(intro)}</p>{"".join(cells)}</section>'
 
 
 def render_text(loaded: Loaded, read_translation, weakened: str = "") -> str:
@@ -207,6 +228,6 @@ TEXT_STYLE = """
 .headline { font-weight:700; margin:0; } .passage { margin:0; white-space:pre-wrap; }
 .weakened-cards { display:grid; gap:14px; }
 .weakened { background:var(--panel); border:1px solid var(--rule); border-radius:8px; padding:14px 16px; display:grid; gap:8px; }
-.weakened h3 { margin:0; font-size:1rem; } .fact { margin:0; font-weight:700; } .judge { margin:0; color:var(--muted); font-size:.875rem; }
+.weakened h4 { margin:0; font-size:1rem; } .fact { margin:0; font-weight:700; } .judge { margin:0; color:var(--muted); font-size:.875rem; }
 .pair { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:10px; }
 """

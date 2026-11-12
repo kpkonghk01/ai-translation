@@ -2,7 +2,7 @@
 
 --judged-in：Judge 評核過的實驗設定（通常是抽樣實驗）；這裡的測試用同一個虛構實驗當 --config 和 --judged-in
 （兩篇文章：9000001 一般題材，001 有兩條事實；9000002 中國政治題材，002 有一條事實）。
-每種淡化類型取一個被判淡化的事實：原文、譯文、要保留的事實、Judge 的引用與理由、白話的類型。只用虛構資料。"""
+每個（方向、題材組）的小節裡，每種淡化類型取一個被判淡化的事實：原文、譯文、要保留的事實、Judge 的引用與理由、白話的類型。只用虛構資料。"""
 import json
 import os
 import re
@@ -12,7 +12,7 @@ import unittest
 import gemini_samples
 from calibration_helpers import FACT_BUDGET, FACT_DELAY, FACT_WHO, GOOD_EN, SOURCE_001, SOURCE_002, CalibrationCase, weak
 from fake_transport import FakeTransport
-from fixtures import main_only_translation, ok_response
+from fixtures import main_only_translation, ok_response, simplified_response
 from gate_helpers import translation_without
 from judge_helpers import fact_output, fact_transport
 
@@ -82,19 +82,17 @@ class CardTest(JudgedCase):
     def test_the_heading_is_the_type_in_plain_language_not_a_code(self):
         self.judge_001(fails(**{FACT_DELAY: ("d", "late")}))
         [card] = self.cards(self.text_page())
-        self.assertTrue(card.startswith(f"<h3>{LABEL_D}</h3>"), card[:80])
+        self.assertTrue(card.startswith(f"<h4>{LABEL_D}</h4>"), card[:80])
 
 
 class OneCardPerTypeTest(JudgedCase):
-    def test_there_is_one_card_per_type_in_the_order_of_the_types_and_each_type_only_once(self):
-        self.judge_facts({
-            ("9000001-001", 1): lambda p: fact_output(p, fails(**{FACT_DELAY: ("d", "late"), FACT_BUDGET: ("d", "over budget")})),
-            ("9000001-001", 2): lambda p: fact_output(p, fails(**{FACT_DELAY: ("d", "late"), FACT_BUDGET: ("d", "over budget")})),
-            ("9000002-002", 1): lambda p: fact_output(p, fails(**{FACT_WHO: ("a", "Resident")})),
-            ("9000002-002", 2): lambda p: fact_output(p, fails(**{FACT_WHO: ("a", "Resident")}))})
+    """一個小節（一個方向、一個題材組）裡，每種類型一張卡。"""
+
+    def test_there_is_one_card_per_type_in_the_order_of_the_types(self):
+        self.judge_001(fails(**{FACT_DELAY: ("d", "late"), FACT_BUDGET: ("a", "over budget")}))
         cards = self.cards(self.text_page())
         self.assertEqual(len(cards), 2)
-        self.assertIn(LABEL_A, cards[0])   # a 在 d 前面，雖然 d 的紀錄在前
+        self.assertIn(LABEL_A, cards[0])   # a 在 d 前面，雖然 d 的事實在前
         self.assertIn(LABEL_D, cards[1])
 
     def test_the_card_of_a_type_is_the_first_one_in_the_record_not_a_picked_one(self):
@@ -102,7 +100,7 @@ class OneCardPerTypeTest(JudgedCase):
         [card] = self.cards(self.text_page())
         self.assertIn("要保留的事實：" + FACT_DELAY, card)   # 001 的兩條事實都是 d：取紀錄裡的第一條
 
-    def test_a_second_group_is_shown_with_its_own_source_translation_and_group(self):
+    def test_a_group_with_its_own_failure_is_shown_with_its_own_source_translation_and_group(self):
         self.judge_facts({("9000002-002", 1): lambda p: fact_output(p, fails(**{FACT_WHO: ("a", "Resident")})),
                           ("9000002-002", 2): lambda p: fact_output(p, fails(**{FACT_WHO: ("a", "Resident")}))})
         [card] = self.cards(self.text_page())
@@ -117,15 +115,96 @@ class OneCardPerTypeTest(JudgedCase):
         self.assertNotIn(LABEL_C, card)
 
     def test_a_card_with_no_single_type_comes_after_the_typed_cards(self):
-        self.judge_facts({
-            ("9000001-001", 1): lambda p: fact_output(p, fails(**{FACT_DELAY: ("d", "late")})),
-            ("9000001-001", 2): lambda p: fact_output(p, fails(**{FACT_DELAY: ("c", "late")})),
-            ("9000002-002", 1): lambda p: fact_output(p, fails(**{FACT_WHO: ("a", "Resident")})),
-            ("9000002-002", 2): lambda p: fact_output(p, fails(**{FACT_WHO: ("a", "Resident")}))})
+        self.judge_001(fails(**{FACT_DELAY: ("d", "late"), FACT_BUDGET: ("a", "over budget")}),
+                       second=fails(**{FACT_DELAY: ("c", "late"), FACT_BUDGET: ("a", "over budget")}))
         cards = self.cards(self.text_page())
         self.assertEqual(len(cards), 2)
         self.assertIn(LABEL_A, cards[0])
         self.assertIn("沒有單一類型", cards[1])
+
+
+class SectionPerCellTest(JudgedCase):
+    """每個（方向、題材組）一個小節：同一種類型在不同組各有一張。"""
+
+    def judge_both_groups(self) -> None:
+        both = lambda component, fact, quote: {(component, 1): lambda p: fact_output(p, fails(**{fact: ("d", quote)})),   # noqa: E731
+                                                (component, 2): lambda p: fact_output(p, fails(**{fact: ("d", quote)}))}
+        self.judge_facts({**both("9000001-001", FACT_DELAY, "late"), **both("9000002-002", FACT_WHO, "Resident")})
+
+    def subheadings(self, html: str) -> list[str]:
+        return re.findall(r"<h3>(.*?)</h3>", html.split("被寫輕的例子")[1].split("</section>")[0])
+
+    def test_the_same_type_in_two_groups_has_a_card_in_each_with_a_subheading_for_the_group(self):
+        self.judge_both_groups()
+        html = self.text_page()
+        self.assertEqual(self.subheadings(html), ["繁→英・一般題材", "繁→英・中國政治題材"])
+        general, political = self.cards(html)
+        self.assertIn(SOURCE_001, general)
+        self.assertIn(SOURCE_002, political)
+        self.assertIn(LABEL_D, general)
+        self.assertIn(LABEL_D, political)
+
+    def test_a_group_with_nothing_weakened_has_its_subheading_and_says_so(self):
+        self.judge_001(fails(**{FACT_DELAY: ("d", "late")}))   # 中國政治題材的事實都 Present
+        html = self.text_page()
+        self.assertEqual(self.subheadings(html), ["繁→英・一般題材", "繁→英・中國政治題材"])
+        political = html.split("<h3>繁→英・中國政治題材</h3>")[1].split("</section>")[0]
+        self.assertIn("這一格沒有被判淡化的事實", political)
+        self.assertEqual(len(self.cards(html)), 1)
+
+    def test_a_group_without_a_failure_does_not_say_so_when_it_has_one(self):
+        self.judge_both_groups()
+        self.assertNotIn("這一格沒有被判淡化的事實", self.text_page())
+
+
+class SectionPerDirectionTest(CalibrationCase):
+    """兩個方向：每個方向各有自己的小節，用各自的譯文。"""
+    directions = ["trad-to-en", "trad-to-simplified"]
+
+    def setUp(self):
+        super().setUp()
+        with open(self.approach_path, encoding="utf-8") as f:
+            self.write_json(self.approach_path, {**json.load(f), "display_name": NAME})
+        responses = [r for i in self.article_ids for r in (ok_response(i), simplified_response(i))]
+        self.assertEqual(self.run_cli("translate", transport=FakeTransport(*responses))[0], 0)
+
+    def judge_by_language(self, english: dict, simplified: dict) -> None:
+        """英文譯文（ASCII）按 english 判，簡體譯文按 simplified 判；兩個組的 Component 都一樣處理。"""
+        reply = lambda p: fact_output(p, english if p["component"]["translation"].isascii() else simplified)   # noqa: E731
+        outputs = {"9000001-001": reply, "9000002-002": reply}
+        self.assertEqual(self.run_cli("judge", "--task", "fact", transport=fact_transport(outputs))[0], 0)
+        self.assertEqual(self.run_cli("check")[0], 0)
+
+    def text_page(self) -> str:
+        code, _, err = self.run_cli("showcase-text", "--judged-in", self.config_path)
+        self.assertEqual(code, 0, err)
+        return self.output_text("showcase-text.html")
+
+    def test_each_direction_and_group_has_its_own_subsection_in_the_order_of_the_experiment(self):
+        weak_d = fails(**{FACT_DELAY: ("d", "late"), FACT_WHO: ("a", "Resident")})
+        weak_b = fails(**{FACT_DELAY: ("b", "延误半年"), FACT_WHO: ("a", "市民陈虚构")})
+        self.judge_by_language(weak_d, weak_b)
+        html = self.text_page()
+        section = html.split("被寫輕的例子")[1].split("</section>")[0]
+        self.assertEqual(re.findall(r"<h3>(.*?)</h3>", section), ["繁→英・一般題材", "繁→英・中國政治題材", "繁→簡・一般題材", "繁→簡・中國政治題材"])
+        en_general, en_political, simplified_general, simplified_political = [part for part in re.split(r"<h3>.*?</h3>", section)[1:]]
+        self.assertIn(LABEL_D, en_general)
+        self.assertIn(GOOD_EN, en_general)
+        self.assertIn(LABEL_A, en_political)
+        self.assertIn(LABEL_B, simplified_general)
+        self.assertIn("翻新工程延误半年，预算超支。", simplified_general)
+        self.assertNotIn(GOOD_EN, simplified_general)
+        self.assertIn(LABEL_A, simplified_political)
+        self.assertIn("市民陈虚构表示，工程拖延令他十分不满。", simplified_political)
+
+    def test_a_direction_with_nothing_weakened_says_so_while_the_other_has_cards(self):
+        self.judge_by_language(fails(**{FACT_DELAY: ("d", "late")}), {})
+        html = self.text_page()
+        section = html.split("被寫輕的例子")[1].split("</section>")[0]
+        simplified = section.split("<h3>繁→簡・一般題材</h3>")[1]
+        self.assertIn("這一格沒有被判淡化的事實", simplified)
+        self.assertEqual(simplified.count('<li class="weakened">'), 0)
+        self.assertIn(LABEL_D, section.split("<h3>繁→英・一般題材</h3>")[1].split("<h3>")[0])
 
 
 class ReviewDecisionTest(JudgedCase):
