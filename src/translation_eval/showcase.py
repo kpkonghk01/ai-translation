@@ -118,8 +118,10 @@ def first_full_runs(records: list[RunRecord]) -> list[RunRecord]:
 
 def status_html(experiment: Experiment, records: list[RunRecord]) -> str:
     planned = sum(planned_for(experiment, p.id) for p in experiment.approaches)
-    redo = sum(1 for r in records if r.outcome in REDO_OUTCOMES)
-    done = len(records) - redo   # 出錯或空內容的 Run 還沒有結果：不算完成
+    failed = [r for r in records if r.outcome in REDO_OUTCOMES]
+    redo = sum(1 for r in failed if r.redone_from is None)   # 還沒重做過的：重做之後數字會變
+    stuck = len(failed) - redo   # 重做過仍然沒有結果（例如 provider 對這個輸入每次都回空內容）：再做也不會變，算在「其他未完成」
+    done = len(records) - redo   # 還沒重做的出錯或空內容 Run 還沒有結果：不算完成
     redo_note = f"另有 {redo} 個 Run 出錯或空內容，尚待重做；重做後數字會再變。"
     if len(records) < planned:
         text, kind = f"仍在進行：已完成 {done}／{planned} 個 Run（{int(100 * done / planned)}%，所有模型合計；各模型的數量見「測了什麼」）。以下是中途的數字，之後還會變。" + (redo_note if redo else ""), "wait"
@@ -127,6 +129,8 @@ def status_html(experiment: Experiment, records: list[RunRecord]) -> str:
         text, kind = f"已全部跑過一遍，但有 {redo} 個 Run 出錯或空內容，尚待重做；重做後數字會再變。", "wait"
     else:
         text, kind = f"已全部跑完：{len(records)} 個 Run。", "ok"
+    if stuck:
+        text += f"其中 {stuck} 個 Run 重做過仍然沒有結果（出錯或空內容），算在「其他未完成」。"
     return f'<p class="status {kind}">{escape(text)}</p>'
 
 

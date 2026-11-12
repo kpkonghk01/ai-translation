@@ -166,6 +166,34 @@ class ProgressTest(ShowcaseCase):
         self.assertIn("已全部跑完：8 個 Run", html)
         self.assertNotIn("仍在進行", html)
 
+    def test_a_run_that_is_still_without_a_result_after_a_redo_is_not_waiting_for_a_redo(self):
+        self.run_the_scenario()   # 甲在 9000004 出錯
+        self.run_cli("translate", "--redo-errors", transport=FakeTransport(gemini_samples.unknown_format()))   # 重做仍然出錯
+        html = self.showcase()
+        self.assertIn("已全部跑完：8 個 Run", html)
+        self.assertIn("1 個 Run 重做過仍然沒有結果（出錯或空內容），算在「其他未完成」", html)
+        self.assertNotIn("尚待重做", html)
+        self.assertNotIn("仍在進行", html)
+        self.assertEqual(row_of(tables(html)["results"], NAME_A)[5], "25% 1/4")   # 仍算在其他未完成
+
+    def test_a_redone_run_that_still_fails_counts_as_done_while_the_experiment_is_still_running(self):
+        self.translate_all(ok_response("9000001"), gemini_samples.unknown_format(), ok_response("9000002"), args=("--limit", "3"))   # 乙在 9000001 出錯
+        self.run_cli("translate", "--redo-errors", "--limit", "1", transport=FakeTransport(gemini_samples.unknown_format()))   # 重做，仍然出錯
+        html = self.showcase()
+        self.assertIn("已完成 3／8 個 Run", html)   # 重做過、再做也不會變：不算還沒完成
+        self.assertIn("1 個 Run 重做過仍然沒有結果", html)
+        self.assertNotIn("尚待重做", html)
+
+    def test_a_run_that_was_redone_and_still_fails_does_not_hide_one_that_has_not_been_redone_yet(self):
+        self.run_the_scenario()
+        self.run_cli("translate", "--redo-errors", transport=FakeTransport(gemini_samples.unknown_format()))   # 甲：重做過、仍出錯
+        self.rewrite_experiment(lambda e: e["approaches"][1].update(runs=2))   # 乙多一輪，其中一個新的 Run 出錯、還沒重做
+        self.translate_all(gemini_samples.unknown_format(), *[ok_response(i) for i in IDS[1:]])
+        html = self.showcase()
+        self.assertIn("已全部跑過一遍，但有 1 個 Run 出錯或空內容，尚待重做", html)
+        self.assertIn("1 個 Run 重做過仍然沒有結果", html)
+        self.assertNotIn("已全部跑完", html)
+
     def test_a_run_that_errored_is_not_counted_as_done_while_the_experiment_is_still_running(self):
         self.translate_all(ok_response("9000001"), gemini_samples.unknown_format(), ok_response("9000002"), args=("--limit", "3"))
         html = self.showcase()
