@@ -13,16 +13,14 @@ from dataclasses import dataclass
 
 from .articles import load_article
 from .calibration import evaluate_judge, metrics_for
-from .check import require_checked
 from .config import load_experiment
 from .errors import InputError
 from .gate_report import gate_results, rate_of
 from .gold import load_gold_set
 from .ground_truth import load_ground_truth
+from .judged import load_judged
 from .report_text import ordered_groups
-from .review_decisions import apply_check_decisions, check_decisions, load_decisions
-from .review_items import build_items
-from .schemas import Direction, InputVariant, Task
+from .schemas import Direction, InputVariant
 from .stats import clopper_pearson_upper
 from .store import OutputDir
 
@@ -75,25 +73,12 @@ def accuracy_of(config_path: str, data_dir: str, judge_id: str) -> Accuracy | No
 
 
 def load_fade(args) -> Fade:
-    experiment = load_experiment(args.judged_in)
+    judged = load_judged(args.judged_in, args.data_dir)
+    experiment, truth, decisions = judged.experiment, judged.truth, judged.decisions
     cfg = experiment.config
-    if not experiment.judges:
-        raise InputError("--judged-in 的實驗沒有設定 Judge")
-    if cfg.ground_truth is None:
-        raise InputError("--judged-in 的實驗沒有 ground truth：淡化核對的事實來自 ground truth")
-    out = OutputDir(args.data_dir, cfg.id)
-    records = out.require_runs()
-    if not out.read_judge_calls(Task.FACT):
-        raise InputError("--judged-in 的實驗還沒有 Judge 的事實核對紀錄：先執行 judge")
-    rows = out.read_components()
-    require_checked(experiment, out, records, rows)
-    decisions = load_decisions(out)
-    articles = {i: load_article(cfg.articles.dir, i) for i in cfg.articles.ids}
-    truth = load_ground_truth(cfg.ground_truth, articles)
-    items = build_items(experiment, out, records, rows, articles, truth)
-    check_decisions(decisions, items)   # 決定過期或指向不存在的項目：停止，與報告一樣
-    must = [i for i in items if i.must_see]
-    results = [r for r in gate_results(experiment, out, records, articles, truth, decisions) if r.variant is InputVariant.FULL and r.gate is not None]
+    must = [i for i in judged.items if i.must_see]
+    results = [r for r in gate_results(experiment, judged.out, judged.records, judged.articles, truth, decisions)
+               if r.variant is InputVariant.FULL and r.gate is not None]
     names = experiment.display_names()
     cells = {}
     for r in results:

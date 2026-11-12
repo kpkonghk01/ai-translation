@@ -74,6 +74,7 @@ class ReviewItem:
     lines: list[str] = field(default_factory=list)   # Judge 的引用、理由等，一行一項
     locked: bool = False                              # 程式證明的結果：只能 accept
     weakening: WeakeningType | None = None            # 失敗的事實：兩次一致的淡化類型（沒有一致的類型就是 None）
+    fact_text: str | None = None                      # 事實項目：要保留的事實的文字（顯示用）
 
     @property
     def must_see(self) -> bool:
@@ -146,9 +147,9 @@ def _call_summary(calls) -> list:
              *([[s.model_dump(mode="json") for s in c.screenings]] if c.task is Task.SCREEN else [])] for c in calls]   # MQM 與 fact 的格式不變：已寫的審閱決定不會因此過期
 
 
-def _item(key, kind, status, run, component_id, judge, source, target, hash_parts, lines, locked=False, weakening=None) -> ReviewItem:
-    """input_hash 涵蓋顯示給審閱者的原文與譯文，加上 hash_parts（Judge 的原始輸出、事實等）。weakening 只是顯示用，不進 hash。"""
-    return ReviewItem(key, kind, status, run, component_id, judge, digest(source, target, *hash_parts), source, target, lines, locked, weakening)
+def _item(key, kind, status, run, component_id, judge, source, target, hash_parts, lines, locked=False, weakening=None, fact_text=None) -> ReviewItem:
+    """input_hash 涵蓋顯示給審閱者的原文與譯文，加上 hash_parts（Judge 的原始輸出、事實等）。weakening、fact_text 只是顯示用，不進 hash。"""
+    return ReviewItem(key, kind, status, run, component_id, judge, digest(source, target, *hash_parts), source, target, lines, locked, weakening, fact_text)
 
 
 def build_items(experiment: Experiment, out: OutputDir, records: list[RunRecord], rows: list[ComponentResult], articles,
@@ -313,7 +314,7 @@ def _fact_items(items, experiment: Experiment, truth: GroundTruth, record: RunRe
                         weakening = result.weakening_type
                 items.append(_item(fact_item_key(run, component_id, judge.id, fact.key), ItemKind.FACT, status, run, component_id, judge.id,
                                    pair.source_text, pair.translated_text, (fact.kind.value, fact.text, summary), lines, locked=locked,
-                                   weakening=weakening))
+                                   weakening=weakening, fact_text=one_line(fact.text)))
         for call in (judgment.calls if judgment is not None else ()):
             for invalid in (i for i in call.invalid if i.fact is None):   # 不認識的 fact_id、不是物件的條目：不屬於任何一條事實
                 items.append(_item(invalid_item_key(run, component_id, judge.id, Task.FACT, call.call_index, invalid.raw), ItemKind.INVALID, ItemStatus.INVALID,

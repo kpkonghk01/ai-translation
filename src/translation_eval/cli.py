@@ -10,7 +10,7 @@
   uv run --locked python -I -m translation_eval report --config <實驗設定>
   uv run --locked python -I -m translation_eval review --config <實驗設定> [--approach <id>]... [--status <狀態>]...   （有 --approach 或 --status 就只寫聚焦清單 review-focus.md）
   uv run --locked python -I -m translation_eval showcase --config <實驗設定> [--judged-in <實驗設定>] [--calibrated-in <實驗設定>]   （給非技術讀者的 HTML 展示報告，只有計數）
-  uv run --locked python -I -m translation_eval showcase-text --config <實驗設定>   （含原文與譯文片段的展示頁，只在本機看，不要轉發）
+  uv run --locked python -I -m translation_eval showcase-text --config <實驗設定> [--judged-in <實驗設定>]   （含原文與譯文片段的展示頁，只在本機看，不要轉發）
   uv run --locked python -I -m translation_eval sample --config <實驗設定> --id <新實驗 id> [--per-group 10] [--controls 3] [--seed 1]   （抽樣成新實驗，縮小 Judge 的範圍）
   uv run --locked python -I -m translation_eval calibrate --config <實驗設定> [--judge <id>] [--dry-run] [--limit <N>] [--redo-errors]
   uv run --locked python -I -m translation_eval crosscheck --config <實驗設定> [--dry-run] [--article <id>]... [--limit <N>] [--redo-errors]
@@ -51,6 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     sm.add_argument("--controls", type=int, default=3, help="對照文章抽幾篇（預設 3）")
     sm.add_argument("--seed", type=int, default=1, help="種子（預設 1）；同樣的種子抽出來的一樣")
     st = sub.add_parser("showcase-text", help="產生含原文與譯文片段的展示頁（含真實文章內容，只在本機看，不要轉發）")
+    st.add_argument("--judged-in", help="加上「被寫輕的例子」一節：Judge 評核過的實驗設定（通常是抽樣實驗）")
     sc = sub.add_parser("showcase", help="產生給非技術讀者看的 HTML 展示報告（只有計數，不含文章內容）")
     sc.add_argument("--judged-in", help="加上「淡化」一節：Judge 評核過的實驗設定（通常是抽樣實驗）")
     sc.add_argument("--calibrated-in", help="淡化一節寫 Judge 的準確度：Judge 校準過的實驗設定（要和 --judged-in 一起用）")
