@@ -118,7 +118,7 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
   ```
 
 - `translate` 可以中斷後重跑同一條指令：已有紀錄的 Run 會略過；`--redo-errors` 重做結果為 `error` 或 `empty`（空內容：provider 正常結束，但沒有任何輸出，見 GLOSSARY）的 Run（`block`、`refusal`、`malformed`、`truncated` 是結果，不會重做）。重做的 Run 取代舊紀錄，並在 `redone_from` 記下舊紀錄的結果（`error` 或 `empty`）；報告每個 Approach × Direction 一節有「重做過的 Run」一行，列出重做之前與之後的結果。空內容不在 Run 內自動重試。`--article <id>`（可重覆）只跑指定文章，`--limit <N>` 最多執行 N 個 Run。
-- **展示報告**（給非技術讀者，例如上司）：`showcase` 讀 `runs.jsonl`，寫出一頁 HTML（`showcase.html`，在實驗的輸出目錄，只在本機看）。內容是結論、各模型的結果表、測了什麼、重複跑與只送標題與正文的結果、完整數字；沒有文章內容、沒有文章編號，也沒有任何外部資源（離線也能開）。模型名用 Approach 設定的 `display_name`（baseline 在實驗設定的 `baselines` 條目也可以寫），沒有就用 `model`，不用代號；`display_name` 不進設定 hash，改名不會讓已有的 Run 被標成「與目前設定不同」，兩個模型的名稱相同會停止（明寫的重名在載入設定時就停止，沒寫而 model 相同的在 `showcase` 時停止）。主表只看完整文章、每篇每個方向的第 1 次，每個模型的分母才一樣；組別（一般題材、中國政治題材）來自 ground truth，沒有就是全部文章一組。不需要先 `check`，隨時可以執行；還沒跑完時頁面頂部寫「仍在進行」。Judge 的結果不放在這一頁。
+- **展示報告**（給非技術讀者，例如上司）：`showcase` 讀 `runs.jsonl`，寫出一頁 HTML（`showcase.html`，在實驗的輸出目錄；在 `data/` 底下，不進 git）。頁面只有計數，不含文章內容，可以直接給上司看。內容是結論、各模型的結果表、測了什麼、重複跑與只送標題與正文的結果、完整數字；沒有文章內容、沒有文章編號，也沒有任何外部資源（離線也能開）。模型名用 Approach 設定的 `display_name`（baseline 在實驗設定的 `baselines` 條目也可以寫），沒有就用 `model`，不用代號；`display_name` 不進設定 hash，改名不會讓已有的 Run 被標成「與目前設定不同」，兩個模型的名稱相同會停止（明寫的重名在載入設定時就停止，沒寫而 model 相同的在 `showcase` 時停止）。主表只看完整文章、每篇每個方向的第 1 次，每個模型的分母才一樣；組別（一般題材、中國政治題材）來自 ground truth，沒有就是全部文章一組。不需要先 `check`，隨時可以執行；還沒跑完時頁面頂部寫「仍在進行」。Judge 的結果不放在這一頁。
 
   ```bash
   uv run --locked python -I -m translation_eval showcase --config configs/experiments/first-batch.json

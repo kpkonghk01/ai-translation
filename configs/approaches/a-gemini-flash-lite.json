@@ -8,9 +8,6 @@
   "request_mode": "article-json",
   "max_output_tokens": 65536,
   "timeout_seconds": 600,
-  "retry": {
-    "max_attempts": 4,
-    "base_delay_seconds": 2
-  },
+  "retry": {"max_attempts": 4, "base_delay_seconds": 2},
   "concurrency": 1
 }

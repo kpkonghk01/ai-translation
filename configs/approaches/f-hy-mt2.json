@@ -5,18 +5,10 @@
   "provider": "openrouter",
   "model": "tencent/hy-mt2-30b-a3b",
   "api_key_env": "OPENROUTER_API_KEY",
-  "routing": {
-    "only": [
-      "tencent/fp8"
-    ],
-    "confirmed_on": "2026-11-09"
-  },
+  "routing": {"only": ["tencent/fp8"], "confirmed_on": "2026-11-09"},
   "request_mode": "per-component",
   "max_output_tokens": 4096,
   "timeout_seconds": 300,
-  "retry": {
-    "max_attempts": 4,
-    "base_delay_seconds": 2
-  },
+  "retry": {"max_attempts": 4, "base_delay_seconds": 2},
   "concurrency": 1
 }

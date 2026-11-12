@@ -10,6 +10,7 @@ import gemini_samples
 from fake_transport import FakeTransport
 from fixtures import APPROACH, FAKE_KEY, Workspace, good_simplified_translation, main_only_translation, ok_response, source_article
 from gate_helpers import ground_truth_for
+from judge_helpers import judge_transport
 
 NAME_A = "測試模型甲（虛構公司）"
 NAME_B = "測試模型乙（虛構公司）"
@@ -54,7 +55,16 @@ def row_of(table: list, name: str) -> list:
     return next(row for row in table if row[0] == name)
 
 
-class ShowcaseCase(Workspace):
+class Showcases:
+    """寫出展示頁並讀回來（Workspace 的測試共用）。"""
+
+    def showcase(self) -> str:
+        code, out, err = self.run_cli("showcase")
+        self.assertEqual(code, 0, err)
+        return self.output_text("showcase.html")
+
+
+class ShowcaseCase(Showcases, Workspace):
     article_ids = IDS
 
     @property
@@ -76,11 +86,6 @@ class ShowcaseCase(Workspace):
     def translate_all(self, *responses, args=()):
         code, _, err = self.run_cli("translate", *args, transport=FakeTransport(*responses))
         self.assertEqual(code, 0, err)
-
-    def showcase(self) -> str:
-        code, out, err = self.run_cli("showcase")
-        self.assertEqual(code, 0, err)
-        return self.output_text("showcase.html")
 
     def run_the_scenario(self):
         """每篇文章依序是 甲、乙 兩個模型。甲：9000002 被擋、9000004 出錯；乙：9000004 拒絕。"""
@@ -125,16 +130,18 @@ class ResultsTableTest(ShowcaseCase):
         html = self.showcase()
         self.assertIn(f"被擋最多的是{NAME_A}：25%（1/4）", html)
         self.assertIn(f"完全沒被擋：{NAME_B}", html)
-        self.assertIn(f"其他原因沒有拿到譯文最多的是{NAME_A}：25%（1/4）", html)
+        self.assertIn(f"其他未完成最多的是{NAME_A}：25%（1/4）", html)
+        self.assertIn(f"拒絕翻譯（Refusal）最多的是{NAME_B}：25%（1/4）", html)
 
     def test_when_nothing_was_blocked_it_says_so(self):
         self.translate_all(*[ok_response(i) for i in IDS for _ in range(2)])
         html = self.showcase()
         self.assertIn("沒有任何模型被擋", html)
+        self.assertIn("沒有任何模型拒絕翻譯（Refusal）", html)
         self.assertNotIn("被擋最多的是", html)
 
 
-class RoundingTest(Workspace):
+class RoundingTest(Showcases, Workspace):
     article_ids = ("9000001", "9000002", "9000003")
 
     def test_percentages_are_rounded_to_the_nearest_whole_number(self):
@@ -142,8 +149,7 @@ class RoundingTest(Workspace):
         code, _, err = self.run_cli("translate", transport=FakeTransport(gemini_samples.prompt_blocked(), gemini_samples.prompt_blocked(),
                                                                          ok_response("9000003")))
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.run_cli("showcase")[0], 0)
-        row = row_of(tables(self.output_text("showcase.html"))["results"], NAME_A)
+        row = row_of(tables(self.showcase())["results"], NAME_A)
         self.assertEqual(row[1:], ["33% 1/3", "67% 2/3", "0% 0/3", "0% 0/3"])   # 2/3 是 67%，不是 66%
 
 
@@ -152,6 +158,7 @@ class ProgressTest(ShowcaseCase):
         self.translate_all(ok_response("9000001"), ok_response("9000001"), ok_response("9000002"), args=("--limit", "3"))
         html = self.showcase()
         self.assertIn("已完成 3／8 個 Run", html)
+        self.assertIn("所有模型合計", html)
         self.assertIn("仍在進行", html)
         self.assertNotIn("已全部跑完", html)
         self.translate_all(ok_response("9000002"), *[ok_response(i) for i in IDS[2:] for _ in range(2)])
@@ -159,23 +166,77 @@ class ProgressTest(ShowcaseCase):
         self.assertIn("已全部跑完：8 個 Run", html)
         self.assertNotIn("仍在進行", html)
 
-    def test_runs_that_still_need_a_redo_are_mentioned_and_otherwise_not(self):
+    def test_a_run_that_errored_is_not_counted_as_done_while_the_experiment_is_still_running(self):
+        self.translate_all(ok_response("9000001"), gemini_samples.unknown_format(), ok_response("9000002"), args=("--limit", "3"))
+        html = self.showcase()
+        self.assertIn("已完成 2／8 個 Run", html)   # 3 個 Run 有紀錄，其中 1 個出錯、還沒有結果
+        self.assertIn("另有 1 個 Run 出錯或空內容，尚待重做", html)
+
+    def test_when_every_run_has_been_made_but_some_still_need_a_redo_it_does_not_say_finished(self):
         self.run_the_scenario()   # 甲有一個 error
-        self.assertIn("尚待重做", self.showcase())
+        html = self.showcase()
+        self.assertIn("已全部跑過一遍", html)
+        self.assertIn("尚待重做", html)
+        self.assertNotIn("已全部跑完", html)
+        self.assertNotIn("仍在進行", html)
         self.run_cli("translate", "--redo-errors", transport=FakeTransport(ok_response("9000004")))
-        self.assertNotIn("尚待重做", self.showcase())
+        html = self.showcase()
+        self.assertIn("已全部跑完：8 個 Run", html)
+        self.assertNotIn("尚待重做", html)
+
+
+class ScopeTest(ShowcaseCase):
+    def test_runs_made_with_another_config_are_counted_and_said_so_but_a_new_name_is_not_another_config(self):
+        self.run_the_scenario()
+        self.assertNotIn("不同的設定", self.showcase())
+        self.write_json(self.approach_path, {**APPROACH, "display_name": "改了名稱的模型甲"})
+        self.assertNotIn("不同的設定", self.showcase())
+        self.write_json(self.approach_path, {**APPROACH, "display_name": NAME_A, "max_output_tokens": 1000})
+        self.assertIn("4 個 Run 是用跟現在不同的設定跑的", self.showcase())
+
+    def test_runs_of_an_article_that_is_no_longer_in_the_experiment_are_left_out_and_said_so(self):
+        self.run_the_scenario()
+        self.article_ids = IDS[:3]
+        self.write_json(self.config_path, self.experiment())
+        html = self.showcase()
+        self.assertIn("另有 2 個 Run 屬於目前設定裡已沒有的模型或文章", html)
+        self.assertEqual(row_of(tables(html)["results"], NAME_A)[1], "67% 2/3")
+
+    def test_a_group_named_like_a_built_in_label_is_just_a_group(self):
+        self.use_ground_truth(ground_truth_for(("9000001", "general"), ("9000002", "general"), ("9000003", "china-political"),
+                                               ("9000004", "china-political")), group_overrides={"9000004": "all"})
+        self.run_the_scenario()
+        table = tables(self.showcase())["results"]
+        self.assertEqual(table[0], ["模型", "完成翻譯", "被擋（一般題材）", "被擋（中國政治題材）", "被擋（all）", "拒絕", "其他未完成"])
+        self.assertEqual(row_of(table, NAME_A)[4], "0% 0/1")
+
+    def test_an_article_without_ground_truth_is_its_own_group(self):
+        self.use_ground_truth(ground_truth_for(("9000001", "general"), ("9000002", "general"), ("9000003", "china-political")))
+        self.run_the_scenario()
+        html = self.showcase()
+        table = tables(html)["results"]
+        self.assertEqual(table[0][2:5], ["被擋（一般題材）", "被擋（中國政治題材）", "被擋（沒有 ground truth 的文章）"])
+        self.assertIn("沒有 ground truth 的文章 1 篇", html)
+
+    def test_a_ground_truth_that_does_not_validate_stops_it_without_writing_a_page(self):
+        self.run_the_scenario()
+        self.use_ground_truth(ground_truth_for(("9000001", "general"), ("9000001", "general")))   # 同一篇出現兩次
+        code, out, err = self.run_cli("showcase")
+        self.assertNotEqual(code, 0)
+        self.assertIn("出現了 2 次", err)
+        self.assertFalse(os.path.exists(os.path.join(self.out_dir, "showcase.html")))
 
 
 class DetailTest(ShowcaseCase):
     def test_the_detail_table_has_every_result_class_per_model_direction_and_input_version(self):
         self.run_the_scenario()
         details = tables(self.showcase())["details"]
-        self.assertEqual(details[0], ["模型", "方向", "輸入版本", "Run 數", "成功", "被擋", "拒絕", "空內容", "輸出格式壞", "截斷", "出錯"])
+        self.assertEqual(details[0], ["模型", "方向", "輸入版本", "Run 數", "完成翻譯", "被擋", "拒絕", "輸出格式壞", "截斷", "空內容", "出錯"])
         self.assertEqual(row_of(details, NAME_A), [NAME_A, "繁→英", "完整文章", "4", "2", "1", "0", "0", "0", "0", "1"])
         self.assertEqual(row_of(details, NAME_B), [NAME_B, "繁→英", "完整文章", "4", "3", "0", "1", "0", "0", "0", "0"])
 
 
-class RepeatedRunsTest(Workspace):
+class RepeatedRunsTest(Showcases, Workspace):
     """甲每篇每個方向跑 2 次，另有只送標題與正文的版本；主表只看完整文章的第 1 次，重複與只送正文放在另一張表。"""
     article_ids = ("9000001", "9000002")
     runs = 2
@@ -195,8 +256,7 @@ class RepeatedRunsTest(Workspace):
                      ok_response("9000002"), ok_response("9000002"), self.main_only("9000002"), self.main_only("9000002")]
         code, _, err = self.run_cli("translate", transport=FakeTransport(*responses))
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.run_cli("showcase")[0], 0)
-        return self.output_text("showcase.html")
+        return self.showcase()
 
     def test_the_main_table_counts_only_the_first_run_of_the_full_article(self):
         row = row_of(tables(self.prepare())["results"], NAME_A)
@@ -226,9 +286,21 @@ class SectionsTest(ShowcaseCase):
         self.assertIn("中國政治題材 2 篇", html)
         self.assertIn(NAME_A, html)
 
+    def test_each_model_says_how_many_runs_it_has_and_where_the_number_comes_from(self):
+        self.run_the_scenario()
+        html = self.showcase()
+        self.assertEqual(html.count("共 4 個 Run（4 篇 × 1 個方向 × 1 次）"), 2)   # 兩個模型各一次
+
+    def test_the_ground_truth_status_is_said_where_the_groups_come_from(self):
+        self.run_the_scenario()
+        self.assertIn("ground truth 目前是 draft", self.showcase())
+        self.extra_experiment.pop("ground_truth")
+        self.write_json(self.config_path, self.experiment())
+        self.assertNotIn("ground truth", self.showcase())
+
     def test_a_baseline_is_listed_with_its_display_name_and_is_not_a_row_of_the_results(self):
         self.extra_experiment["baselines"] = [{"id": "e", "dir": os.path.join(self.tmp, "baseline"), "direction": "trad-to-simplified",
-                                               "display_name": "現行服務（虛構）"}]
+                                               "display_name": "現行<i>服務</i>（虛構）"}]
         self.directions = ["trad-to-en", "trad-to-simplified"]
         self.write_json(self.config_path, self.experiment())
         for article_id in IDS:
@@ -236,7 +308,8 @@ class SectionsTest(ShowcaseCase):
         self.translate_all(*[ok_response(i) for i in IDS for _ in range(4)])   # 兩個模型 × 兩個方向
         self.assertEqual(self.run_cli("import-baseline")[0], 0)
         html = self.showcase()
-        self.assertIn("現行服務（虛構）", html)
+        self.assertIn("現行&lt;i&gt;服務&lt;/i&gt;（虛構）", html)
+        self.assertNotIn("<i>", html)
         self.assertEqual([row[0] for row in tables(html)["results"][1:]], [NAME_A, NAME_B])
         self.assertIn("已全部跑完：16 個 Run", html)   # 匯入的 baseline（4 個）不算翻譯的進度
         self.assertEqual(len(tables(html)["details"]) - 1, 4)   # 細節表也只有兩個模型 × 兩個方向
@@ -245,12 +318,22 @@ class SectionsTest(ShowcaseCase):
         self.run_the_scenario()
         self.assertIn("沒有設定 Judge", self.showcase())
 
-    def test_with_a_judge_it_points_to_the_report_instead(self):
+    def test_with_a_judge_that_has_not_run_yet_it_says_there_is_no_result_yet(self):
         self.use_judging()
         self.run_the_scenario()
         html = self.showcase()
+        self.assertIn("已設定 Judge，但還沒有評核結果", html)
         self.assertNotIn("沒有設定 Judge", html)
-        self.assertIn("report.md", html)
+        self.assertNotIn("report.md", html)
+
+    def test_with_judge_results_it_says_they_are_not_on_this_page(self):
+        self.use_judging()
+        self.run_the_scenario()
+        code, _, err = self.run_cli("judge", "--task", "mqm", transport=judge_transport())
+        self.assertEqual(code, 0, err)
+        html = self.showcase()
+        self.assertIn("評核結果沒有放在這一頁", html)
+        self.assertNotIn("已設定 Judge，但還沒有評核結果", html)
 
 
 class SafetyTest(ShowcaseCase):
@@ -307,6 +390,11 @@ class DisplayNameConfigTest(ShowcaseCase):
         self.write_json(self.approach_path, APPROACH)
         self.write_json(self.approach_b_path, {**APPROACH, "id": "b"})
         self.assert_showcase_refuses_the_names()
+
+    def test_names_that_differ_only_in_case_or_spacing_are_the_same_name(self):
+        self.write_json(self.approach_path, {**APPROACH, "display_name": "Model One"})
+        self.write_json(self.approach_b_path, {**APPROACH, "id": "b", "display_name": "model  one"})
+        self.assert_fails_cleanly("顯示名稱重覆")
 
     def test_a_blank_name_is_refused(self):
         self.write_json(self.approach_b_path, {**APPROACH, "id": "b", "display_name": "  "})

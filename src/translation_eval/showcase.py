@@ -4,11 +4,11 @@
   uv run --locked python -I -m translation_eval showcase --config <實驗設定> [--data-dir data]
 
 寫到 <data-dir>/experiments/<實驗 id>/showcase.html。隨時可以執行：還沒跑完時頁面頂部會寫「仍在進行」，數字是中途的。
-讀的是 runs.jsonl，不需要先 check；Judge 的結果不放在這裡（只說有沒有 Judge），完整的數字在 report.md。
-模型名用 Approach 設定的 display_name；沒有就用 model（不用代號 a、f：讀的人看不懂）。
+讀的是 runs.jsonl，不需要先 check；Judge 的結果不放在這裡（只說有沒有評核紀錄），完整的數字在 report.md。
+模型名用 Approach 設定的 display_name；沒有就用 model（不用代號 a、f：讀的人看不懂）。baseline 沒有顯示名稱時退回它的 id，所以要寫。
 
 主表只看完整文章、每篇每個方向的第 1 次：每個模型的分母一樣，才比得出來。重複跑的次數和只送標題與正文的版本，另放一張表。
-沒有任何外部資源（字型、script、網址）：離線也能開，也不會把頁面內容送出去。
+沒有任何外部資源（字型、script、網址）：離線也能開，也不會把頁面內容送出去。頁面用「模型」稱 Approach：讀的人不認識 Approach。
 """
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -16,22 +16,28 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 
 from .articles import load_article
-from .config import Experiment, load_experiment
+from .config import Experiment, display_name_problems, load_experiment
 from .errors import InputError
+from .gate_report import planned_runs
 from .ground_truth import GroundTruth, load_ground_truth
 from .schemas import Direction, Domain, InputVariant, Outcome, REDO_OUTCOMES, RunRecord
 from .store import OutputDir
 
-# 組別：沒有 ground truth 時全部文章一組；其他名稱（group_overrides）照原樣
 GROUP_LABELS = {Domain.GENERAL.value: "一般題材", Domain.CHINA_POLITICAL.value: "中國政治題材"}
-GROUP_NOTES = {Domain.GENERAL.value: "性罪行、暴力、衝突等社會新聞，含少量不敏感的對照文章",
-               Domain.CHINA_POLITICAL.value: "對中國政府不利的新聞"}
-ALL_ARTICLES, UNGROUPED = "all", "ungrouped"
+GROUP_NOTES = {Domain.GENERAL.value: "性罪行、暴力、衝突等社會新聞", Domain.CHINA_POLITICAL.value: "對中國政府不利的新聞"}
+# 這兩個組名同時就是顯示的文字：它們不是合法的 Slug，所以不會跟 group_overrides 裡使用者取的組名撞在一起
+ALL_ARTICLES, UNGROUPED = "全部文章", "沒有 ground truth 的文章"
 DIRECTION_LABELS = {Direction.TRAD_TO_EN: "繁→英", Direction.TRAD_TO_SIMPLIFIED: "繁→簡"}
 VARIANT_LABELS = {InputVariant.FULL: "完整文章", InputVariant.MAIN_ONLY: "只送標題與正文"}
-# 沒有拿到可用譯文、又不是 Block 或 Refusal 的結果（顯示用的名稱）
-NO_TRANSLATION = {Outcome.EMPTY: "空內容", Outcome.MALFORMED: "輸出格式壞", Outcome.TRUNCATED: "截斷", Outcome.ERROR: "出錯"}
+OUTCOME_LABELS = {Outcome.OK: "完成翻譯", Outcome.BLOCK: "被擋", Outcome.REFUSAL: "拒絕", Outcome.MALFORMED: "輸出格式壞",
+                  Outcome.TRUNCATED: "截斷", Outcome.EMPTY: "空內容", Outcome.ERROR: "出錯"}
+# 沒有拿到可用譯文、又不是 Block 或 Refusal 的結果：從 Outcome 推導，新增的結果類別不會被靜默漏掉
+NO_TRANSLATION = tuple(o for o in Outcome if o not in (Outcome.OK, Outcome.BLOCK, Outcome.REFUSAL))
 HONG_KONG = timezone(timedelta(hours=8))
+
+
+def outcome_label(outcome: Outcome) -> str:
+    return OUTCOME_LABELS.get(outcome, outcome.value)
 
 
 @dataclass
@@ -45,6 +51,13 @@ class Tally:
 
     def count(self, *outcomes: Outcome) -> int:
         return sum(self.outcomes[o] for o in outcomes)
+
+
+def tally(records) -> Tally:
+    result = Tally()
+    for record in records:
+        result.add(record)
+    return result
 
 
 def share(part: int, whole: int) -> tuple[str, str]:
@@ -69,9 +82,8 @@ def labels(experiment: Experiment) -> dict[str, str]:
     """代號 → 給人看的名稱。兩列同名（沒有顯示名稱而 model 相同，或名稱剛好等於別人的 model）會分不出來，所以停止。"""
     names = {p.id: p.config.display_name or p.config.model for p in experiment.approaches}
     names.update({b.id: b.display_name or b.id for b in experiment.config.baselines})
-    clashes = sorted(name for name, n in Counter(names.values()).items() if n > 1)
-    if clashes:
-        raise InputError([f"顯示名稱重覆：{name}（在 Approach 設定加上不同的 display_name）" for name in clashes])
+    if problems := display_name_problems(names.values()):
+        raise InputError(problems)
     return names
 
 
@@ -83,7 +95,7 @@ def group_of_article(experiment: Experiment, truth: GroundTruth | None) -> dict[
 
 
 def group_label(group: str) -> str:
-    return {ALL_ARTICLES: "全部文章", UNGROUPED: "沒有 ground truth 的文章"}.get(group) or GROUP_LABELS.get(group) or group
+    return GROUP_LABELS.get(group, group)
 
 
 def ordered_groups(groups) -> list[str]:
@@ -91,10 +103,11 @@ def ordered_groups(groups) -> list[str]:
     return sorted(set(groups), key=lambda g: (known.index(g) if g in known else len(known), g))
 
 
-def planned_total(experiment: Experiment) -> int:
-    """每個 Approach 該有的 Run 數：文章 × 方向 × 每篇的次數 × 輸入版本。baseline 不經 API，不算。"""
+def planned_for(experiment: Experiment, approach_id: str) -> int:
+    """這個 Approach 該有的 Run 數：文章 × 設定裡每個方向與輸入版本的次數。"""
     cfg = experiment.config
-    return sum(len(cfg.articles.ids) * len(cfg.directions) * p.runs * len(p.input_variants) for p in experiment.approaches)
+    planned = next(p for p in experiment.approaches if p.id == approach_id)
+    return len(cfg.articles.ids) * sum(planned_runs(experiment, approach_id, d, v) or 0 for d in cfg.directions for v in planned.input_variants)
 
 
 def first_full_runs(records: list[RunRecord]) -> list[RunRecord]:
@@ -104,41 +117,42 @@ def first_full_runs(records: list[RunRecord]) -> list[RunRecord]:
 # ───────────── 各節 ─────────────
 
 def status_html(experiment: Experiment, records: list[RunRecord]) -> str:
-    planned, recorded = planned_total(experiment), len(records)
-    if recorded < planned:
-        text = f"仍在進行：已完成 {recorded}／{planned} 個 Run（{int(100 * recorded / planned)}%）。以下是中途的數字，之後還會變。"
-        kind = "wait"
-    else:
-        text = f"已全部跑完：{recorded} 個 Run。"
-        kind = "ok"
+    planned = sum(planned_for(experiment, p.id) for p in experiment.approaches)
     redo = sum(1 for r in records if r.outcome in REDO_OUTCOMES)
-    if redo:
-        text += f"另有 {redo} 個 Run 出錯或空內容，尚待重做；重做後數字會再變。"
+    done = len(records) - redo   # 出錯或空內容的 Run 還沒有結果：不算完成
+    redo_note = f"另有 {redo} 個 Run 出錯或空內容，尚待重做；重做後數字會再變。"
+    if len(records) < planned:
+        text, kind = f"仍在進行：已完成 {done}／{planned} 個 Run（{int(100 * done / planned)}%，所有模型合計；各模型的數量見「測了什麼」）。以下是中途的數字，之後還會變。" + (redo_note if redo else ""), "wait"
+    elif redo:
+        text, kind = f"已全部跑過一遍，但有 {redo} 個 Run 出錯或空內容，尚待重做；重做後數字會再變。", "wait"
+    else:
+        text, kind = f"已全部跑完：{len(records)} 個 Run。", "ok"
     return f'<p class="status {kind}">{escape(text)}</p>'
 
 
 def summary_items(rows: list[tuple[str, Tally]]) -> list[str]:
-    """「先看結論」：只陳述表裡的數字，不下判斷。rows：(名稱, 完整文章第 1 次的結果)。"""
+    """「先看結論」：只陳述表裡的數字，不下判斷。rows：(名稱, 完整文章第 1 次的結果)。回傳純文字，逸出在輸出時才做。"""
     rows = [(name, t) for name, t in rows if t.runs]
     if not rows:
         return []
 
-    def best(counter) -> list[str]:
-        top = max(counter(t) / t.runs for _, t in rows)
-        return [f"{escape(name)}：{sentence_share(counter(t), t.runs)}" for name, t in rows if top and counter(t) / t.runs == top]
+    def highest(count) -> list[str]:
+        top = max(count(t) / t.runs for _, t in rows)
+        return [f"{name}：{sentence_share(count(t), t.runs)}" for name, t in rows if top and count(t) / t.runs == top]
 
-    items = []
     blocked = lambda t: t.count(Outcome.BLOCK)  # noqa: E731
+    refused = lambda t: t.count(Outcome.REFUSAL)  # noqa: E731
+    unfinished = lambda t: t.count(*NO_TRANSLATION)  # noqa: E731
+    items = []
     if any(blocked(t) for _, t in rows):
-        items.append("被擋最多的是" + "、".join(best(blocked)))
-        unblocked = [escape(name) for name, t in rows if not blocked(t)]
-        if unblocked:
+        items.append("被擋最多的是" + "、".join(highest(blocked)))
+        if unblocked := [name for name, t in rows if not blocked(t)]:
             items.append("完全沒被擋：" + "、".join(unblocked))
     else:
         items.append("沒有任何模型被擋")
-    no_translation = lambda t: t.count(*NO_TRANSLATION)  # noqa: E731
-    if any(no_translation(t) for _, t in rows):
-        items.append("其他原因沒有拿到譯文最多的是" + "、".join(best(no_translation)))
+    items.append("拒絕翻譯（Refusal）最多的是" + "、".join(highest(refused)) if any(refused(t) for _, t in rows) else "沒有任何模型拒絕翻譯（Refusal）")
+    if any(unfinished(t) for _, t in rows):
+        items.append("其他未完成最多的是" + "、".join(highest(unfinished)))
     return items
 
 
@@ -146,17 +160,16 @@ def what_was_tested_html(experiment: Experiment, names: dict[str, str], group_si
     cfg = experiment.config
     models = []
     for p in experiment.approaches:
-        extra = [f"每篇每個方向跑 {p.runs} 次"] if p.runs > 1 else []
-        if InputVariant.MAIN_ONLY in p.input_variants:
-            extra.append("另有只送標題與正文的版本")
-        models.append(f"<li>{escape(names[p.id])}" + (f"<small>（{escape('；'.join(extra))}）</small>" if extra else "") + "</li>")
+        formula = f"{len(cfg.articles.ids)} 篇 × {len(cfg.directions)} 個方向 × {p.runs} 次" + (f" × {len(p.input_variants)} 個輸入版本" if len(p.input_variants) > 1 else "")
+        models.append(f"<li>{escape(names[p.id])}<small>共 {planned_for(experiment, p.id)} 個 Run（{escape(formula)}）</small></li>")
     groups = "".join(f"<li>{escape(group_label(g))} {group_sizes[g]} 篇" + (f"<small>（{escape(GROUP_NOTES[g])}）</small>" if g in GROUP_NOTES else "") + "</li>"
                      for g in ordered_groups(group_sizes))
+    truth_note = f"<small>組別依 ground truth 的題材標記（ground truth 目前是 {escape(cfg.ground_truth.status.value)}）</small>" if cfg.ground_truth else ""
     directions = "、".join(DIRECTION_LABELS.get(d, str(d)) for d in cfg.directions)
     baselines = "".join(f"<li>對照（不經 AI）：{escape(names[b.id])}，只做{DIRECTION_LABELS.get(b.direction, str(b.direction))}</li>" for b in cfg.baselines)
     return ("<section><h2>測了什麼</h2><dl class=\"facts\">"
             f"<dt>模型</dt><dd><ul>{''.join(models)}{baselines}</ul></dd>"
-            f"<dt>文章</dt><dd><ul>{groups}</ul></dd>"
+            f"<dt>文章</dt><dd><ul>{groups}</ul>{truth_note}</dd>"
             f"<dt>翻譯方向</dt><dd>{escape(directions)}</dd></dl></section>")
 
 
@@ -166,22 +179,20 @@ def results_html(experiment: Experiment, names: dict[str, str], records: list[Ru
     body, summary_rows = [], []
     for p in experiment.approaches:
         mine = [r for r in first_full_runs(records) if r.approach == p.id]
-        overall, by_group = Tally(), defaultdict(Tally)
-        for r in mine:
-            overall.add(r)
-            by_group[group_of[r.article_id]].add(r)
-        other = overall.count(*NO_TRANSLATION)
-        breakdown = "、".join(f"{label} {overall.count(o)}" for o, label in NO_TRANSLATION.items() if overall.count(o)) or None
+        overall = tally(mine)
+        by_group = {g: tally(r for r in mine if group_of[r.article_id] == g) for g in groups}
+        breakdown = "、".join(f"{outcome_label(o)} {overall.count(o)}" for o in NO_TRANSLATION if overall.count(o)) or None
         summary_rows.append((names[p.id], overall))
         body.append("<tr>" + f"<th scope=\"row\">{escape(names[p.id])}</th>"
                     + cell(overall.count(Outcome.OK), overall.runs, "ok")
                     + "".join(cell(by_group[g].count(Outcome.BLOCK), by_group[g].runs, "bad") for g in groups)
                     + cell(overall.count(Outcome.REFUSAL), overall.runs, "bad")
-                    + cell(other, overall.runs, "muted", breakdown) + "</tr>")
+                    + cell(overall.count(*NO_TRANSLATION), overall.runs, "muted", breakdown) + "</tr>")
     items = summary_items(summary_rows)
-    lines = f'<ul class="takeaways">{"".join(f"<li>{i}</li>" for i in items)}</ul>' if items else ""
+    lines = f'<ul class="takeaways">{"".join(f"<li>{escape(i)}</li>" for i in items)}</ul>' if items else ""
     table = ('<table id="results"><caption>完整文章、每篇每個方向的第 1 次結果。分母是 Run 數（一篇文章翻成一個方向是一個 Run）。</caption>'
-             f"<thead><tr><th>模型</th><th>完成翻譯</th>{head}<th>拒絕</th><th>其他未完成</th></tr></thead><tbody>{''.join(body)}</tbody></table>")
+             f"<thead><tr><th>模型</th><th>{outcome_label(Outcome.OK)}</th>{head}<th>{outcome_label(Outcome.REFUSAL)}</th><th>其他未完成</th></tr></thead>"
+             f"<tbody>{''.join(body)}</tbody></table>")
     legend = ('<dl class="legend"><dt>被擋（Block）</dt><dd>模型供應商在系統層拒絕處理這篇文章，沒有任何譯文。</dd>'
               '<dt>拒絕（Refusal）</dt><dd>模型回覆「無法翻譯」之類，而不是譯文。</dd>'
               '<dt>其他未完成</dt><dd>沒有拿到可用的譯文：空內容（供應商有回應但沒有輸出）、輸出格式壞、被截斷，或出錯（網路或供應商後端的錯誤）。'
@@ -196,14 +207,12 @@ def stability_html(experiment: Experiment, names: dict[str, str], records: list[
             continue
         mine = [r for r in records if r.approach == p.id]
         full = [r for r in mine if r.input_variant is InputVariant.FULL]
-        main_only = [r for r in mine if r.input_variant is InputVariant.MAIN_ONLY]
-        blocked_runs = sum(1 for r in full if r.outcome is Outcome.BLOCK)
+        main_only = tally(r for r in mine if r.input_variant is InputVariant.MAIN_ONLY)
         articles = {r.article_id for r in full}
         blocked_articles = {r.article_id for r in full if r.outcome is Outcome.BLOCK}
-        only = (cell(sum(1 for r in main_only if r.outcome is Outcome.BLOCK), len(main_only), "bad")
-                if InputVariant.MAIN_ONLY in p.input_variants else "<td>—</td>")
+        only = cell(main_only.count(Outcome.BLOCK), main_only.runs, "bad") if InputVariant.MAIN_ONLY in p.input_variants else "<td>—</td>"
         rows.append(f"<tr><th scope=\"row\">{escape(names[p.id])}</th><td>{p.runs}</td>"
-                    + cell(blocked_runs, len(full), "bad") + cell(len(blocked_articles), len(articles), "bad") + only + "</tr>")
+                    + cell(tally(full).count(Outcome.BLOCK), len(full), "bad") + cell(len(blocked_articles), len(articles), "bad") + only + "</tr>")
     if not rows:
         return ""
     return ("<section><h2>重複跑與只送標題與正文</h2>"
@@ -222,39 +231,45 @@ def details_html(experiment: Experiment, names: dict[str, str], records: list[Ru
         tallies[(r.approach, r.direction, r.input_variant)].add(r)
     rows = []
     for key in sorted(tallies, key=lambda k: (order[k[0]], directions.get(k[1], len(directions)), variants[k[2]])):
-        t, approach, direction, variant = tallies[key], *key
-        counts = [t.count(Outcome.OK), t.count(Outcome.BLOCK), t.count(Outcome.REFUSAL)] + [t.count(o) for o in NO_TRANSLATION]
+        t, (approach, direction, variant) = tallies[key], key
         rows.append(f"<tr><th scope=\"row\">{escape(names[approach])}</th><td>{DIRECTION_LABELS.get(direction, escape(str(direction)))}</td>"
-                    f"<td>{VARIANT_LABELS[variant]}</td><td>{t.runs}</td>" + "".join(f"<td>{n}</td>" for n in counts) + "</tr>")
-    heads = "".join(f"<th>{h}</th>" for h in ("模型", "方向", "輸入版本", "Run 數", "成功", "被擋", "拒絕", *NO_TRANSLATION.values()))
+                    f"<td>{VARIANT_LABELS[variant]}</td><td>{t.runs}</td>" + "".join(f"<td>{t.count(o)}</td>" for o in Outcome) + "</tr>")
+    heads = "".join(f"<th>{h}</th>" for h in ("模型", "方向", "輸入版本", "Run 數", *(outcome_label(o) for o in Outcome)))
     return (f'<section><details><summary>各模型、各方向、各輸入版本的完整數字</summary>'
             f'<table id="details"><thead><tr>{heads}</tr></thead><tbody>{"".join(rows)}</tbody></table></details></section>')
 
 
-def not_measured_html(experiment: Experiment) -> str:
-    if experiment.judges:
-        text = "譯文有沒有把敏感內容寫輕（淡化率），以及譯文的質素，由 Judge 評核。結果在 report.md 的 Gate 一節，這一頁不重複。"
-    else:
+def not_measured_html(experiment: Experiment, judged: bool) -> str:
+    if not experiment.judges:
         text = "這一批沒有設定 Judge，所以還沒有淡化率（譯文有沒有把敏感內容寫輕）和譯文質素的數字。這一頁只說明翻譯有沒有成功。"
+    elif not judged:
+        text = "已設定 Judge，但還沒有評核結果，所以還沒有淡化率（譯文有沒有把敏感內容寫輕）和譯文質素的數字。這一頁只說明翻譯有沒有成功。"
+    else:
+        text = "淡化率與譯文質素由 Judge 評核。評核結果沒有放在這一頁，完整數字在 report.md（請向負責人索取）。"
     return f"<section><h2>還沒有的結果</h2><p>{escape(text)}</p></section>"
 
 
-def render(experiment: Experiment, names: dict[str, str], records: list[RunRecord], group_of: dict[str, str]) -> str:
-    in_experiment = {p.id for p in experiment.approaches}
-    shown_records = [r for r in records if not r.is_baseline and r.approach in in_experiment]
-    left_out = sum(1 for r in records if not r.is_baseline and r.approach not in in_experiment)
-    results = results_html(experiment, names, shown_records, group_of)
+def render(experiment: Experiment, names: dict[str, str], records: list[RunRecord], group_of: dict[str, str], judged: bool) -> str:
+    hashes = {p.id: p.config_hash for p in experiment.approaches}
+    shown = [r for r in records if not r.is_baseline and r.approach in hashes and r.article_id in group_of]
+    left_out = sum(1 for r in records if not r.is_baseline) - len(shown)
+    other_config = sum(1 for r in shown if r.config_hash != hashes[r.approach])
+    warnings = []
+    if other_config:
+        warnings.append(f"有 {other_config} 個 Run 是用跟現在不同的設定跑的（設定在跑的途中改過）；這一頁照樣算進去。")
+    if left_out:
+        warnings.append(f"另有 {left_out} 個 Run 屬於目前設定裡已沒有的模型或文章，沒有列在這一頁。")
+    notes = "".join(f"<p class=\"note\">{escape(w)}</p>" for w in warnings)
     updated = max(datetime.fromisoformat(r.created_at) for r in records).astimezone(HONG_KONG).strftime("%Y-%m-%d %H:%M")
-    notes = f"<p class=\"note\">另有 {left_out} 個 Run 屬於目前設定裡已沒有的模型，沒有列在這一頁。</p>" if left_out else ""
     body = (f"<header><h1>AI 翻譯會不會被擋、會不會拒絕</h1>"
             "<p class=\"lede\">用同一批新聞，測幾個翻譯模型能不能把文章翻完。這一頁只看「有沒有翻出來」。</p>"
-            f"{status_html(experiment, shown_records)}</header>"
-            f"{results}"
+            f"{status_html(experiment, shown)}{notes}</header>"
+            f"{results_html(experiment, names, shown, group_of)}"
             f"{what_was_tested_html(experiment, names, Counter(group_of.values()))}"
-            f"{stability_html(experiment, names, shown_records)}"
-            f"{details_html(experiment, names, shown_records)}"
-            f"{not_measured_html(experiment)}"
-            f"<footer>{notes}<p>資料截至 {updated}（香港時間）。這一頁只有計數，不含文章內容，也沒有文章編號。實驗：{escape(experiment.config.id)}</p></footer>")
+            f"{stability_html(experiment, names, shown)}"
+            f"{details_html(experiment, names, shown)}"
+            f"{not_measured_html(experiment, judged)}"
+            f"<footer><p>資料截至 {updated}（香港時間）。這一頁只有計數，不含文章內容，也沒有文章編號。實驗：{escape(experiment.config.id)}</p></footer>")
     return f'<!doctype html>\n<html lang="zh-Hant"><meta charset="utf-8"><title>AI 翻譯評測結果</title><style>{STYLE}</style><body><main>{body}</main></body></html>\n'
 
 
@@ -267,7 +282,8 @@ def handle(args) -> int:
     truth = None
     if cfg.ground_truth:   # 組別來自 ground truth（與 Gate 的分組一樣）；它對文章驗證，所以要載入文章
         truth = load_ground_truth(cfg.ground_truth, {i: load_article(cfg.articles.dir, i) for i in cfg.articles.ids})
-    html = render(experiment, names, records, group_of_article(experiment, truth))
+    judged = bool(experiment.judges) and bool(out.read_judge_calls(None))
+    html = render(experiment, names, records, group_of_article(experiment, truth), judged)
     out.write_showcase(html)   # 都算好才寫：中途失敗不會留下半份頁面
     print(f"已寫入 {out.showcase_path}（{len(records)} 個 Run）")
     return 0
@@ -275,14 +291,13 @@ def handle(args) -> int:
 
 STYLE = """
 :root { --paper:#f5f7f9; --panel:#fff; --ink:#1b2430; --muted:#5a6672; --rule:#d5dce3; --ok:#2c7a4b; --bad:#b3261e; --wait:#9a6200;
-  --ok-soft:#e1f1e7; --wait-soft:#f8edd8; --track:#e6ebf0; color-scheme: light dark; }
-@media (prefers-color-scheme: dark) { :root { --paper:#12161b; --panel:#1a2027; --ink:#e2e7ec; --muted:#9ba7b3; --rule:#2c353f;
-  --ok:#74c393; --bad:#f0928a; --wait:#e2ad55; --ok-soft:#1a2e22; --wait-soft:#33281a; --track:#2c353f; } }
+  --ok-soft:#e1f1e7; --wait-soft:#f8edd8; --track:#e6ebf0; }
 body { margin:0; background:var(--paper); color:var(--ink); font:15px/1.75 "PingFang TC","Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif; }
 main { max-width:940px; margin:0 auto; padding:48px 16px 72px; display:grid; gap:40px; }
 h1 { margin:0; font-size:2rem; line-height:1.3; } h2 { margin:0 0 12px; font-size:1.25rem; }
 section, header { display:grid; gap:12px; min-width:0; } p, ul, dl { margin:0; } ul { padding:0; list-style:none; }
 .lede { font-size:1.05rem; } .note, small, caption, footer { color:var(--muted); font-size:.875rem; }
+li small { margin-left:8px; }
 .status { padding:10px 14px; border-radius:6px; font-weight:500; }
 .status.wait { background:var(--wait-soft); color:var(--wait); } .status.ok { background:var(--ok-soft); color:var(--ok); }
 .takeaways { display:grid; gap:6px; padding:16px 20px; background:var(--panel); border:1px solid var(--rule); border-radius:8px; }
@@ -296,5 +311,4 @@ td b { font-size:1.05rem; font-variant-numeric:tabular-nums; } td small { margin
 .facts { display:grid; grid-template-columns:7em 1fr; gap:10px 16px; } .facts dt, .legend dt { font-weight:700; } .facts dd, .legend dd { margin:0; }
 .legend { display:grid; gap:4px; font-size:.9rem; } summary { cursor:pointer; font-weight:700; margin-bottom:12px; }
 footer { border-top:1px solid var(--rule); padding-top:16px; display:grid; gap:6px; }
-@media print { body { background:#fff; } main { padding:0; } }
 """

@@ -81,6 +81,16 @@ def length_ranges(config: ExperimentConfig) -> dict[Direction, LengthRatioRange]
     return {**DEFAULT_LENGTH_RATIO, **config.length_ratio}
 
 
+def display_name_problems(names) -> list[str]:
+    """重覆的顯示名稱（不分大小寫、連續空白視為一個：兩列看起來一樣就分不出來）。載入設定和展示報告共用同一套檢查。"""
+    first, count = {}, Counter()
+    for name in names:
+        key = " ".join(name.split()).casefold()
+        first.setdefault(key, name)
+        count[key] += 1
+    return [f"顯示名稱重覆：{first[key]}（在 Approach 設定改成不同的 display_name）" for key, n in count.items() if n > 1]
+
+
 def load_experiment(path: str) -> Experiment:
     config = read_model(path, ExperimentConfig)
     approaches, seen, problems = [], set(), []
@@ -94,7 +104,7 @@ def load_experiment(path: str) -> Experiment:
     clashes = [b.id for b in config.baselines if b.id in seen]
     problems += [f"baseline 的 id 與 Approach 的 id 重覆：{i}" for i in clashes]
     named = [a.config.display_name for a in approaches if a.config.display_name] + [b.display_name for b in config.baselines if b.display_name]
-    problems += [f"顯示名稱重覆：{name}" for name, n in Counter(named).items() if n > 1]
+    problems += display_name_problems(named)
     judges = load_judges(config, seen, problems)
     problems += gate_config_problems(config, judges)
     problems += comparison_problems(config, approaches)

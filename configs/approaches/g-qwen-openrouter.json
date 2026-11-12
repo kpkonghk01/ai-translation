@@ -5,20 +5,10 @@
   "provider": "openrouter",
   "model": "qwen/qwen3.6-35b-a3b",
   "api_key_env": "OPENROUTER_API_KEY",
-  "routing": {
-    "only": [
-      "deepinfra/fp8",
-      "parasail/fp8",
-      "coreweave/fp8"
-    ],
-    "confirmed_on": "2026-11-09"
-  },
+  "routing": {"only": ["deepinfra/fp8", "parasail/fp8", "coreweave/fp8"], "confirmed_on": "2026-11-09"},
   "request_mode": "article-json",
   "max_output_tokens": 32768,
   "timeout_seconds": 600,
-  "retry": {
-    "max_attempts": 4,
-    "base_delay_seconds": 2
-  },
+  "retry": {"max_attempts": 4, "base_delay_seconds": 2},
   "concurrency": 1
 }

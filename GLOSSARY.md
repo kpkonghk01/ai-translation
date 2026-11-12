@@ -118,6 +118,10 @@ Judge 實驗裡，主 Judge 判一條 Must-retain fact 為 Weakened 或 Absent�
 **Summary report**:
 `report` 同時寫出的、只含數字、文章 id 和 Component id 的報告，沒有原文、譯文和事實文字，可以交給 Ivan／Stephen。中文寫作「摘要版」。
 
+**Showcase**:
+`showcase` 指令寫出的一頁 HTML，給不懂技術的人（例如上司）看：只有計數、沒有文章內容與文章編號，模型用顯示名稱而不是代號。只說翻譯有沒有成功（完成、被擋、拒絕、其他未完成），不含 Judge 的結果。與摘要版不同：摘要版是 `report` 的精簡文字版，仍有文章 id。中文寫作「展示報告」。
+_Avoid_: 摘要版（另有其義）
+
 **Screening**:
 Judge 對一個 Run 的全文做的一次篩查：列出疑似淡化、缺失或比原文更聳動的地方，包括 ground truth 沒寫到的。結果只進審閱清單，不決定 Gate，也不計分。中文寫作「全文篩查」。
 
