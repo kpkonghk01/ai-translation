@@ -646,6 +646,16 @@ class GtFile(StrictModel):
     articles: list[GtArticle]
 
 
+class SampleNote(BaseModel):
+    """抽樣實驗的 sample.json：從哪個實驗、用什麼種子抽、每組抽幾篇、抽了哪些文章。sample 寫，showcase 讀。檔案裡的鍵是 "from"。"""
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+    from_experiment: str = Field(alias="from")
+    seed: int
+    per_group: int
+    controls: int
+    articles: list[str]
+
+
 # ───────────── 審閱決定 ─────────────
 
 class ReviewAction(StrEnum):

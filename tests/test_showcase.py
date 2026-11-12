@@ -45,6 +45,41 @@ class _Tables(HTMLParser):
             self._cell += data.split()
 
 
+class _Examples(HTMLParser):
+    """每張例子卡（class="example" 的 li）的文字，空白合併。"""
+
+    def __init__(self):
+        super().__init__()
+        self.cards, self._card, self._depth = [], None, 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "li" and "example" in (dict(attrs).get("class") or "").split() and self._card is None:
+            self._card, self._depth = [], 1
+        elif self._card is not None and tag == "li":
+            self._depth += 1
+
+    def handle_endtag(self, tag):
+        if self._card is not None and tag == "li":
+            self._depth -= 1
+            if self._depth == 0:
+                self.cards.append(" ".join(self._card))
+                self._card = None
+
+    def handle_data(self, data):
+        if self._card is not None:
+            self._card += data.split()
+
+
+def example_cards(html: str) -> list[str]:
+    parser = _Examples()
+    parser.feed(html)
+    return parser.cards
+
+
+def card_with(html: str, needle: str) -> str:
+    return next(card for card in example_cards(html) if needle in card)
+
+
 def tables(html: str) -> dict:
     parser = _Tables()
     parser.feed(html)
@@ -162,6 +197,116 @@ class RoundingTest(Showcases, Workspace):
         self.assertEqual(code, 0, err)
         row = row_of(tables(self.showcase())["results"], NAME_A)
         self.assertEqual(row[1:], ["33% 1/3", "67% 2/3", "0% 0/3", "0% 0/3"])   # 2/3 是 67%，不是 66%
+
+
+class ExamplesTest(ShowcaseCase):
+    """每種出現過的結果各一張例子卡：取自主表的 Run 裡該種結果的第一個，不是挑過的；只有模型、方向、組別和數量。"""
+
+    def test_one_card_for_each_kind_of_result_that_happened_and_none_for_the_others(self):
+        self.run_the_scenario()   # 甲：完成、被擋、完成、出錯；乙：完成、完成、完成、拒絕
+        cards = example_cards(self.showcase())
+        self.assertEqual(len(cards), 4)
+        for needle in ("完成翻譯", "被擋", "拒絕", "出錯"):
+            self.assertEqual(sum(needle in card.split("。")[0] for card in cards), 1, needle)
+        self.assertFalse(any("空內容" in card or "輸出格式壞" in card for card in cards))
+
+    def test_what_did_not_happen_is_listed_so_the_reader_does_not_wonder(self):
+        self.run_the_scenario()
+        self.assertIn("這一批沒有出現：空內容、輸出格式壞、截斷", self.showcase())
+
+    def test_a_card_names_the_model_direction_and_group_of_the_first_such_run_and_how_many_there_were(self):
+        self.run_the_scenario()   # 只有甲在 9000002（一般題材）被擋
+        card = card_with(self.showcase(), "被擋")
+        for expected in (NAME_A, "繁→英", "一般題材", "這一批共 1 個 Run", "原因代碼 prompt:PROHIBITED_CONTENT"):
+            self.assertIn(expected, card)
+
+    def test_the_first_such_run_is_the_example_not_a_chosen_one(self):
+        # 乙先在 9000001（一般題材）被擋，甲後在 9000003（中國政治題材）被擋：例子是 Run 紀錄裡第一個
+        self.translate_all(gemini_samples.prompt_blocked(), ok_response("9000001"),   # 9000001：甲被擋、乙成功
+                           ok_response("9000002"), ok_response("9000002"),
+                           ok_response("9000003"), gemini_samples.prompt_blocked(),   # 9000003：乙被擋
+                           ok_response("9000004"), ok_response("9000004"))
+        card = card_with(self.showcase(), "被擋")
+        self.assertIn("這一批共 2 個 Run", card)
+        self.assertIn(f"{NAME_A} 1、{NAME_B} 1", card)
+        self.assertIn(f"發生在：{NAME_A}", card)
+        self.assertIn("一般題材", card)
+
+    def test_different_block_reasons_each_get_their_own_card(self):
+        self.translate_all(gemini_samples.prompt_blocked(), gemini_samples.safety_stopped("{}", "PROHIBITED_CONTENT"),
+                           ok_response("9000002"), ok_response("9000002"), ok_response("9000003"), ok_response("9000003"),
+                           ok_response("9000004"), ok_response("9000004"))
+        html = self.showcase()
+        self.assertIn("原因代碼 prompt:PROHIBITED_CONTENT", card_with(html, "輸入端"))
+        self.assertIn("原因代碼 output:PROHIBITED_CONTENT", card_with(html, "翻到一半"))
+        self.assertEqual(sum("被擋" in card.split("。")[0] for card in example_cards(html)), 2)
+
+    def test_the_success_card_says_how_many_segments_the_translation_has(self):
+        self.run_the_scenario()
+        segments = len(source_article("9000001")["components"])
+        self.assertIn(f"譯文有 {segments} 個段落", card_with(self.showcase(), "完成翻譯"))
+
+    def test_the_text_of_a_card_comes_from_the_kind_of_result_and_never_from_the_provider(self):
+        self.run_the_scenario()   # 甲有一個 error：它的 reason 是 provider 回應裡來的字串
+        html = self.showcase()
+        self.assertNotIn("HTTP", html)
+        self.assertNotIn("finishReason", html)
+
+    def test_an_example_never_shows_an_article_id_or_the_unit_that_failed(self):
+        self.run_the_scenario()
+        for article_id in IDS:
+            self.assertNotIn(article_id, self.showcase())
+
+    def test_it_is_the_same_page_every_time(self):
+        self.run_the_scenario()
+        first = self.showcase()
+        self.assertEqual(self.showcase().split("資料截至")[0], first.split("資料截至")[0])
+
+
+class ExamplesScopeTest(Showcases, Workspace):
+    """例子與主表同一批 Run：完整文章的第 1 次。只在重複跑裡出現的結果，不是主表的數字，也不該出現在例子。"""
+    article_ids = ("9000001", "9000002")
+    runs = 2
+
+    def setUp(self):
+        super().setUp()
+        self.use_ground_truth(ground_truth_for(("9000001", "general"), ("9000002", "general")))
+
+    def test_a_result_that_only_happened_in_a_repeat_has_no_card(self):
+        code, _, err = self.run_cli("translate", transport=FakeTransport(
+            ok_response("9000001"), gemini_samples.prompt_blocked(), ok_response("9000002"), ok_response("9000002")))   # 9000001 的第 2 次被擋
+        self.assertEqual(code, 0, err)
+        html = self.showcase()
+        self.assertFalse(any("被擋" in card.split("。")[0] for card in example_cards(html)))
+        self.assertIn("被擋", html.split("這一批沒有出現：")[1].split("。")[0])
+
+
+class ExamplesSafetyTest(ShowcaseCase):
+    def test_a_block_reason_that_is_not_a_plain_code_is_not_shown_and_the_card_still_exists(self):
+        self.translate_all(gemini_samples.prompt_blocked("SOMETHING ODD HERE"), ok_response("9000001"),
+                           ok_response("9000002"), ok_response("9000002"), ok_response("9000003"), ok_response("9000003"),
+                           ok_response("9000004"), ok_response("9000004"))
+        html = self.showcase()
+        card = card_with(html, "被擋")
+        self.assertIn("被擋（其他）", card)   # 代碼不是單純的寫法：連前綴也不信，只說被擋
+        self.assertNotIn("原因代碼", card)
+        self.assertNotIn("ODD", html)
+
+    def test_model_names_inside_a_card_are_escaped(self):
+        self.write_json(self.approach_path, {**APPROACH, "display_name": "甲<i>&乙"})
+        self.run_the_scenario()
+        html = self.showcase()
+        self.assertIn("發生在：甲&lt;i&gt;&amp;乙", html)   # 對原始 HTML 斷言：解析器會把 &lt; 還原
+        self.assertNotIn("甲<i>", html)
+
+    def test_a_sample_made_from_another_experiment_is_not_mentioned(self):
+        self.run_the_scenario()
+        elsewhere = os.path.join(self.data_dir, "experiments", "somewhere-else")
+        os.makedirs(elsewhere)
+        self.write_json(os.path.join(elsewhere, "sample.json"), {"from": "not-this-one", "seed": 1, "per_group": 1, "controls": 0, "articles": ["x"]})
+        html = self.showcase()
+        self.assertNotIn("抽樣", html)
+        self.assertIn("沒有設定 Judge", html)
 
 
 class ProgressTest(ShowcaseCase):
@@ -356,6 +501,15 @@ class SectionsTest(ShowcaseCase):
     def test_without_a_judge_it_says_the_softening_rate_and_the_quality_are_not_measured_yet(self):
         self.run_the_scenario()
         self.assertIn("沒有設定 Judge", self.showcase())
+
+    def test_a_sample_experiment_made_from_it_is_mentioned_as_where_the_judging_happens(self):
+        self.run_the_scenario()
+        self.assertNotIn("抽樣", self.showcase())
+        code, _, err = self.run_cli("sample", "--id", "tracer-sample", "--per-group", "1", "--controls", "0")
+        self.assertEqual(code, 0, err)
+        html = self.showcase()
+        self.assertIn("淡化核對在抽樣的實驗上做（2 篇文章）", html)
+        self.assertNotIn("沒有設定 Judge", html)
 
     def test_with_a_judge_that_has_not_run_yet_it_says_there_is_no_result_yet(self):
         self.use_judging()

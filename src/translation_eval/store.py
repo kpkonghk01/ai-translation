@@ -15,7 +15,8 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from .errors import InputError
-from .schemas import CheckMeta, ComponentResult, CrosscheckCall, GoldCall, JudgeCall, RunKey, RunRecord, Task, Translation
+from .loading import read_model
+from .schemas import (CheckMeta, ComponentResult, CrosscheckCall, GoldCall, JudgeCall, RunKey, RunRecord, SampleNote, Task, Translation)
 
 REDACTED = "[REDACTED]"
 
@@ -265,9 +266,14 @@ class OutputDir:
             self._write(relative, (source.root / relative).read_bytes())
         self._replace(self.runs_path, "".join(r.model_dump_json() + "\n" for r in records))
 
-    def write_sample_note(self, note: dict) -> None:
-        """抽樣實驗從哪裡抽、怎麼抽、抽了哪些文章（給人看，程式不讀）。"""
-        self._replace(self.root / "sample.json", json.dumps(note, ensure_ascii=False, indent=2) + "\n")
+    def write_sample_note(self, note: SampleNote) -> None:
+        """抽樣實驗從哪裡抽、怎麼抽、抽了哪些文章。"""
+        self._replace(self.root / "sample.json", note.model_dump_json(by_alias=True, indent=2) + "\n")
+
+    def samples_made_from_this(self) -> list[SampleNote]:
+        """從這個實驗抽出來的抽樣實驗（同一個 data 目錄裡其他實驗的 sample.json）。"""
+        notes = (read_model(str(path), SampleNote) for path in sorted(self.root.parent.glob("*/sample.json")))
+        return [note for note in notes if note.from_experiment == self.root.name]
 
     def _read_records(self, path: Path, model, what: str) -> list:
         """JSONL 的紀錄檔。壞掉的一行令指令失敗，不略過：略過就會重送請求，或漏算結果。"""

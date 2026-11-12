@@ -22,7 +22,7 @@ from .errors import InputError
 from .ground_truth import load_ground_truth
 from .loading import read_model
 from .articles import load_article
-from .schemas import ExperimentConfig, GtFile, InputVariant, Slug
+from .schemas import ExperimentConfig, GtFile, InputVariant, SampleNote, Slug
 from .showcase import group_label, ordered_groups
 from .store import OutputDir
 
@@ -101,7 +101,7 @@ def handle(args) -> int:
         raise InputError(f"新實驗的設定不合法（{e.error_count()} 個錯誤）") from e
 
     target.copy_runs(source, picked)   # 缺少檔案就在這裡停止，什麼都還沒寫
-    target.write_sample_note({"from": cfg.id, "seed": args.seed, "per_group": args.per_group, "controls": args.controls, "articles": ordered})
+    target.write_sample_note(SampleNote(from_experiment=cfg.id, seed=args.seed, per_group=args.per_group, controls=args.controls, articles=ordered))
     config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     shown = [f"{group_label(g)} {len(chosen_by_group[g])} 篇" for g in ordered_groups(chosen_by_group)]

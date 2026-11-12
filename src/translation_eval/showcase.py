@@ -11,6 +11,7 @@
 沒有任何外部資源（字型、script、網址）：離線也能開，也不會把頁面內容送出去。頁面用「模型」稱 Approach：讀的人不認識 Approach。
 """
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -20,7 +21,8 @@ from .config import Experiment, display_name_problems, load_experiment
 from .errors import InputError
 from .gate_report import planned_runs
 from .ground_truth import GroundTruth, load_ground_truth
-from .schemas import Direction, Domain, InputVariant, Outcome, REDO_OUTCOMES, RunRecord
+from .report_text import shown
+from .schemas import Direction, Domain, InputVariant, Outcome, REDO_OUTCOMES, RunRecord, SampleNote
 from .store import OutputDir
 
 GROUP_LABELS = {Domain.GENERAL.value: "一般題材", Domain.CHINA_POLITICAL.value: "中國政治題材"}
@@ -205,6 +207,67 @@ def results_html(experiment: Experiment, names: dict[str, str], records: list[Ru
     return f"<section><h2>先看結論</h2>{lines}</section><section><h2>結果</h2>{table}{legend}</section>"
 
 
+# 例子卡的順序與說明。說明是這一種結果的意思，由程式按結果類別寫；不用 provider 回應裡的字（它可能夾著不該外傳的東西）。
+EXAMPLE_ORDER = (Outcome.OK, Outcome.BLOCK, Outcome.REFUSAL, Outcome.EMPTY, Outcome.MALFORMED, Outcome.TRUNCATED, Outcome.ERROR)
+EXPLANATIONS = {
+    Outcome.OK: "供應商回應正常，拿到可用的譯文。",
+    Outcome.REFUSAL: "模型有回應，但內容是「無法翻譯」之類，不是譯文。",
+    Outcome.EMPTY: "供應商回應正常（沒有報錯），但回應裡沒有任何輸出。",
+    Outcome.MALFORMED: "模型有輸出，但不是要求的格式，程式讀不成譯文。",
+    Outcome.TRUNCATED: "模型輸出到長度上限就停了，譯文不完整。",
+    Outcome.ERROR: "供應商或網路回傳了錯誤，不是文章內容造成的；重做可能就有結果。",
+}
+BLOCK_EXPLANATIONS = (("prompt:", "輸入端", "供應商在送進模型之前，就判定這篇文章屬於它不處理的內容類別，模型沒有開始翻譯。"),
+                      ("output:", "翻到一半", "模型已經開始輸出，但供應商判定輸出屬於它不處理的內容類別，整份譯文作廢。"))
+OTHER_BLOCK = ("", "其他", "供應商的內容審查擋下了請求，沒有任何譯文。")
+
+
+def block_code(record: RunRecord) -> str | None:
+    """被擋的原因代碼（例如 prompt:PROHIBITED_CONTENT）。只有單純的代碼才放出來；其他寫法不外傳。"""
+    code = shown(record.reason, True)
+    return None if code is None or code == shown("x y", True) else code
+
+
+def example_kind(record: RunRecord) -> tuple[Outcome, str | None]:
+    return record.outcome, block_code(record) if record.outcome is Outcome.BLOCK else None
+
+
+def example_html(kind: tuple[Outcome, str | None], runs: list[RunRecord], names: dict[str, str], approach_order: dict[str, int],
+                 group_of: dict[str, str], segments_of: Callable[[RunRecord], int]) -> str:
+    """一張例子卡：取這種結果在 Run 紀錄裡的第一個 Run，加上這一批共幾個、各模型各幾個。只有模型名、方向、組別和數量。"""
+    outcome, code = kind
+    first = runs[0]
+    heading, explanation = outcome_label(outcome), EXPLANATIONS.get(outcome, "")
+    if outcome is Outcome.BLOCK:
+        _, kind_label, explanation = next((b for b in BLOCK_EXPLANATIONS if code and code.startswith(b[0])), OTHER_BLOCK)
+        heading = f"被擋（{kind_label}）"
+    facts = [f"發生在：{names[first.approach]}、{DIRECTION_LABELS.get(first.direction, first.direction)}、{group_label(group_of[first.article_id])}"]
+    if code:
+        facts.append(f"原因代碼 {code}")
+    if outcome is Outcome.OK:
+        facts.append(f"譯文有 {segments_of(first)} 個段落")
+    by_model = Counter(r.approach for r in runs)
+    breakdown = "、".join(f"{names[a]} {by_model[a]}" for a in sorted(by_model, key=approach_order.get))
+    facts.append(f"這一批共 {len(runs)} 個 Run（{breakdown}）")
+    return (f'<li class="example"><h3>{escape(heading)}</h3><p>{escape(explanation)}</p>'
+            + "".join(f'<p class="meta">{escape(f)}</p>' for f in facts) + "</li>")
+
+
+def examples_html(experiment: Experiment, names: dict[str, str], records: list[RunRecord], group_of: dict[str, str],
+                  segments_of: Callable[[RunRecord], int]) -> str:
+    """每種出現過的結果各一張例子卡（與主表同一批 Run：完整文章、第 1 次），讓讀的人知道每個數字背後是什麼樣。"""
+    by_kind = defaultdict(list)
+    for r in first_full_runs(records):
+        by_kind[example_kind(r)].append(r)
+    approach_order = {p.id: n for n, p in enumerate(experiment.approaches)}
+    kinds = sorted(by_kind, key=lambda k: (EXAMPLE_ORDER.index(k[0]), -len(by_kind[k]), k[1] or ""))
+    absent = [outcome_label(o) for o in EXAMPLE_ORDER if o is not Outcome.OK and not any(k[0] is o for k in by_kind)]
+    cards = "".join(example_html(k, by_kind[k], names, approach_order, group_of, segments_of) for k in kinds)
+    missing = f'<p class="note">這一批沒有出現：{escape("、".join(absent))}。</p>' if absent else ""
+    return ("<section><h2>例子</h2><p class=\"note\">上表每個數字背後是什麼樣：每種結果各舉一個真實的 Run，取這種結果在紀錄裡的第一個，不是挑過的。"
+            f"只寫模型、方向、題材和數量，沒有文章內容。</p><ul class=\"examples\">{cards}</ul>{missing}</section>")
+
+
 def stability_html(experiment: Experiment, names: dict[str, str], records: list[RunRecord]) -> str:
     rows = []
     for p in experiment.approaches:
@@ -244,8 +307,11 @@ def details_html(experiment: Experiment, names: dict[str, str], records: list[Ru
             f'<table id="details"><thead><tr>{heads}</tr></thead><tbody>{"".join(rows)}</tbody></table></details></section>')
 
 
-def not_measured_html(experiment: Experiment, judged: bool) -> str:
-    if not experiment.judges:
+def not_measured_html(experiment: Experiment, judged: bool, samples: list[SampleNote]) -> str:
+    if not experiment.judges and samples:
+        sizes = "、".join(f"{len(s.articles)} 篇文章" for s in samples)
+        text = f"這一頁的實驗沒有直接設定 Judge。淡化核對在抽樣的實驗上做（{sizes}），結果出來後另行報告；這一頁只說明翻譯有沒有成功。"
+    elif not experiment.judges:
         text = "這一批沒有設定 Judge，所以還沒有淡化率（譯文有沒有把敏感內容寫輕）和譯文質素的數字。這一頁只說明翻譯有沒有成功。"
     elif not judged:
         text = "已設定 Judge，但還沒有評核結果，所以還沒有淡化率（譯文有沒有把敏感內容寫輕）和譯文質素的數字。這一頁只說明翻譯有沒有成功。"
@@ -254,7 +320,8 @@ def not_measured_html(experiment: Experiment, judged: bool) -> str:
     return f"<section><h2>還沒有的結果</h2><p>{escape(text)}</p></section>"
 
 
-def render(experiment: Experiment, names: dict[str, str], records: list[RunRecord], group_of: dict[str, str], judged: bool) -> str:
+def render(experiment: Experiment, names: dict[str, str], records: list[RunRecord], group_of: dict[str, str], judged: bool,
+           samples: list[SampleNote], segments_of: Callable[[RunRecord], int]) -> str:
     hashes = {p.id: p.config_hash for p in experiment.approaches}
     shown = [r for r in records if not r.is_baseline and r.approach in hashes and r.article_id in group_of]
     left_out = sum(1 for r in records if not r.is_baseline) - len(shown)
@@ -270,10 +337,11 @@ def render(experiment: Experiment, names: dict[str, str], records: list[RunRecor
             "<p class=\"lede\">用同一批新聞，測幾個翻譯模型能不能把文章翻完。這一頁只看「有沒有翻出來」。</p>"
             f"{status_html(experiment, shown)}{notes}</header>"
             f"{results_html(experiment, names, shown, group_of)}"
+            f"{examples_html(experiment, names, shown, group_of, segments_of)}"
             f"{what_was_tested_html(experiment, names, Counter(group_of.values()))}"
             f"{stability_html(experiment, names, shown)}"
             f"{details_html(experiment, names, shown)}"
-            f"{not_measured_html(experiment, judged)}"
+            f"{not_measured_html(experiment, judged, samples)}"
             f"<footer><p>資料截至 {updated}（香港時間）。這一頁只有計數，不含文章內容，也沒有文章編號。實驗：{escape(experiment.config.id)}</p></footer>")
     return f'<!doctype html>\n<html lang="zh-Hant"><meta charset="utf-8"><title>AI 翻譯評測結果</title><style>{STYLE}</style><body><main>{body}</main></body></html>\n'
 
@@ -288,7 +356,8 @@ def handle(args) -> int:
     if cfg.ground_truth:   # 組別來自 ground truth（與 Gate 的分組一樣）；它對文章驗證，所以要載入文章
         truth = load_ground_truth(cfg.ground_truth, {i: load_article(cfg.articles.dir, i) for i in cfg.articles.ids})
     judged = bool(experiment.judges) and bool(out.read_judge_calls(None))
-    html = render(experiment, names, records, group_of_article(experiment, truth), judged)
+    html = render(experiment, names, records, group_of_article(experiment, truth), judged, out.samples_made_from_this(),
+                  lambda record: len(out.read_translation(record).components))
     out.write_showcase(html)   # 都算好才寫：中途失敗不會留下半份頁面
     print(f"已寫入 {out.showcase_path}（{len(records)} 個 Run）")
     return 0
@@ -313,6 +382,9 @@ thead th { font-size:.8125rem; color:var(--muted); font-weight:500; } tbody th {
 td b { font-size:1.05rem; font-variant-numeric:tabular-nums; } td small { margin-left:4px; font-variant-numeric:tabular-nums; }
 .track { display:block; height:6px; margin-top:6px; background:var(--track); border-radius:3px; overflow:hidden; }
 .detail { display:block; margin-top:2px; color:var(--muted); font-size:.8125rem; }
+.examples { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:14px; }
+.example { background:var(--panel); border:1px solid var(--rule); border-radius:8px; padding:14px 16px; display:grid; gap:6px; align-content:start; }
+.example h3 { margin:0; font-size:1rem; } .meta { color:var(--muted); font-size:.8125rem; }
 .bar { display:block; height:100%; } .bar.ok { background:var(--ok); } .bar.bad { background:var(--bad); } .bar.muted { background:var(--muted); }
 .facts { display:grid; grid-template-columns:7em 1fr; gap:10px 16px; } .facts dt, .legend dt { font-weight:700; } .facts dd, .legend dd { margin:0; }
 .legend { display:grid; gap:4px; font-size:.9rem; } summary { cursor:pointer; font-weight:700; margin-bottom:12px; }
