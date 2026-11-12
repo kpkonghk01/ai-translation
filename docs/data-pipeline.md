@@ -123,6 +123,13 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
   ```bash
   uv run --locked python -I -m translation_eval showcase --config configs/experiments/first-batch.json
   ```
+- **抽樣實驗**（縮小 Judge 的範圍）：Judge 的請求數跟要評的 Run 數成正比（Judge 逐 Component 評，每個 Component 兩次，所以一個 Run 約幾十個請求），全部評太貴太慢。`sample` 從一個實驗抽出幾篇文章，把它們的第 1 次、完整文章的 Run 紀錄與譯文**原樣複製**成新的實驗，之後 `check`、`judge`、`report` 都對新實驗執行，Gate 與審閱清單自成一套：
+
+  ```bash
+  uv run --locked python -I -m translation_eval sample --config configs/experiments/first-batch.json --id first-batch-sample --per-group 10 --controls 3 --seed 1
+  ```
+
+  每組（ground truth 的題材，或 `group_overrides` 的分組）抽 `--per-group` 篇，對照文章另外抽 `--controls` 篇；組裡的文章比要抽的少就全取，沒有 ground truth 的文章不抽。依據只有種子（種子加文章 id 的 hash）與 ground truth，不看 Run 的結果，所以不能看結果挑。新實驗的設定檔寫在來源設定檔旁邊（`<新實驗 id>.json`）：與來源一樣，只是文章換成抽中的、每個 Approach 只有 1 次與完整文章；baseline 的 Run 一起帶過去。`sample.json` 記下從哪裡抽、種子與抽中的文章。新實驗或設定檔已存在、缺少要複製的檔案時，什麼都不寫。要等來源的翻譯跑完、`--redo-errors` 補完之後再抽，才有最終的譯文；來源還沒跑的 Run 不會被複製，新實驗的 `translate` 會補跑。
 - `check` 與 `report` 每次都從 `runs.jsonl` 整份重算。`report` 發現有 `ok` 的 Run 還沒有 `check` 結果，或 `check` 之後規則、Term List、長度比例範圍改了，會停止，不產生報告；先重新執行 `check`。`check` 另寫 `components.jsonl`（每個 Component 的 Finding 與警示）和 `check-meta.json`（check 當時用的規則版本與輸入，report 靠它判斷結果有沒有過期）。規則版本由實作規則的原始碼的 hash 決定：程式的規則有任何改動，舊的 check 結果就視為過期，重跑 `check` 即可（只要幾秒，不呼叫 API）。所有 Run 都沒有譯文（例如全被 Block）時不需要 `check`。
 - **Judge（MQM）**：實驗設定的 `judging` 列出 Judge 設定檔（欄位與 Approach 設定相同，另加 `role`：`primary` 決定 Gate，`experiment` 只作實驗；`temperature` 固定 0，只用 `article-json`），並可以寫 `same_family_exceptions`、`mqm_run_limit`；頂層的 `weights` 是每個 Severity 的罰分（預設 minor 1、major 5、critical 25）：
 

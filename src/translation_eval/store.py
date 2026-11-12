@@ -254,6 +254,21 @@ class OutputDir:
                 f.write(line)
         return record
 
+    def copy_runs(self, source: "OutputDir", records: list[RunRecord]) -> None:
+        """另一個實驗的這些 Run 紀錄，連同譯文與原始回應，原樣複製過來。先寫檔案，最後才寫紀錄（有紀錄的 Run 一定有它的檔案）；
+        缺少檔案就停止，什麼都不寫。"""
+        files = [p for r in records for p in (r.translation, r.raw_response) if p]
+        missing = [p for p in files if not (source.root / p).is_file()]
+        if missing:
+            raise InputError([f"缺少檔案：{p}" for p in missing])
+        for relative in files:
+            self._write(relative, (source.root / relative).read_bytes())
+        self._replace(self.runs_path, "".join(r.model_dump_json() + "\n" for r in records))
+
+    def write_sample_note(self, note: dict) -> None:
+        """抽樣實驗從哪裡抽、怎麼抽、抽了哪些文章（給人看，程式不讀）。"""
+        self._replace(self.root / "sample.json", json.dumps(note, ensure_ascii=False, indent=2) + "\n")
+
     def _read_records(self, path: Path, model, what: str) -> list:
         """JSONL 的紀錄檔。壞掉的一行令指令失敗，不略過：略過就會重送請求，或漏算結果。"""
         if not path.exists():

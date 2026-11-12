@@ -10,6 +10,7 @@
   uv run --locked python -I -m translation_eval report --config <實驗設定>
   uv run --locked python -I -m translation_eval review --config <實驗設定>
   uv run --locked python -I -m translation_eval showcase --config <實驗設定>   （給非技術讀者的 HTML 展示報告，只有計數）
+  uv run --locked python -I -m translation_eval sample --config <實驗設定> --id <新實驗 id> [--per-group 10] [--controls 3] [--seed 1]   （抽樣成新實驗，縮小 Judge 的範圍）
   uv run --locked python -I -m translation_eval calibrate --config <實驗設定> [--judge <id>] [--dry-run] [--limit <N>] [--redo-errors]
   uv run --locked python -I -m translation_eval crosscheck --config <實驗設定> [--dry-run] [--article <id>]... [--limit <N>] [--redo-errors]
   uv run --locked python -I -m translation_eval gold check|sample --config <實驗設定> [--count 30] [--seed 1]
@@ -19,7 +20,7 @@ providers，一律經 tools/run-real.sh 執行（它把 key 放進環境變數�
 import argparse
 import sys
 
-from . import baselines, calibrate, check, cms, crosscheck, gold, judging, provider_listing, report, review, showcase, translate
+from . import baselines, calibrate, check, cms, crosscheck, gold, judging, provider_listing, report, review, sample, showcase, translate
 from .errors import InputError, StoppedAfterSending
 from .schemas import Task
 from .transport import Transport, TransportForbidden, UrllibTransport
@@ -39,6 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser("check", help="對 ok 的 Run 做 Deterministic check")
     r = sub.add_parser("report", help="產生 Block／Refusal 報告")
     v = sub.add_parser("review", help="產生審閱清單（必看與抽查）")
+    sm = sub.add_parser("sample", help="抽幾篇文章、每個模型只取第 1 次的完整文章，複製成新的實驗（縮小 Judge 的範圍）")
+    sm.add_argument("--id", required=True, help="新實驗的 id")
+    sm.add_argument("--per-group", type=int, default=10, help="每組（題材）抽幾篇（預設 10）")
+    sm.add_argument("--controls", type=int, default=3, help="對照文章抽幾篇（預設 3）")
+    sm.add_argument("--seed", type=int, default=1, help="種子（預設 1）；同樣的種子抽出來的一樣")
     sc = sub.add_parser("showcase", help="產生給非技術讀者看的 HTML 展示報告（只有計數，不含文章內容）")
     cal = sub.add_parser("calibrate", help="對 Gold set 量度 Judge 的準確度（有 --judge 才送請求）")
     cal.add_argument("--judge", help="要校準的 Judge 的 id；不寫就只重算結果")
@@ -62,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     m = sub.add_parser("import-cms", help="把 CMS 匯出（CSV）轉成文章檔")
     m.add_argument("--csv", required=True, help="CMS 匯出的 CSV")
     m.add_argument("--out", default="data/cms-articles", help="文章檔的輸出目錄（預設 data/cms-articles）")
-    for p in (t, j, b, c, r, v, sc, cal, xc, g_sample):
+    for p in (t, j, b, c, r, v, sm, sc, cal, xc, g_sample):
         p.add_argument("--config", required=True, help="實驗設定（JSON）")
         p.add_argument("--data-dir", default="data", help="輸出目錄（預設 data）")
     g_check.add_argument("--config", required=True, help="實驗設定（JSON）")   # 只驗證，不寫任何東西
@@ -101,6 +107,8 @@ def main(argv=None, transport: Transport | None = None) -> int:
             return review.handle(args)
         if args.command == "showcase":
             return showcase.handle(args)
+        if args.command == "sample":
+            return sample.handle(args)
         if args.command == "crosscheck":
             return crosscheck.handle(args, transport or UrllibTransport())
         if args.command == "calibrate":
