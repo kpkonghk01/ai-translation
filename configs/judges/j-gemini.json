@@ -1,0 +1,14 @@
+{
+  "id": "j-gemini",
+  "display_name": "Gemini 3.8 Flash（Google，Judge）",
+  "role": "primary",
+  "family": "gemini",
+  "provider": "gemini",
+  "model": "gemini-3.8-flash",
+  "api_key_env": "GEMINI_API_KEY",
+  "request_mode": "article-json",
+  "max_output_tokens": 32768,
+  "timeout_seconds": 300,
+  "retry": {"max_attempts": 4, "base_delay_seconds": 2},
+  "concurrency": 1
+}
