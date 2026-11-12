@@ -113,6 +113,10 @@ class OutputDir:
         return self.root / "showcase.html"
 
     @property
+    def showcase_text_path(self) -> Path:
+        return self.root / "showcase-text.html"
+
+    @property
     def decisions_path(self) -> Path:
         return self.root / "review-decisions.json"
 
@@ -227,6 +231,9 @@ class OutputDir:
 
     def write_showcase(self, html: str) -> None:
         self._replace(self.showcase_path, html)
+
+    def write_showcase_text(self, html: str) -> None:
+        self._replace(self.showcase_text_path, html)
 
     def write_review(self, text: str) -> None:
         self._replace(self.review_path, text)

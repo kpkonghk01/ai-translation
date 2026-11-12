@@ -232,15 +232,34 @@ def example_kind(record: RunRecord) -> tuple[Outcome, str | None]:
     return record.outcome, block_code(record) if record.outcome is Outcome.BLOCK else None
 
 
-def example_html(kind: tuple[Outcome, str | None], runs: list[RunRecord], names: dict[str, str], approach_order: dict[str, int],
-                 group_of: dict[str, str], segments_of: Callable[[RunRecord], int]) -> str:
-    """一張例子卡：取這種結果在 Run 紀錄裡的第一個 Run，加上這一批共幾個、各模型各幾個。只有模型名、方向、組別和數量。"""
+def kind_text(kind: tuple[Outcome, str | None]) -> tuple[str, str]:
+    """這一種結果的標題與說明（由程式按結果類別寫）。"""
     outcome, code = kind
-    first = runs[0]
-    heading, explanation = outcome_label(outcome), EXPLANATIONS.get(outcome, "")
     if outcome is Outcome.BLOCK:
         _, kind_label, explanation = next((b for b in BLOCK_EXPLANATIONS if code and code.startswith(b[0])), OTHER_BLOCK)
-        heading = f"被擋（{kind_label}）"
+        return f"被擋（{kind_label}）", explanation
+    return outcome_label(outcome), EXPLANATIONS.get(outcome, "")
+
+
+def runs_by_kind(records: list[RunRecord]) -> dict[tuple[Outcome, str | None], list[RunRecord]]:
+    """每種結果有哪些 Run：與主表同一批（完整文章、第 1 次），照 Run 紀錄的順序。每種結果的第一個就是例子。"""
+    by_kind = defaultdict(list)
+    for r in first_full_runs(records):
+        by_kind[example_kind(r)].append(r)
+    return by_kind
+
+
+def ordered_kinds(by_kind: dict) -> list[tuple[Outcome, str | None]]:
+    return sorted(by_kind, key=lambda k: (EXAMPLE_ORDER.index(k[0]), -len(by_kind[k]), k[1] or ""))
+
+
+def example_html(kind: tuple[Outcome, str | None], runs: list[RunRecord], names: dict[str, str], approach_order: dict[str, int],
+                 group_of: dict[str, str], segments_of: Callable[[RunRecord], int], extra: str = "") -> str:
+    """一張例子卡：取這種結果在 Run 紀錄裡的第一個 Run，加上這一批共幾個、各模型各幾個。只有模型名、方向、組別和數量；
+    extra 是呼叫者另外加的內容（含文章內容的那一頁用它放原文與譯文，這一頁不用）。"""
+    outcome, code = kind
+    first = runs[0]
+    heading, explanation = kind_text(kind)
     facts = [f"發生在：{names[first.approach]}、{DIRECTION_LABELS.get(first.direction, first.direction)}、{group_label(group_of[first.article_id])}"]
     if code:
         facts.append(f"原因代碼 {code}")
@@ -250,17 +269,15 @@ def example_html(kind: tuple[Outcome, str | None], runs: list[RunRecord], names:
     breakdown = "、".join(f"{names[a]} {by_model[a]}" for a in sorted(by_model, key=approach_order.get))
     facts.append(f"這一批共 {len(runs)} 個 Run（{breakdown}）")
     return (f'<li class="example"><h3>{escape(heading)}</h3><p>{escape(explanation)}</p>'
-            + "".join(f'<p class="meta">{escape(f)}</p>' for f in facts) + "</li>")
+            + "".join(f'<p class="meta">{escape(f)}</p>' for f in facts) + extra + "</li>")
 
 
 def examples_html(experiment: Experiment, names: dict[str, str], records: list[RunRecord], group_of: dict[str, str],
                   segments_of: Callable[[RunRecord], int]) -> str:
     """每種出現過的結果各一張例子卡（與主表同一批 Run：完整文章、第 1 次），讓讀的人知道每個數字背後是什麼樣。"""
-    by_kind = defaultdict(list)
-    for r in first_full_runs(records):
-        by_kind[example_kind(r)].append(r)
+    by_kind = runs_by_kind(records)
     approach_order = {p.id: n for n, p in enumerate(experiment.approaches)}
-    kinds = sorted(by_kind, key=lambda k: (EXAMPLE_ORDER.index(k[0]), -len(by_kind[k]), k[1] or ""))
+    kinds = ordered_kinds(by_kind)
     absent = [outcome_label(o) for o in EXAMPLE_ORDER if o is not Outcome.OK and not any(k[0] is o for k in by_kind)]
     cards = "".join(example_html(k, by_kind[k], names, approach_order, group_of, segments_of) for k in kinds)
     missing = f'<p class="note">這一批沒有出現：{escape("、".join(absent))}。</p>' if absent else ""
@@ -320,10 +337,16 @@ def not_measured_html(experiment: Experiment, judged: bool, samples: list[Sample
     return f"<section><h2>還沒有的結果</h2><p>{escape(text)}</p></section>"
 
 
+def shown_records(experiment: Experiment, records: list[RunRecord], group_of: dict[str, str]) -> list[RunRecord]:
+    """展示用的 Run：目前設定裡的模型、目前設定裡的文章；baseline 不算。（展示報告的兩頁共用）"""
+    approaches = {p.id for p in experiment.approaches}
+    return [r for r in records if not r.is_baseline and r.approach in approaches and r.article_id in group_of]
+
+
 def render(experiment: Experiment, names: dict[str, str], records: list[RunRecord], group_of: dict[str, str], judged: bool,
            samples: list[SampleNote], segments_of: Callable[[RunRecord], int]) -> str:
     hashes = {p.id: p.config_hash for p in experiment.approaches}
-    shown = [r for r in records if not r.is_baseline and r.approach in hashes and r.article_id in group_of]
+    shown = shown_records(experiment, records, group_of)
     left_out = sum(1 for r in records if not r.is_baseline) - len(shown)
     other_config = sum(1 for r in shown if r.config_hash != hashes[r.approach])
     warnings = []
@@ -346,17 +369,37 @@ def render(experiment: Experiment, names: dict[str, str], records: list[RunRecor
     return f'<!doctype html>\n<html lang="zh-Hant"><meta charset="utf-8"><title>AI 翻譯評測結果</title><style>{STYLE}</style><body><main>{body}</main></body></html>\n'
 
 
-def handle(args) -> int:
+@dataclass(frozen=True)
+class Loaded:
+    """展示報告的兩個指令（showcase、showcase-text）都要的東西。"""
+    experiment: Experiment
+    out: OutputDir
+    records: list[RunRecord]
+    names: dict[str, str]
+    group_of: dict[str, str]
+    articles: dict
+
+
+def load(args, *, with_articles: bool = False) -> Loaded:
+    """with_articles：要原文時（showcase-text）一定載入文章；否則只有 ground truth 要驗證時才載入。"""
     experiment = load_experiment(args.config)
     cfg = experiment.config
     out = OutputDir(args.data_dir, cfg.id)
     records = out.require_runs()
     names = labels(experiment)
-    truth = None
-    if cfg.ground_truth:   # 組別來自 ground truth（與 Gate 的分組一樣）；它對文章驗證，所以要載入文章
-        truth = load_ground_truth(cfg.ground_truth, {i: load_article(cfg.articles.dir, i) for i in cfg.articles.ids})
+    truth, articles = None, {}
+    if cfg.ground_truth or with_articles:
+        articles = {i: load_article(cfg.articles.dir, i) for i in cfg.articles.ids}
+    if cfg.ground_truth:   # 組別來自 ground truth（與 Gate 的分組一樣）；它對文章驗證
+        truth = load_ground_truth(cfg.ground_truth, articles)
+    return Loaded(experiment, out, records, names, group_of_article(experiment, truth), articles)
+
+
+def handle(args) -> int:
+    loaded = load(args)
+    experiment, out, records = loaded.experiment, loaded.out, loaded.records
     judged = bool(experiment.judges) and bool(out.read_judge_calls(None))
-    html = render(experiment, names, records, group_of_article(experiment, truth), judged, out.samples_made_from_this(),
+    html = render(experiment, loaded.names, records, loaded.group_of, judged, out.samples_made_from_this(),
                   lambda record: len(out.read_translation(record).components))
     out.write_showcase(html)   # 都算好才寫：中途失敗不會留下半份頁面
     print(f"已寫入 {out.showcase_path}（{len(records)} 個 Run）")

@@ -19,10 +19,9 @@ from pydantic import TypeAdapter, ValidationError
 
 from .config import load_experiment
 from .errors import InputError
-from .ground_truth import load_ground_truth
-from .loading import read_model
+from .ground_truth import article_roles, load_ground_truth
 from .articles import load_article
-from .schemas import ExperimentConfig, GtFile, InputVariant, SampleNote, Slug
+from .schemas import ExperimentConfig, InputVariant, SampleNote, Slug
 from .showcase import group_label, ordered_groups
 from .store import OutputDir
 
@@ -77,7 +76,7 @@ def handle(args) -> int:
 
     articles = {i: load_article(cfg.articles.dir, i) for i in cfg.articles.ids}
     truth = load_ground_truth(cfg.ground_truth, articles)
-    roles = {a.id: a.role for path in cfg.ground_truth.paths for a in read_model(path, GtFile).articles}
+    roles = article_roles(cfg.ground_truth)
     groups, controls = defaultdict(list), []
     for article_id in cfg.articles.ids:   # 沒有 ground truth 的文章不抽
         if article_id in truth.domains:

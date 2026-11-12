@@ -76,6 +76,11 @@ class GroundTruth:
         return self._by_component.get((article_id, component_id), [])
 
 
+def article_roles(ref: GroundTruthRef) -> dict[str, str]:
+    """ground truth 檔裡每篇文章的角色（sensitive 或 control）。對照文章沒有敏感句，所以不在 GroundTruth.sentences 裡。"""
+    return {a.id: a.role for path in ref.paths for a in read_model(path, GtFile).articles}
+
+
 def load_ground_truth(ref: GroundTruthRef, articles: dict[str, Article]) -> GroundTruth:
     """articles：這次要用的文章（id → 文章）。ground truth 裡不在其中的文章略過。"""
     problems, digest, entries = [], hashlib.sha256(), []

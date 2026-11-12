@@ -130,6 +130,11 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
   ```
 
   每組（ground truth 的題材，或 `group_overrides` 的分組）抽 `--per-group` 篇，對照文章另外抽 `--controls` 篇；組裡的文章比要抽的少就全取，沒有 ground truth 的文章不抽。依據只有種子（種子加文章 id 的 hash）與 ground truth，不看 Run 的結果，所以不能看結果挑。新實驗的設定檔寫在來源設定檔旁邊（`<新實驗 id>.json`）：與來源一樣，只是文章換成抽中的、每個 Approach 只有 1 次與完整文章；baseline 的 Run 一起帶過去。`sample.json` 記下從哪裡抽、種子與抽中的文章。新實驗或設定檔已存在、缺少要複製的檔案時，什麼都不寫。要等來源的翻譯跑完、`--redo-errors` 補完之後再抽，才有最終的譯文；來源還沒跑的 Run 不會被複製，新實驗的 `translate` 會補跑。
+- **含原文與譯文的展示頁**：`showcase-text` 另寫一頁 `showcase-text.html`（同一個輸出目錄），讓人看到每個數字背後是什麼樣：成功的例子（同一段原文，各模型的譯文並排；優先用對照文章，要所有模型都成功翻譯才能比）和沒有成功的例子（每種結果各一張卡，附該 Run 的文章的原文片段，並說明回來的是什麼，不放 provider 回應裡的字）。片段取第一個 40 至 160 字的段落，沒有就取第一個有字的、超過 160 字的切掉並標「…」，原文被切時譯文也只取開頭 160 字。**這一頁含真實文章的原文與譯文，只在本機看，不要轉發，也不要上傳；頁面頂部有警語。** 要給別人看的是只有計數的 `showcase.html`：它不會因為這一頁而有任何文章內容，`showcase` 也不會寫這一頁。終端只印路徑。
+
+  ```bash
+  uv run --locked python -I -m translation_eval showcase-text --config configs/experiments/first-batch.json
+  ```
 - `check` 與 `report` 每次都從 `runs.jsonl` 整份重算。`report` 發現有 `ok` 的 Run 還沒有 `check` 結果，或 `check` 之後規則、Term List、長度比例範圍改了，會停止，不產生報告；先重新執行 `check`。`check` 另寫 `components.jsonl`（每個 Component 的 Finding 與警示）和 `check-meta.json`（check 當時用的規則版本與輸入，report 靠它判斷結果有沒有過期）。規則版本由實作規則的原始碼的 hash 決定：程式的規則有任何改動，舊的 check 結果就視為過期，重跑 `check` 即可（只要幾秒，不呼叫 API）。所有 Run 都沒有譯文（例如全被 Block）時不需要 `check`。
 - **Judge（MQM）**：實驗設定的 `judging` 列出 Judge 設定檔（欄位與 Approach 設定相同，另加 `role`：`primary` 決定 Gate，`experiment` 只作實驗；`temperature` 固定 0，只用 `article-json`），並可以寫 `same_family_exceptions`、`mqm_run_limit`；頂層的 `weights` 是每個 Severity 的罰分（預設 minor 1、major 5、critical 25）：
 
