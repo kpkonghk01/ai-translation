@@ -30,6 +30,12 @@ def group_label(group: str) -> str:
     return GROUP_LABELS.get(group, group)
 
 
+def ordered_groups(groups) -> list[str]:
+    """題材組別的顯示順序：已知的（一般、中國政治）在前，其餘（group_overrides 的自訂組名）照名稱排。"""
+    known = list(GROUP_LABELS)
+    return sorted(set(groups), key=lambda g: (known.index(g) if g in known else len(known), g))
+
+
 def ratio(numerator: int, denominator: int) -> str:
     """每個比率都附分子和分母：3/10（30.0%）；分母是 0 就沒有百分比。"""
     if denominator == 0:

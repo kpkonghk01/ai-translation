@@ -1,0 +1,111 @@
+"""展示報告的「淡化」一節要用的數字：從 Judge 評核過的實驗（通常是抽樣實驗）讀出每個模型、每個方向、每個題材組的淡化率，
+和（有校準的話）Judge 在已知答案上的準確度。只有計數，沒有文章內容。
+
+用法（showcase 的選項）：
+  --judged-in <實驗設定>       Judge 評核過的實驗（要有 judging、ground_truth 和事實核對的紀錄，而且已經 check）
+  --calibrated-in <實驗設定>   Judge 校準過的實驗（要有 calibration）；沒有就寫「準確度還沒有量度」
+
+數字與報告的 Gate 一節同一份（gate_results）：審閱的決定也已經套用，所以人審之後再執行一次，數字就更新。
+只看完整文章。報告的 Gate 失敗、被擋與空內容的 Run 不在分母的規則照舊。
+"""
+from collections import Counter
+from dataclasses import dataclass
+
+from .articles import load_article
+from .calibration import evaluate_judge, metrics_for
+from .check import require_checked
+from .config import load_experiment
+from .errors import InputError
+from .gate_report import gate_results, rate_of
+from .gold import load_gold_set
+from .ground_truth import load_ground_truth
+from .report_text import ordered_groups
+from .review_decisions import apply_check_decisions, check_decisions, load_decisions
+from .review_items import build_items
+from .schemas import Direction, InputVariant, Task
+from .stats import clopper_pearson_upper
+from .store import OutputDir
+
+
+@dataclass(frozen=True)
+class Accuracy:
+    """Judge 在 Gold set 上：預期失敗的事實抓到幾個；預期 Present 的事實被誤判成失敗幾個。"""
+    found: int
+    expected: int
+    false_alarms: int
+    present: int
+
+
+@dataclass(frozen=True)
+class Cell:
+    failed: int       # 被淡化的不重覆句子數
+    evaluated: int    # 有結果的不重覆句子數；0 就是沒有結果
+    upper: float | None   # 單尾 95% 上限；沒有結果時是 None
+
+
+@dataclass(frozen=True)
+class Fade:
+    rows: list[tuple[str, dict[tuple[Direction, str], Cell]]]   # (模型名, (方向, 組) → 格)
+    directions: list[Direction]
+    groups: list[str]
+    articles_by_group: Counter
+    judge_name: str
+    must: int
+    decided: int
+    accuracy: Accuracy | None
+
+
+def accuracy_of(config_path: str, data_dir: str, judge_id: str) -> Accuracy | None:
+    """校準實驗裡這個 Judge 的準確度。沒有校準結果（或 Gold set 在這一格沒有預期失敗的事實）就是 None。"""
+    experiment = load_experiment(config_path)
+    cfg = experiment.config
+    if cfg.calibration is None:
+        raise InputError("--calibrated-in 的實驗沒有設定 calibration")
+    judge = next((j for j in experiment.judges if j.id == judge_id), None)
+    if judge is None:
+        raise InputError(f"--calibrated-in 的實驗沒有 Judge {judge_id}（要和 --judged-in 的主 Judge 同一個 id）")
+    articles = {i: load_article(cfg.articles.dir, i) for i in cfg.articles.ids}
+    truth = load_ground_truth(cfg.ground_truth, articles) if cfg.ground_truth else None
+    gold = load_gold_set(cfg.calibration.gold_set, truth, articles)
+    evaluation = evaluate_judge(gold, truth, OutputDir(data_dir, cfg.id).read_gold_calls(), judge)
+    m = metrics_for(evaluation)
+    if not evaluation.has_records or not m.failing_expected:
+        return None
+    return Accuracy(m.failing_found, m.failing_expected, m.false_alarms, m.present_final)
+
+
+def load_fade(args) -> Fade:
+    experiment = load_experiment(args.judged_in)
+    cfg = experiment.config
+    if not experiment.judges:
+        raise InputError("--judged-in 的實驗沒有設定 Judge")
+    if cfg.ground_truth is None:
+        raise InputError("--judged-in 的實驗沒有 ground truth：淡化核對的事實來自 ground truth")
+    out = OutputDir(args.data_dir, cfg.id)
+    records = out.require_runs()
+    if not out.read_judge_calls(Task.FACT):
+        raise InputError("--judged-in 的實驗還沒有 Judge 的事實核對紀錄：先執行 judge")
+    rows = out.read_components()
+    require_checked(experiment, out, records, rows)
+    decisions = load_decisions(out)
+    articles = {i: load_article(cfg.articles.dir, i) for i in cfg.articles.ids}
+    truth = load_ground_truth(cfg.ground_truth, articles)
+    items = build_items(experiment, out, records, rows, articles, truth)
+    check_decisions(decisions, items)   # 決定過期或指向不存在的項目：停止，與報告一樣
+    must = [i for i in items if i.must_see]
+    results = [r for r in gate_results(experiment, out, records, articles, truth, decisions) if r.variant is InputVariant.FULL and r.gate is not None]
+    names = experiment.display_names()
+    cells = {}
+    for r in results:
+        failed, evaluated = rate_of(r.gate)
+        cells.setdefault(r.approach, {})[(r.direction, r.group)] = Cell(failed, evaluated, clopper_pearson_upper(failed, evaluated) if evaluated else None)
+    order = [p.id for p in experiment.approaches] + [b.id for b in cfg.baselines]
+    judge = next(r.judge for r in results)
+    with_sentences = {s.article_id for s in truth.sentences}
+    accuracy = accuracy_of(args.calibrated_in, args.data_dir, judge.id) if args.calibrated_in else None
+    return Fade(rows=[(names[a], cells[a]) for a in order if a in cells],
+                directions=[d for d in cfg.directions if any(r.direction is d for r in results)],
+                groups=ordered_groups(r.group for r in results),
+                articles_by_group=Counter(truth.group_of(a) for a in with_sentences),
+                judge_name=judge.config.display_name or judge.config.model,
+                must=len(must), decided=sum(1 for i in must if decisions.get(i.key)), accuracy=accuracy)

@@ -123,6 +123,13 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
   ```bash
   uv run --locked python -I -m translation_eval showcase --config configs/experiments/first-batch.json
   ```
+
+  **淡化一節**：加 `--judged-in <實驗設定>`（Judge 評核過的實驗，通常是抽樣實驗；要有 `judging`、`ground_truth`、事實核對的紀錄，而且已經 `check`），展示頁多一節「淡化」：每個模型、每個方向、每個題材組的淡化率（被淡化的句子／有結果的句子，附單尾 95% 上限），與報告的 Gate 同一份數字（`gate_results`），審閱的決定已套用，所以人審之後再執行一次，數字就更新。只看完整文章。頁面寫明「初步結果、尚未經人審」、評核了幾篇文章、必看項目有幾項已有決定、怎麼讀（被擋或沒有輸出的文章不在分母、每格句子少所以上限很寬），並用四個虛構的例子說明被寫輕是什麼樣（真實的例子含文章內容，在 `showcase-text` 那一頁）。再加 `--calibrated-in <實驗設定>`（Judge 校準過的實驗，要有 `calibration`，要有同一個 Judge id）就寫 Judge 在已知答案上抓到幾個被淡化的事實、誤判幾個沒淡化的，並說明這是上限；沒有就寫「準確度還沒有量度」。抽樣實驗不帶校準，所以校準要用另一個實驗。
+
+  ```bash
+  uv run --locked python -I -m translation_eval showcase --config configs/experiments/first-batch.json \
+      --judged-in configs/experiments/first-batch-sample.json --calibrated-in configs/experiments/calibration.json
+  ```
 - **抽樣實驗**（縮小 Judge 的範圍）：Judge 的請求數跟要評的 Run 數成正比（Judge 逐 Component 評，每個 Component 兩次，所以一個 Run 約幾十個請求），全部評太貴太慢。`sample` 從一個實驗抽出幾篇文章，把它們的第 1 次、完整文章的 Run 紀錄與譯文**原樣複製**成新的實驗，之後 `check`、`judge`、`report` 都對新實驗執行，Gate 與審閱清單自成一套：
 
   ```bash

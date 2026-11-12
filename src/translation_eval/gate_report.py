@@ -18,7 +18,7 @@ from enum import StrEnum
 from .articles import apply_variant
 from .calibration import JudgeEvaluation
 from .calibration_report import recall_text
-from .config import Experiment
+from .config import Experiment, PlannedJudge
 from .consistency import Status
 from .facts import FactResult, FactStatus, Pending, judge_facts
 from .ground_truth import GroundTruth, Sentence
@@ -26,7 +26,7 @@ from .report_text import ratio
 from .pairs import component_pairs
 from .review_decisions import Decisions
 from .review_items import fact_item_key
-from .schemas import (Domain, FAILING_VERDICTS, InputVariant, Outcome, ReviewAction, RunKey, RunRecord, Task, Verdict, WeakeningType)
+from .schemas import (Direction, Domain, FAILING_VERDICTS, InputVariant, Outcome, ReviewAction, RunKey, RunRecord, Task, Verdict, WeakeningType)
 from .stats import clopper_pearson_upper
 from .store import OutputDir
 
@@ -222,10 +222,22 @@ def planned_runs(experiment: Experiment, approach: str, direction, variant: Inpu
     return None
 
 
-def gate_lines(experiment: Experiment, out: OutputDir, records: list[RunRecord], articles, truth: GroundTruth | None, decisions: Decisions,
-               evaluations: dict[str, JudgeEvaluation]) -> list[str]:
-    if truth is None:
-        return []
+@dataclass
+class GateResult:
+    """一個 Approach × Direction × 輸入版本 × 分組的 Gate。gate 是 None：這個分組沒有主 Judge，算不出來。"""
+    approach: str
+    direction: Direction
+    variant: InputVariant
+    group: str
+    judge: PlannedJudge | None
+    provisional: bool
+    gate: GroupGate | None
+    skipped: Counter
+    missing_runs: int
+
+
+def gate_results(experiment: Experiment, out: OutputDir, records: list[RunRecord], articles, truth: GroundTruth, decisions: Decisions) -> list[GateResult]:
+    """每個（Approach、Direction、輸入版本、分組）的 Gate 結果。報告和展示報告都用這一份，數字才不會兩套。"""
     with_sentences = {s.article_id for s in truth.sentences}   # control 文章可以沒有任何敏感句，沒有東西可以核對
     groups = sorted({truth.group_of(a) for a in truth.domains if a in with_sentences})
     calls_by_judge = defaultdict(lambda: defaultdict(list))
@@ -233,26 +245,38 @@ def gate_lines(experiment: Experiment, out: OutputDir, records: list[RunRecord],
         calls_by_judge[call.judge][RunKey.of(call)].append(call)
     ok = [r for r in records if r.outcome is Outcome.OK]
     translations = {RunKey.of(r): out.read_translation(r) for r in ok}
-    sections = sorted({(r.approach, r.direction, r.input_variant) for r in records})
-    lines, rates = ["## Gate（Must-retain fact）", ""], defaultdict(dict)
-    for approach, direction, variant in sections:
-        tag = "" if variant is InputVariant.FULL else f"（{variant}）"
+    results = []
+    for approach, direction, variant in sorted({(r.approach, r.direction, r.input_variant) for r in records}):
         for group in groups:
             in_group = [r for r in records if (r.approach, r.direction, r.input_variant) == (approach, direction, variant)
                         and r.article_id in with_sentences and truth.group_of(r.article_id) == group]
             if not in_group:
                 continue
             judge, provisional = experiment.primary_judge_for(group)
-            heading = f"### {approach} × {direction}{tag} ・ 分組 {group}"
+            skipped = Counter(r.outcome for r in in_group if r.outcome is not Outcome.OK)
             if judge is None:
-                lines += [heading, "", "- 沒有主 Judge（實驗設定沒有角色是 primary 的 Judge），沒辦法計算 Gate", ""]
+                results.append(GateResult(approach, direction, variant, group, None, provisional, None, skipped, 0))
                 continue
             gate = compute_group([r for r in in_group if r.outcome is Outcome.OK], articles, translations, truth, calls_by_judge[judge.id], judge.id, decisions)
-            skipped = Counter(r.outcome for r in in_group if r.outcome is not Outcome.OK)
             per_article = planned_runs(experiment, approach, direction, variant)
             expected = None if per_article is None else per_article * sum(1 for a in with_sentences if truth.group_of(a) == group)
             missing = max(0, expected - len(in_group)) if expected is not None else 0
-            lines += gate_group_lines(heading, judge.id + ("（主 Judge 暫定）" if provisional else ""), recall_text(evaluations.get(judge.id), direction, group),
-                                      gate, skipped, missing)
-            rates[(approach, direction, variant)][group] = (judge.id, *rate_of(gate))
+            results.append(GateResult(approach, direction, variant, group, judge, provisional, gate, skipped, missing))
+    return results
+
+
+def gate_lines(experiment: Experiment, out: OutputDir, records: list[RunRecord], articles, truth: GroundTruth | None, decisions: Decisions,
+               evaluations: dict[str, JudgeEvaluation]) -> list[str]:
+    if truth is None:
+        return []
+    lines, rates = ["## Gate（Must-retain fact）", ""], defaultdict(dict)
+    for r in gate_results(experiment, out, records, articles, truth, decisions):
+        tag = "" if r.variant is InputVariant.FULL else f"（{r.variant}）"
+        heading = f"### {r.approach} × {r.direction}{tag} ・ 分組 {r.group}"
+        if r.judge is None:
+            lines += [heading, "", "- 沒有主 Judge（實驗設定沒有角色是 primary 的 Judge），沒辦法計算 Gate", ""]
+            continue
+        lines += gate_group_lines(heading, r.judge.id + ("（主 Judge 暫定）" if r.provisional else ""), recall_text(evaluations.get(r.judge.id), r.direction, r.group),
+                                  r.gate, r.skipped, r.missing_runs)
+        rates[(r.approach, r.direction, r.variant)][r.group] = (r.judge.id, *rate_of(r.gate))
     return lines + gap_lines(rates)

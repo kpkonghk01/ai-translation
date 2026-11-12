@@ -18,10 +18,12 @@ from html import escape
 
 from .articles import load_article
 from .config import Experiment, load_experiment
+from .errors import InputError
 from .gate_report import planned_runs
 from .ground_truth import GroundTruth, load_ground_truth
-from .report_text import DIRECTION_LABELS, GROUP_LABELS, group_label, shown
-from .schemas import Direction, Domain, InputVariant, Outcome, REDO_OUTCOMES, RunRecord, SampleNote
+from .report_text import DIRECTION_LABELS, WEAKENING_LABELS, group_label, ordered_groups, ratio, shown
+from .schemas import Domain, InputVariant, Outcome, REDO_OUTCOMES, RunRecord, SampleNote, WeakeningType
+from .showcase_fade import Cell, Fade, load_fade
 from .store import OutputDir
 
 GROUP_NOTES = {Domain.GENERAL.value: "性罪行、暴力、衝突等社會新聞", Domain.CHINA_POLITICAL.value: "對中國政府不利的新聞"}
@@ -83,11 +85,6 @@ def group_of_article(experiment: Experiment, truth: GroundTruth | None) -> dict[
     if truth is None:
         return {i: ALL_ARTICLES for i in ids}
     return {i: truth.group_of(i) if i in truth.domains else UNGROUPED for i in ids}
-
-
-def ordered_groups(groups) -> list[str]:
-    known = list(GROUP_LABELS)
-    return sorted(set(groups), key=lambda g: (known.index(g) if g in known else len(known), g))
 
 
 def planned_for(experiment: Experiment, approach_id: str) -> int:
@@ -308,8 +305,57 @@ def details_html(experiment: Experiment, names: dict[str, str], records: list[Ru
             f'<table id="details"><thead><tr>{heads}</tr></thead><tbody>{"".join(rows)}</tbody></table></details></section>')
 
 
-def not_measured_html(experiment: Experiment, judged: bool, samples: list[SampleNote]) -> str:
-    if not experiment.judges and samples:
+# 淡化的類型各一個虛構的例子：讓讀的人知道「被寫輕」是什麼樣。真實的例子含文章內容，不能放在這一頁。
+ILLUSTRATIONS = (
+    (WeakeningType.A, "警方向示威者發射催淚彈。", "Tear gas was fired at the protesters.", "是誰發射的（警方）不見了。"),
+    (WeakeningType.B, "官員貪污。", "An official was involved in irregularities.", "「貪污」被改成比較中性的「違規」。"),
+    (WeakeningType.D, "虛構市政廳的官員收受 200 萬元，並安排親屬中標。", "An official at the fictional city hall took money.", "金額和「安排親屬中標」被刪掉。"),
+    (WeakeningType.E, "法院裁定被告串謀。", "The court appeared to find that the defendant may have conspired.", "原文是肯定的裁定，譯文加上了「appeared」「may have」。"),
+)
+
+
+def fade_cell(cell_: Cell | None) -> str:
+    if cell_ is None:
+        return "<td>—</td>"   # 這個模型沒有這個方向（例如對照的現行服務只做繁→簡）
+    if cell_.evaluated == 0:
+        return "<td>沒有結果</td>"
+    return cell(cell_.failed, cell_.evaluated, "bad", f"95% 上限 {int(100 * cell_.upper + 0.5)}%")
+
+
+def accuracy_text(fade: Fade) -> str:
+    if fade.accuracy is None:
+        return "Judge 的準確度還沒有量度，所以這些數字不能當成確定的結果。"
+    a = fade.accuracy
+    return (f"Judge 的準確度：在已知答案裡被淡化的事實，Judge 抓到 {ratio(a.found, a.expected)}；沒淡化卻被判成淡化的 {ratio(a.false_alarms, a.present)}。"
+            "已知答案是人手寫的，比真實的淡化更明顯，所以這是上限，真實的漏判可能更多。")
+
+
+def fade_html(fade: Fade) -> str:
+    combos = [(d, g) for d in fade.directions for g in fade.groups]
+    head = "".join(f"<th>{escape(DIRECTION_LABELS.get(d, str(d)))}・{escape(group_label(g))}</th>" for d, g in combos)
+    body = "".join(f'<tr><th scope="row">{escape(name)}</th>{"".join(fade_cell(cells.get(c)) for c in combos)}</tr>' for name, cells in fade.rows)
+    sizes = "、".join(f"{group_label(g)} {fade.articles_by_group[g]} 篇" for g in ordered_groups(fade.articles_by_group))
+    status = (f"初步結果：判定的是 AI（{fade.judge_name}），尚未經人審。評核了 {sum(fade.articles_by_group.values())} 篇文章（{sizes}）；"
+              f"必看項目 {fade.must} 項，已有決定 {fade.decided} 項。")
+    notes = ("淡化率＝被淡化的句子 ÷ 有結果的句子。一句只要有一條要保留的事實被寫輕或不見，就算被淡化。",
+             "被擋或沒有輸出的文章不在分母，所以只代表翻得出來的那部分。",
+             "每一格的句子不多，95% 上限很寬：只能看大方向，不能比細小的差距。",
+             accuracy_text(fade))
+    shown_examples = "".join(f'<li class="illustration"><h3>{escape(WEAKENING_LABELS[t])}</h3><p>原文：{escape(src)}</p><p>譯文：{escape(tr)}</p>'
+                             f'<p class="meta">{escape(what)}</p></li>' for t, src, tr, what in ILLUSTRATIONS)
+    return ('<section><h2>淡化：譯文有沒有把內容寫輕（初步）</h2>'
+            f'<p class="status wait">{escape(status)}</p>'
+            f'<table id="fade"><caption>每一格：被淡化的句子／有結果的句子，下面是單尾 95% 上限。</caption>'
+            f"<thead><tr><th>模型</th>{head}</tr></thead><tbody>{body}</tbody></table>"
+            f'<ul class="takeaways">{"".join(f"<li>{escape(n)}</li>" for n in notes)}</ul>'
+            '<h3>「被寫輕」是什麼樣</h3><p class="note">以下是虛構的例子，只用來說明每一種是什麼樣，不是這一批的真實譯文。</p>'
+            f'<ul class="illustrations">{shown_examples}</ul></section>')
+
+
+def not_measured_html(experiment: Experiment, judged: bool, samples: list[SampleNote], fade: Fade | None) -> str:
+    if fade is not None:
+        text = "淡化率是初步結果，見上一節。譯文質素（逐段評分）這一批沒有做。"
+    elif not experiment.judges and samples:
         sizes = "、".join(f"{len(s.articles)} 篇文章" for s in samples)
         text = f"這一頁的實驗沒有直接設定 Judge。淡化核對在抽樣的實驗上做（{sizes}），結果出來後另行報告；這一頁只說明翻譯有沒有成功。"
     elif not experiment.judges:
@@ -328,7 +374,7 @@ def shown_records(experiment: Experiment, records: list[RunRecord], group_of: di
 
 
 def render(experiment: Experiment, names: dict[str, str], records: list[RunRecord], group_of: dict[str, str], judged: bool,
-           samples: list[SampleNote], segments_of: Callable[[RunRecord], int]) -> str:
+           samples: list[SampleNote], segments_of: Callable[[RunRecord], int], fade: Fade | None = None) -> str:
     hashes = {p.id: p.config_hash for p in experiment.approaches}
     shown = shown_records(experiment, records, group_of)
     left_out = sum(1 for r in records if not r.is_baseline) - len(shown)
@@ -345,10 +391,11 @@ def render(experiment: Experiment, names: dict[str, str], records: list[RunRecor
             f"{status_html(experiment, shown)}{notes}</header>"
             f"{results_html(experiment, names, shown, group_of)}"
             f"{examples_html(experiment, names, shown, group_of, segments_of)}"
+            f"{fade_html(fade) if fade else ''}"
             f"{what_was_tested_html(experiment, names, Counter(group_of.values()))}"
             f"{stability_html(experiment, names, shown)}"
             f"{details_html(experiment, names, shown)}"
-            f"{not_measured_html(experiment, judged, samples)}"
+            f"{not_measured_html(experiment, judged, samples, fade)}"
             f"<footer><p>資料截至 {updated}（香港時間）。這一頁只有計數，不含文章內容，也沒有文章編號。實驗：{escape(experiment.config.id)}</p></footer>")
     return f'<!doctype html>\n<html lang="zh-Hant"><meta charset="utf-8"><title>AI 翻譯評測結果</title><style>{STYLE}</style><body><main>{body}</main></body></html>\n'
 
@@ -380,11 +427,14 @@ def load(args, *, with_articles: bool = False) -> Loaded:
 
 
 def handle(args) -> int:
+    if args.calibrated_in and not args.judged_in:
+        raise InputError("--calibrated-in 要和 --judged-in 一起用：準確度是這個 Judge 在淡化核對上的準確度")
     loaded = load(args)
+    fade = load_fade(args) if args.judged_in else None
     experiment, out, records = loaded.experiment, loaded.out, loaded.records
     judged = bool(experiment.judges) and bool(out.read_judge_calls(None))
     html = render(experiment, loaded.names, records, loaded.group_of, judged, out.samples_made_from_this(),
-                  lambda record: len(out.read_translation(record).components))
+                  lambda record: len(out.read_translation(record).components), fade)
     out.write_showcase(html)   # 都算好才寫：中途失敗不會留下半份頁面
     print(f"已寫入 {out.showcase_path}（{len(records)} 個 Run）")
     return 0
@@ -409,9 +459,9 @@ thead th { font-size:.8125rem; color:var(--muted); font-weight:500; } tbody th {
 td b { font-size:1.05rem; font-variant-numeric:tabular-nums; } td small { margin-left:4px; font-variant-numeric:tabular-nums; }
 .track { display:block; height:6px; margin-top:6px; background:var(--track); border-radius:3px; overflow:hidden; }
 .detail { display:block; margin-top:2px; color:var(--muted); font-size:.8125rem; }
-.examples { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:14px; }
-.example { background:var(--panel); border:1px solid var(--rule); border-radius:8px; padding:14px 16px; display:grid; gap:6px; align-content:start; }
-.example h3 { margin:0; font-size:1rem; } .meta { color:var(--muted); font-size:.8125rem; }
+.examples, .illustrations { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:14px; }
+.example, .illustration { background:var(--panel); border:1px solid var(--rule); border-radius:8px; padding:14px 16px; display:grid; gap:6px; align-content:start; }
+.example h3, .illustration h3 { margin:0; font-size:1rem; } .meta { color:var(--muted); font-size:.8125rem; }
 .bar { display:block; height:100%; } .bar.ok { background:var(--ok); } .bar.bad { background:var(--bad); } .bar.muted { background:var(--muted); }
 .facts { display:grid; grid-template-columns:7em 1fr; gap:10px 16px; } .facts dt, .legend dt { font-weight:700; } .facts dd, .legend dd { margin:0; }
 .legend { display:grid; gap:4px; font-size:.9rem; } summary { cursor:pointer; font-weight:700; margin-bottom:12px; }
