@@ -1,0 +1,14 @@
+{
+  "id": "j-gemini-lite",
+  "display_name": "Gemini 3.5 Flash-Lite（Google，Judge）",
+  "role": "experiment",
+  "family": "gemini",
+  "provider": "gemini",
+  "model": "gemini-3.5-flash-lite",
+  "api_key_env": "GEMINI_API_KEY",
+  "request_mode": "article-json",
+  "max_output_tokens": 16384,
+  "timeout_seconds": 300,
+  "retry": {"max_attempts": 4, "base_delay_seconds": 2},
+  "concurrency": 1
+}

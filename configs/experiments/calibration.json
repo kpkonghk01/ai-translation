@@ -1,0 +1,118 @@
+{
+ "id": "calibration",
+ "articles": {
+  "dir": "data/articles-first-batch",
+  "ids": [
+   "60397196",
+   "60398632",
+   "919069",
+   "60309907",
+   "60403425",
+   "60403780",
+   "60402992",
+   "852659",
+   "530274",
+   "811318",
+   "871081",
+   "761433",
+   "862484",
+   "775101",
+   "152243",
+   "960278",
+   "60325705",
+   "163078",
+   "60403396",
+   "60402904",
+   "60382363",
+   "60393015",
+   "60401738",
+   "60393874",
+   "60404016",
+   "60402519",
+   "60395204",
+   "60379242",
+   "60393090",
+   "60397549",
+   "60370341",
+   "60375965",
+   "60362654",
+   "60398343",
+   "60368955",
+   "60308363",
+   "60365416",
+   "60401795",
+   "60392254",
+   "60382284",
+   "60369667",
+   "60300726",
+   "60340184",
+   "60302945",
+   "60319887",
+   "60357002",
+   "332065",
+   "24355",
+   "60328351",
+   "60403936",
+   "60287780",
+   "60304775",
+   "60168",
+   "792941",
+   "60391590",
+   "774037",
+   "264384",
+   "60307158",
+   "60363514",
+   "60294846"
+  ]
+ },
+ "directions": [
+  "trad-to-en",
+  "trad-to-simplified"
+ ],
+ "approaches": [
+  {
+   "config": "configs/approaches/a-gemini-flash-lite.json",
+   "runs": 3,
+   "input_variants": [
+    "full",
+    "main-only"
+   ]
+  },
+  {
+   "config": "configs/approaches/f-hy-mt2.json",
+   "runs": 1
+  },
+  {
+   "config": "configs/approaches/f7-hy-mt2-7b.json",
+   "runs": 1
+  },
+  {
+   "config": "configs/approaches/g-qwen-openrouter.json",
+   "runs": 1
+  }
+ ],
+ "ground_truth": {
+  "paths": [
+   "data/gt-drafts/draft-a.json",
+   "data/gt-drafts/draft-b.json",
+   "data/gt-drafts/draft-c.json",
+   "data/gt-drafts/draft-d.json"
+  ],
+  "status": "draft"
+ },
+ "calibration": {
+  "gold_set": "data/gold-set.json"
+ },
+ "term_list": "data/term-list.json",
+ "judging": {
+  "judges": [
+   {
+    "config": "configs/judges/j-gemini.json"
+   },
+   {
+    "config": "configs/judges/j-gemini-lite.json"
+   }
+  ],
+  "screening": false
+ }
+}

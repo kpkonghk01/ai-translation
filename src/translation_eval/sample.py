@@ -7,7 +7,7 @@
 每組（ground truth 的題材，或 group_overrides 的分組）抽 --per-group 篇，對照文章另外抽 --controls 篇；組裡的文章比要抽的少就全取。
 抽的依據只有種子與 ground truth（種子加文章 id 的 hash 排序），不看 Run 的結果：不能看結果挑。沒有 ground truth 的文章不抽。
 寫出新實驗的輸出目錄（runs.jsonl、translations/、raw/、sample.json）和新實驗的設定檔（與來源設定檔同一個目錄、檔名是 <新實驗 id>.json）：
-設定與來源一樣，只是文章換成抽中的、每個 Approach 只有 1 次與完整文章。baseline 的 Run 也一起帶過去。
+設定與來源一樣，只是文章換成抽中的、每個 Approach 只有 1 次與完整文章，而且不帶 calibration（Gold set 指向全部文章，抽樣的實驗驗證不過）。baseline 的 Run 也一起帶過去。
 新實驗或設定檔已經存在、缺少要複製的檔案時，什麼都不寫。來源的 Run 還沒跑完也可以抽：沒複製的 Run，新實驗的 translate 會補跑。
 """
 import hashlib
@@ -52,8 +52,9 @@ def check_options(args) -> None:
 
 
 def new_config(source: dict, new_id: str, chosen_in_order: list[str]) -> dict:
-    """與來源設定一樣，只是文章換成抽中的、每個 Approach 只有 1 次與完整文章。group_overrides 只留下抽中的文章（指向不在實驗內的文章會被拒絕）。"""
-    config = {**source, "id": new_id, "articles": {**source["articles"], "ids": chosen_in_order},
+    """與來源設定一樣，只是文章換成抽中的、每個 Approach 只有 1 次與完整文章。group_overrides 只留下抽中的文章（指向不在實驗內的文章會被拒絕）。
+    不帶 calibration：Gold set 的項目指向來源的全部文章，驗證時要求它們都在實驗內，抽樣只有一部分，report 會因此停止。"""
+    config = {**{k: v for k, v in source.items() if k != "calibration"}, "id": new_id, "articles": {**source["articles"], "ids": chosen_in_order},
               "approaches": [{**entry, "runs": 1, "input_variants": [InputVariant.FULL.value]} for entry in source["approaches"]]}
     overrides = config.get("ground_truth", {}).get("group_overrides")
     if overrides:
@@ -107,4 +108,6 @@ def handle(args) -> int:
     if args.controls:
         shown.append(f"{CONTROLS} {len(chosen & set(controls))} 篇")
     print(f"已建立實驗 {args.id}：{len(ordered)} 篇（{'、'.join(shown)}），{len(picked)} 個 Run，設定檔 {config_path}")
+    if cfg.calibration:
+        print(f"沒有帶校準設定：Gold set 指向來源的全部文章，抽樣只有一部分；Judge 的校準結果在來源實驗（{cfg.id}）或另開的校準實驗，不在這裡。")
     return 0

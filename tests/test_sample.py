@@ -158,6 +158,18 @@ class NewConfigTest(SampleCase):
         self.assertEqual(config["judging"], self.experiment()["judging"])
         self.assertEqual(config["directions"], ["trad-to-en"])
 
+    def test_calibration_is_left_out_because_the_gold_set_points_at_articles_that_are_not_in_the_sample(self):
+        self.extra_experiment["calibration"] = {"gold_set": os.path.join(self.tmp, "gold-set.json")}
+        self.write_json(self.config_path, self.experiment())
+        _, out, _ = self.sample("--per-group", "1", "--controls", "0")
+        self.assertNotIn("calibration", self.new_config_json())
+        self.assertIn("沒有帶校準設定", out)   # 說出來，免得以為漏了
+        self.assertEqual(self.new_config_json()["ground_truth"], self.experiment()["ground_truth"])   # 其他設定照帶
+
+    def test_without_calibration_in_the_source_there_is_nothing_to_say_about_it(self):
+        _, out, _ = self.sample("--per-group", "1", "--controls", "0")
+        self.assertNotIn("校準", out)
+
     def test_group_overrides_keep_only_the_chosen_articles_so_the_new_config_still_loads(self):
         self.use_ground_truth(three_groups_ground_truth(), group_overrides={"9000001": "q34", "9000002": "q34"})
         records = self.sampled("--per-group", "1", "--controls", "0")
