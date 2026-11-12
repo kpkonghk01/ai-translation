@@ -1,0 +1,102 @@
+{
+  "id": "first-batch-sample",
+  "articles": {
+    "dir": "data/articles-first-batch",
+    "ids": [
+      "60397196",
+      "60309907",
+      "60403425",
+      "60402992",
+      "530274",
+      "761433",
+      "862484",
+      "152243",
+      "60402904",
+      "60393015",
+      "60402519",
+      "60395204",
+      "60397549",
+      "60370341",
+      "60375965",
+      "60401795",
+      "60382284",
+      "24355",
+      "60403936",
+      "792941",
+      "60307158",
+      "60363514",
+      "60294846"
+    ]
+  },
+  "directions": [
+    "trad-to-en",
+    "trad-to-simplified"
+  ],
+  "approaches": [
+    {
+      "config": "configs/approaches/a-gemini-flash-lite.json",
+      "runs": 1,
+      "input_variants": [
+        "full"
+      ]
+    },
+    {
+      "config": "configs/approaches/f-hy-mt2.json",
+      "runs": 1,
+      "input_variants": [
+        "full"
+      ]
+    },
+    {
+      "config": "configs/approaches/f7-hy-mt2-7b.json",
+      "runs": 1,
+      "input_variants": [
+        "full"
+      ]
+    },
+    {
+      "config": "configs/approaches/g-qwen-openrouter.json",
+      "runs": 1,
+      "input_variants": [
+        "full"
+      ]
+    }
+  ],
+  "baselines": [
+    {
+      "id": "e",
+      "display_name": "現行服務（OpenCC 加自訂詞庫）",
+      "dir": "data/baseline-first-batch",
+      "direction": "trad-to-simplified"
+    }
+  ],
+  "ground_truth": {
+    "paths": [
+      "data/gt-drafts/draft-a.json",
+      "data/gt-drafts/draft-b.json",
+      "data/gt-drafts/draft-c.json",
+      "data/gt-drafts/draft-d.json"
+    ],
+    "status": "draft"
+  },
+  "term_list": "data/term-list.json",
+  "judging": {
+    "judges": [
+      {
+        "config": "configs/judges/j-gemini.json"
+      }
+    ],
+    "screening": false,
+    "same_family_exceptions": [
+      {
+        "approach": "a",
+        "judge": "j-gemini",
+        "reason": "Pan 於 2026-10-28 同意 Gemini 當 Judge（Q31）；Gemini 3.8 Flash 評 Gemini 3.5 Flash-Lite 自己的譯文，可能有自評偏差，報告要註明"
+      }
+    ],
+    "primary_judges": {
+      "general": "j-gemini",
+      "china-political": "j-gemini"
+    }
+  }
+}

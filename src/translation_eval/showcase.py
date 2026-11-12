@@ -70,11 +70,12 @@ def sentence_share(part: int, whole: int) -> str:
     return f"{pct}（{fraction}）"
 
 
-def cell(part: int, whole: int, kind: str, title: str | None = None) -> str:
+def cell(part: int, whole: int, kind: str, detail: str | None = None) -> str:
+    """一格：百分比、分數、色條。detail（例如各項的數量）直接寫在數字下面：不靠滑鼠提示，印出來或用沒有滑鼠的環境也看得到。"""
     pct, fraction = share(part, whole)
     width = 100 * part / whole if whole else 0
-    hint = f' title="{escape(title)}"' if title else ""
-    return (f'<td{hint}><b>{pct}</b> <small>{fraction}</small>'
+    under = f'<span class="detail">{escape(detail)}</span>' if detail else ""
+    return (f'<td><b>{pct}</b> <small>{fraction}</small>{under}'
             f'<span class="track"><span class="bar {kind}" style="width:{width:.0f}%"></span></span></td>')
 
 
@@ -200,7 +201,7 @@ def results_html(experiment: Experiment, names: dict[str, str], records: list[Ru
     legend = ('<dl class="legend"><dt>被擋（Block）</dt><dd>模型供應商在系統層拒絕處理這篇文章，沒有任何譯文。</dd>'
               '<dt>拒絕（Refusal）</dt><dd>模型回覆「無法翻譯」之類，而不是譯文。</dd>'
               '<dt>其他未完成</dt><dd>沒有拿到可用的譯文：空內容（供應商有回應但沒有輸出）、輸出格式壞、被截斷，或出錯（網路或供應商後端的錯誤）。'
-              '把滑鼠移到數字上可以看各項的數量。</dd></dl>')
+              '各項的數量寫在數字下面。</dd></dl>')
     return f"<section><h2>先看結論</h2>{lines}</section><section><h2>結果</h2>{table}{legend}</section>"
 
 
@@ -311,6 +312,7 @@ caption { text-align:left; padding:0 0 8px; } th, td { padding:10px 12px; text-a
 thead th { font-size:.8125rem; color:var(--muted); font-weight:500; } tbody th { font-weight:700; }
 td b { font-size:1.05rem; font-variant-numeric:tabular-nums; } td small { margin-left:4px; font-variant-numeric:tabular-nums; }
 .track { display:block; height:6px; margin-top:6px; background:var(--track); border-radius:3px; overflow:hidden; }
+.detail { display:block; margin-top:2px; color:var(--muted); font-size:.8125rem; }
 .bar { display:block; height:100%; } .bar.ok { background:var(--ok); } .bar.bad { background:var(--bad); } .bar.muted { background:var(--muted); }
 .facts { display:grid; grid-template-columns:7em 1fr; gap:10px 16px; } .facts dt, .legend dt { font-weight:700; } .facts dd, .legend dd { margin:0; }
 .legend { display:grid; gap:4px; font-size:.9rem; } summary { cursor:pointer; font-weight:700; margin-bottom:12px; }

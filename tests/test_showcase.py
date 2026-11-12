@@ -101,8 +101,19 @@ class ResultsTableTest(ShowcaseCase):
         self.run_the_scenario()
         table = tables(self.showcase())["results"]
         self.assertEqual(table[0], ["模型", "完成翻譯", "被擋（一般題材）", "被擋（中國政治題材）", "拒絕", "其他未完成"])
-        self.assertEqual(row_of(table, NAME_A), [NAME_A, "50% 2/4", "50% 1/2", "0% 0/2", "0% 0/4", "25% 1/4"])
+        self.assertEqual(row_of(table, NAME_A), [NAME_A, "50% 2/4", "50% 1/2", "0% 0/2", "0% 0/4", "25% 1/4 出錯 1"])
         self.assertEqual(row_of(table, NAME_B), [NAME_B, "75% 3/4", "0% 0/2", "0% 0/2", "25% 1/4", "0% 0/4"])
+
+    def test_what_is_in_other_unfinished_is_written_under_the_number_not_in_a_hover_hint(self):
+        self.translate_all(gemini_samples.candidate_with({"role": "model"}), ok_response("9000001"),   # 甲：空內容
+                           gemini_samples.unknown_format(), ok_response("9000002"),   # 甲：出錯
+                           ok_response("9000003"), ok_response("9000003"), ok_response("9000004"), ok_response("9000004"))
+        html = self.showcase()
+        table = tables(html)["results"]
+        self.assertEqual(row_of(table, NAME_A)[5], "50% 2/4 空內容 1、出錯 1")
+        self.assertEqual(row_of(table, NAME_B)[5], "0% 0/4")   # 沒有就不寫
+        self.assertNotIn("title=", html)
+        self.assertNotIn("滑鼠", html)   # 不再叫人把滑鼠移上去
 
     def test_without_a_display_name_the_row_shows_the_model_not_the_code(self):
         self.write_json(self.approach_path, APPROACH)
@@ -174,7 +185,7 @@ class ProgressTest(ShowcaseCase):
         self.assertIn("1 個 Run 重做過仍然沒有結果（出錯或空內容），算在「其他未完成」", html)
         self.assertNotIn("尚待重做", html)
         self.assertNotIn("仍在進行", html)
-        self.assertEqual(row_of(tables(html)["results"], NAME_A)[5], "25% 1/4")   # 仍算在其他未完成
+        self.assertEqual(row_of(tables(html)["results"], NAME_A)[5], "25% 1/4 出錯 1")   # 仍算在其他未完成
 
     def test_a_redone_run_that_still_fails_counts_as_done_while_the_experiment_is_still_running(self):
         self.translate_all(ok_response("9000001"), gemini_samples.unknown_format(), ok_response("9000002"), args=("--limit", "3"))   # 乙在 9000001 出錯
