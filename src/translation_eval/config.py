@@ -51,6 +51,15 @@ class Experiment:
             return next(j for j in self.judges if j.id == chosen), False
         return next((j for j in self.judges if j.config.role is JudgeRole.PRIMARY), None), True
 
+    def display_names(self) -> dict[str, str]:
+        """代號 → 給人看的名稱（模型與 baseline）。沒有顯示名稱時，模型用 model、baseline 用它的 id（所以 baseline 要寫）。
+        兩個名稱相同（沒有顯示名稱而 model 相同，或名稱剛好等於別人的 model）兩列會分不出來，所以停止。"""
+        names = {p.id: p.config.display_name or p.config.model for p in self.approaches}
+        names.update({b.id: b.display_name or b.id for b in self.config.baselines})
+        if problems := display_name_problems(names.values()):
+            raise InputError(problems)
+        return names
+
     def approach_config(self, approach_id: str) -> ApproachConfig | None:
         """LLM Approach 的設定；baseline（不經 API）沒有。"""
         return next((p.config for p in self.approaches if p.id == approach_id), None)

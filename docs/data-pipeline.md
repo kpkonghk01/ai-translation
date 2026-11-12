@@ -220,6 +220,8 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
   ```
 
   清單分「必看」與「抽查」。必看：Gate 失敗的事實（包括漏段）、uncertain 或無效的事實 verdict、Unjudged 的事實、uncertain 的 Finding、無效的 Judge 輸出、Judge 沒評成的請求（MQM 或全文篩查）、全文篩查的結果、MQM 的 Fidelity-of-force Finding、疑似 Refusal 和其他 Deterministic 警示。抽查：從其餘項目（通過的事實、一致的 Finding、Deterministic Finding）以固定種子抽出；比例與種子寫在實驗設定的 `"review": {"sample_rate": 0.1, "seed": 1}`（這是預設）。「種子加項目 key」的 hash 決定一項抽不抽：同一個輸入再跑，抽出的相同；之後有更多結果進來，已經抽到的不會變。只審 `role` 是 `primary` 的 Judge 的結果（事實是該分組的主 Judge）。每個項目有 key 和輸入的 hash（原文、譯文和 Judge 的原始輸出），並顯示原文、譯文、Judge 的引用和理由，以及已有的決定。
+  **聚焦清單**：必看項目很多時，先看一部分：`review --approach <id> --status <狀態>`（兩個選項都可以重覆；狀態是必看的那幾種：`failed`＝Gate 失敗、被判淡化的事實，`uncertain`、`invalid`、`unjudged`、`screened`、`suspected-refusal`、`warning`）只列符合的必看項目，編號，寫成另一個檔案 `review-focus.md`（完整的 `review.md` 不動）。每一項用白話寫出：模型、方向、題材、要保留的事實、原文、譯文、Judge 兩次的判定與引用和理由、出了什麼問題（淡化類型的白話說明，兩次判定的類型不一致時也說明）。審閱者用編號回報哪幾項不算淡化，決定照下面的格式寫進 `review-decisions.json`。例如 `review --config configs/experiments/first-batch-sample.json --approach a --approach g --status failed`。含原文與譯文，只寫在 `data/`，終端只印數量。
+
   決定寫在同一個目錄的 `review-decisions.json`（自己建立，key 與 hash 照清單抄）：
 
   ```json

@@ -24,7 +24,7 @@ from .ground_truth import GroundTruth
 from .pairs import component_pairs
 from .screening import judge_screening
 from .schemas import (CheckWarning, ComponentResult, DUPLICATE_COMPONENT, Dimension, EXTRA_COMPONENT, FAILING_VERDICTS, Finding, InvalidKind,
-                      JudgeFinding, JudgeRole, OMISSION, Outcome, RunKey, RunRecord, ScreenItem, TYPE_CHANGED, Task, WHOLE_RUN, WarningKind)
+                      JudgeFinding, JudgeRole, OMISSION, Outcome, RunKey, RunRecord, ScreenItem, TYPE_CHANGED, Task, WHOLE_RUN, WarningKind, WeakeningType)
 from .store import OutputDir
 from .textrules import one_line, squash
 
@@ -73,6 +73,7 @@ class ReviewItem:
     translation_text: str | None
     lines: list[str] = field(default_factory=list)   # Judge 的引用、理由等，一行一項
     locked: bool = False                              # 程式證明的結果：只能 accept
+    weakening: WeakeningType | None = None            # 失敗的事實：兩次一致的淡化類型（沒有一致的類型就是 None）
 
     @property
     def must_see(self) -> bool:
@@ -145,9 +146,9 @@ def _call_summary(calls) -> list:
              *([[s.model_dump(mode="json") for s in c.screenings]] if c.task is Task.SCREEN else [])] for c in calls]   # MQM 與 fact 的格式不變：已寫的審閱決定不會因此過期
 
 
-def _item(key, kind, status, run, component_id, judge, source, target, hash_parts, lines, locked=False) -> ReviewItem:
-    """input_hash 涵蓋顯示給審閱者的原文與譯文，加上 hash_parts（Judge 的原始輸出、事實等）。"""
-    return ReviewItem(key, kind, status, run, component_id, judge, digest(source, target, *hash_parts), source, target, lines, locked)
+def _item(key, kind, status, run, component_id, judge, source, target, hash_parts, lines, locked=False, weakening=None) -> ReviewItem:
+    """input_hash 涵蓋顯示給審閱者的原文與譯文，加上 hash_parts（Judge 的原始輸出、事實等）。weakening 只是顯示用，不進 hash。"""
+    return ReviewItem(key, kind, status, run, component_id, judge, digest(source, target, *hash_parts), source, target, lines, locked, weakening)
 
 
 def build_items(experiment: Experiment, out: OutputDir, records: list[RunRecord], rows: list[ComponentResult], articles,
@@ -298,7 +299,7 @@ def _fact_items(items, experiment: Experiment, truth: GroundTruth, record: RunRe
         for sentence in sentences:
             for fact in sentence.facts:
                 prefix = f"事實（{fact.kind.value}）：{one_line(fact.text)}"
-                locked = judgment is None
+                locked, weakening = judgment is None, None
                 if judgment is None:
                     status, lines = ItemStatus.FAILED, [prefix, "譯文缺少這個 Component：事實直接判 Absent，沒有送給 Judge"]
                 elif judgment.status is Status.UNJUDGED:
@@ -308,8 +309,11 @@ def _fact_items(items, experiment: Experiment, truth: GroundTruth, record: RunRe
                     status = {FactStatus.UNCERTAIN: ItemStatus.UNCERTAIN, FactStatus.INVALID: ItemStatus.INVALID}.get(
                         result.status, ItemStatus.FAILED if result.verdict in FAILING_VERDICTS else ItemStatus.PASSED)
                     lines = [prefix, *_fact_lines(judgment, fact)]
+                    if status is ItemStatus.FAILED:
+                        weakening = result.weakening_type
                 items.append(_item(fact_item_key(run, component_id, judge.id, fact.key), ItemKind.FACT, status, run, component_id, judge.id,
-                                   pair.source_text, pair.translated_text, (fact.kind.value, fact.text, summary), lines, locked=locked))
+                                   pair.source_text, pair.translated_text, (fact.kind.value, fact.text, summary), lines, locked=locked,
+                                   weakening=weakening))
         for call in (judgment.calls if judgment is not None else ()):
             for invalid in (i for i in call.invalid if i.fact is None):   # 不認識的 fact_id、不是物件的條目：不屬於任何一條事實
                 items.append(_item(invalid_item_key(run, component_id, judge.id, Task.FACT, call.call_index, invalid.raw), ItemKind.INVALID, ItemStatus.INVALID,

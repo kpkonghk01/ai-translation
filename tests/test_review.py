@@ -380,3 +380,137 @@ class KeyAndCoverageTest(ReviewCase):
         code, out, err = self.run_cli("report")
         self.assertNotEqual(code, 0)
         self.assertIn("fact-0000000000000000：項目不存在", err)
+
+
+class FocusListTest(ReviewCase):
+    """review --approach/--status：只列某些模型、某些狀態的必看項目，編號，寫成另一個檔案（review-focus.md）。
+    給人逐條看「這個模型的哪一句被淡化了、出了什麼問題」。完整的 review.md 不動。"""
+
+    def focus(self, *options, expect=0):
+        code, out, err = self.run_cli("review", *options)
+        self.assertEqual(code, expect, err)
+        return out, err
+
+    def focus_text(self, *options) -> str:
+        self.focus(*options)
+        return self.output_text("review-focus.md")
+
+    def test_it_lists_only_the_asked_approach_and_status_and_numbers_the_items(self):
+        self.all_kinds()
+        text = self.focus_text("--approach", "a", "--status", "failed")
+        numbers = [int(n) for n in re.findall(r"^### (\d+) ・", text, re.M)]
+        self.assertEqual(numbers, list(range(1, len(numbers) + 1)))   # 從 1 開始、連續
+        self.assertGreaterEqual(len(numbers), 1)
+        self.assertEqual(text.count("\n### "), len(numbers))
+        self.assertIn("事實（detail）：工程延誤半年", text)
+        self.assertNotIn("awkward", text)   # Finding 不是 failed 的事實
+
+    def test_the_full_review_list_is_not_touched(self):
+        self.all_kinds()
+        before = self.review_text()
+        self.focus("--approach", "a", "--status", "failed")
+        self.assertEqual(self.output_text("review.md"), before)
+
+    def test_a_focus_list_does_not_even_create_the_full_review_list(self):
+        self.all_kinds()
+        path = os.path.join(self.out_dir, "review.md")
+        self.assertFalse(os.path.exists(path))
+        self.focus("--status", "failed")
+        self.assertFalse(os.path.exists(path))
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("舊的完整清單")
+        self.focus("--status", "failed")
+        self.assertEqual(self.output_text("review.md"), "舊的完整清單")
+
+    def test_the_approach_option_keeps_only_that_approachs_items(self):
+        self.all_kinds()
+        b = os.path.join(self.tmp, "approach-b.json")
+        self.write_json(self.approach_path, {**self.read_approach(), "display_name": "模型甲（虛構）"})
+        self.write_json(b, {**self.read_approach(), "id": "b", "display_name": "模型乙（虛構）"})
+        self.rewrite_experiment(lambda e: e["approaches"].append({"config": b, "runs": 1}))
+        self.run_cli("translate", transport=FakeTransport(ok_response()))   # 只有 b 還沒有 Run
+        self.run_judges(fact={"9000001-001": lambda p: fact_output(p, {S1_FACT: WEAK})})
+        for approach, other in (("a", "b"), ("b", "a")):
+            text = self.focus_text("--approach", approach, "--status", "failed")
+            self.assertIn(f"9000001 {approach} trad-to-en full r1", text)
+            self.assertNotIn(f"9000001 {other} trad-to-en full r1", text)
+            self.assertIn("模型甲（虛構）" if approach == "a" else "模型乙（虛構）", text)   # 顯示名稱，不是代號
+
+    def read_approach(self) -> dict:
+        with open(self.approach_path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_an_item_says_in_plain_words_what_is_wrong_with_the_translation(self):
+        self.all_kinds()
+        item = self.focus_text("--status", "failed").split("\n### ")[1]
+        for shown in ("gemini-3.1-flash-lite", "繁→英", "一般題材", "要保留的事實", "事實（detail）：工程延誤半年", "翻新工程延誤半年，預算超支。",
+                      "The renovation is six months late and over budget.", "Weakened（e）", "對原文斷言的事加上限定",
+                      "理由：虛構的理由：語氣被削弱"):
+            self.assertIn(shown, item)
+        self.assertRegex(item, r"fact-[0-9a-f]{16}")
+        self.assertRegex(item, r"輸入 hash：`[0-9a-f]{16}`")
+
+    def test_two_judge_calls_that_disagree_on_the_type_say_there_is_no_single_type(self):
+        self.run_judges(fact={("9000001-001", 1): lambda p: fact_output(p, {S1_FACT: WEAK}),
+                              ("9000001-001", 2): lambda p: fact_output(p, {S1_FACT: {**WEAK, "type": "b"}})})
+        failed = [c for c in self.focus_text("--status", "failed").split("\n### ")[1:] if "事實（detail）：工程延誤半年" in c]
+        self.assertEqual(len(failed), 1)
+        self.assertIn("兩次判定的類型不一致，沒有單一的類型", failed[0])
+
+    def test_a_decided_item_shows_the_decision_and_the_header_counts_them(self):
+        self.all_kinds()
+        item = self.item(self.review_text(), "事實（detail）：工程延誤半年")
+        self.decide(item, "override", verdict="Present")
+        text = self.focus_text("--status", "failed")
+        self.assertIn("已有決定 1", text)
+        self.assertIn("Present", text.split("決定：")[1])
+
+    def test_nothing_matching_says_so(self):
+        self.all_kinds()
+        text = self.focus_text("--status", "suspected-refusal")
+        self.assertIn("沒有符合的項目", text)
+
+    def test_an_item_that_is_not_a_fact_has_no_fact_to_keep_and_is_listed_as_the_review_list_has_it(self):
+        self.all_kinds()
+        item = self.focus_text("--status", "unjudged").split("\n### ")[1]   # MQM 兩次都被擋的 Unjudged 請求
+        self.assertIn("MQM 的兩次請求都失敗", item)
+        self.assertNotIn("要保留的事實", item)
+        self.assertNotIn("出了什麼問題", item)
+
+    def test_a_fact_without_a_final_verdict_says_why_there_is_none(self):
+        self.all_kinds()
+        facts = [c for c in self.focus_text("--status", "uncertain").split("\n### ")[1:] if "要保留的事實" in c]   # 另有 uncertain 的 Finding
+        self.assertEqual(len(facts), 1)
+        self.assertIn("Judge 兩次的判定不一致，沒有最終判定", facts[0])
+
+    def test_two_approaches_with_the_same_model_and_no_display_names_are_refused_like_in_the_showcase(self):
+        self.all_kinds()
+        b = os.path.join(self.tmp, "approach-b.json")
+        self.write_json(b, {**self.read_approach(), "id": "b"})
+        self.rewrite_experiment(lambda e: e["approaches"].append({"config": b, "runs": 1}))
+        code, _, err = self.run_cli("review", "--status", "failed")
+        self.assertNotEqual(code, 0)
+        self.assertIn("顯示名稱重覆", err)
+
+    def test_an_unknown_approach_stops_without_writing_a_file(self):
+        self.all_kinds()
+        self.focus("--approach", "zzz", expect=1)
+        self.assertFalse(os.path.exists(os.path.join(self.out_dir, "review-focus.md")))
+
+    def test_only_statuses_that_are_must_see_are_accepted(self):
+        self.all_kinds()
+        with self.assertRaises(SystemExit):   # argparse 對不合法的選項直接結束
+            self.run_cli("review", "--status", "passed")
+        self.assertFalse(os.path.exists(os.path.join(self.out_dir, "review-focus.md")))
+
+    def test_it_prints_counts_only(self):
+        self.all_kinds()
+        out, _ = self.focus("--approach", "a", "--status", "failed")
+        self.assertIn("review-focus.md", out)
+        for text in ("翻新", "renovation", "工程"):
+            self.assertNotIn(text, out)
+
+    def test_the_numbers_are_the_same_every_time(self):
+        self.all_kinds()
+        first = self.focus_text("--status", "failed")
+        self.assertEqual(self.focus_text("--status", "failed"), first)

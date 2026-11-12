@@ -117,6 +117,10 @@ class OutputDir:
         return self.root / "showcase-text.html"
 
     @property
+    def review_focus_path(self) -> Path:
+        return self.root / "review-focus.md"
+
+    @property
     def decisions_path(self) -> Path:
         return self.root / "review-decisions.json"
 
@@ -237,6 +241,9 @@ class OutputDir:
 
     def write_review(self, text: str) -> None:
         self._replace(self.review_path, text)
+
+    def write_review_focus(self, text: str) -> None:
+        self._replace(self.review_focus_path, text)
 
     def write_run(self, record: RunRecord, raw: bytes | None, translation: dict | None, *,
                   secrets: tuple[str, ...] = (), replaces_existing: bool = False, raw_extension: str = "body") -> RunRecord:

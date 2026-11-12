@@ -8,7 +8,7 @@
   uv run --locked python -I -m translation_eval import-baseline --config <實驗設定>
   uv run --locked python -I -m translation_eval check --config <實驗設定>
   uv run --locked python -I -m translation_eval report --config <實驗設定>
-  uv run --locked python -I -m translation_eval review --config <實驗設定>
+  uv run --locked python -I -m translation_eval review --config <實驗設定> [--approach <id>]... [--status <狀態>]...   （有 --approach 或 --status 就只寫聚焦清單 review-focus.md）
   uv run --locked python -I -m translation_eval showcase --config <實驗設定>   （給非技術讀者的 HTML 展示報告，只有計數）
   uv run --locked python -I -m translation_eval showcase-text --config <實驗設定>   （含原文與譯文片段的展示頁，只在本機看，不要轉發）
   uv run --locked python -I -m translation_eval sample --config <實驗設定> --id <新實驗 id> [--per-group 10] [--controls 3] [--seed 1]   （抽樣成新實驗，縮小 Judge 的範圍）
@@ -23,6 +23,7 @@ import sys
 
 from . import baselines, calibrate, check, cms, crosscheck, gold, judging, provider_listing, report, review, sample, showcase, showcase_text, translate
 from .errors import InputError, StoppedAfterSending
+from .review_items import MUST_SEE
 from .schemas import Task
 from .transport import Transport, TransportForbidden, UrllibTransport
 
@@ -41,6 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser("check", help="對 ok 的 Run 做 Deterministic check")
     r = sub.add_parser("report", help="產生 Block／Refusal 報告")
     v = sub.add_parser("review", help="產生審閱清單（必看與抽查）")
+    v.add_argument("--approach", action="append", default=[], help="聚焦清單：只列這個模型的必看項目（可重覆）")
+    v.add_argument("--status", action="append", default=[], choices=sorted(s.value for s in MUST_SEE),
+                   help="聚焦清單：只列這個狀態的必看項目（可重覆）；有 --approach 或 --status 就只寫 review-focus.md，不動 review.md")
     sm = sub.add_parser("sample", help="抽幾篇文章、每個模型只取第 1 次的完整文章，複製成新的實驗（縮小 Judge 的範圍）")
     sm.add_argument("--id", required=True, help="新實驗的 id")
     sm.add_argument("--per-group", type=int, default=10, help="每組（題材）抽幾篇（預設 10）")

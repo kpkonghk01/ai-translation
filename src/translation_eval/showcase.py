@@ -5,7 +5,7 @@
 
 寫到 <data-dir>/experiments/<實驗 id>/showcase.html。隨時可以執行：還沒跑完時頁面頂部會寫「仍在進行」，數字是中途的。
 讀的是 runs.jsonl，不需要先 check；Judge 的結果不放在這裡（只說有沒有評核紀錄），完整的數字在 report.md。
-模型名用 Approach 設定的 display_name；沒有就用 model（不用代號 a、f：讀的人看不懂）。baseline 沒有顯示名稱時退回它的 id，所以要寫。
+模型名用 Approach 設定的 display_name（Experiment.display_names）；沒有就用 model（不用代號 a、f：讀的人看不懂）。baseline 沒有顯示名稱時退回它的 id，所以要寫。
 
 主表只看完整文章、每篇每個方向的第 1 次：每個模型的分母一樣，才比得出來。重複跑的次數和只送標題與正文的版本，另放一張表。
 沒有任何外部資源（字型、script、網址）：離線也能開，也不會把頁面內容送出去。頁面用「模型」稱 Approach：讀的人不認識 Approach。
@@ -17,19 +17,16 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 
 from .articles import load_article
-from .config import Experiment, display_name_problems, load_experiment
-from .errors import InputError
+from .config import Experiment, load_experiment
 from .gate_report import planned_runs
 from .ground_truth import GroundTruth, load_ground_truth
-from .report_text import shown
+from .report_text import DIRECTION_LABELS, GROUP_LABELS, group_label, shown
 from .schemas import Direction, Domain, InputVariant, Outcome, REDO_OUTCOMES, RunRecord, SampleNote
 from .store import OutputDir
 
-GROUP_LABELS = {Domain.GENERAL.value: "一般題材", Domain.CHINA_POLITICAL.value: "中國政治題材"}
 GROUP_NOTES = {Domain.GENERAL.value: "性罪行、暴力、衝突等社會新聞", Domain.CHINA_POLITICAL.value: "對中國政府不利的新聞"}
 # 這兩個組名同時就是顯示的文字：它們不是合法的 Slug，所以不會跟 group_overrides 裡使用者取的組名撞在一起
 ALL_ARTICLES, UNGROUPED = "全部文章", "沒有 ground truth 的文章"
-DIRECTION_LABELS = {Direction.TRAD_TO_EN: "繁→英", Direction.TRAD_TO_SIMPLIFIED: "繁→簡"}
 VARIANT_LABELS = {InputVariant.FULL: "完整文章", InputVariant.MAIN_ONLY: "只送標題與正文"}
 OUTCOME_LABELS = {Outcome.OK: "完成翻譯", Outcome.BLOCK: "被擋", Outcome.REFUSAL: "拒絕", Outcome.MALFORMED: "輸出格式壞",
                   Outcome.TRUNCATED: "截斷", Outcome.EMPTY: "空內容", Outcome.ERROR: "出錯"}
@@ -81,24 +78,11 @@ def cell(part: int, whole: int, kind: str, detail: str | None = None) -> str:
             f'<span class="track"><span class="bar {kind}" style="width:{width:.0f}%"></span></span></td>')
 
 
-def labels(experiment: Experiment) -> dict[str, str]:
-    """代號 → 給人看的名稱。兩列同名（沒有顯示名稱而 model 相同，或名稱剛好等於別人的 model）會分不出來，所以停止。"""
-    names = {p.id: p.config.display_name or p.config.model for p in experiment.approaches}
-    names.update({b.id: b.display_name or b.id for b in experiment.config.baselines})
-    if problems := display_name_problems(names.values()):
-        raise InputError(problems)
-    return names
-
-
 def group_of_article(experiment: Experiment, truth: GroundTruth | None) -> dict[str, str]:
     ids = experiment.config.articles.ids
     if truth is None:
         return {i: ALL_ARTICLES for i in ids}
     return {i: truth.group_of(i) if i in truth.domains else UNGROUPED for i in ids}
-
-
-def group_label(group: str) -> str:
-    return GROUP_LABELS.get(group, group)
 
 
 def ordered_groups(groups) -> list[str]:
@@ -386,7 +370,7 @@ def load(args, *, with_articles: bool = False) -> Loaded:
     cfg = experiment.config
     out = OutputDir(args.data_dir, cfg.id)
     records = out.require_runs()
-    names = labels(experiment)
+    names = experiment.display_names()
     truth, articles = None, {}
     if cfg.ground_truth or with_articles:
         articles = {i: load_article(cfg.articles.dir, i) for i in cfg.articles.ids}

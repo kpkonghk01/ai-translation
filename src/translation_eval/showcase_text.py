@@ -19,8 +19,8 @@ from html import escape
 from .articles import text_of
 from .ground_truth import article_roles
 from .schemas import Article, Direction, Outcome, RunRecord, Translation
-from .showcase import (DIRECTION_LABELS, STYLE, Loaded, example_html, first_full_runs, group_label, load, ordered_kinds, runs_by_kind,
-                       shown_records)
+from .report_text import DIRECTION_LABELS, group_label
+from .showcase import STYLE, Loaded, example_html, first_full_runs, load, ordered_kinds, runs_by_kind, shown_records
 
 EXCERPT_MIN, EXCERPT_MAX = 40, 160
 EXCERPT_TYPES = ("paragraph", "highlight")
