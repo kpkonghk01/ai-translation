@@ -23,7 +23,7 @@ from .gate_report import planned_runs
 from .ground_truth import GroundTruth, load_ground_truth
 from .report_text import DIRECTION_LABELS, WEAKENING_LABELS, group_label, ordered_groups, ratio, shown
 from .schemas import Domain, InputVariant, Outcome, REDO_OUTCOMES, RunRecord, SampleNote, WeakeningType
-from .showcase_fade import Cell, Fade, load_fade
+from .showcase_fade import Cell, Fade, Row, load_fade
 from .store import OutputDir
 
 GROUP_NOTES = {Domain.GENERAL.value: "性罪行、暴力、衝突等社會新聞", Domain.CHINA_POLITICAL.value: "對中國政府不利的新聞"}
@@ -330,17 +330,25 @@ def accuracy_text(fade: Fade) -> str:
             "已知答案是人手寫的，比真實的淡化更明顯，所以這是上限，真實的漏判可能更多。")
 
 
+def reviewed_cell(row: Row) -> str:
+    return "<td>沒有失敗項</td>" if row.failed == 0 else f"<td>{row.decided}/{row.failed}</td>"
+
+
 def fade_html(fade: Fade) -> str:
     combos = [(d, g) for d in fade.directions for g in fade.groups]
-    head = "".join(f"<th>{escape(DIRECTION_LABELS.get(d, str(d)))}・{escape(group_label(g))}</th>" for d, g in combos)
-    body = "".join(f'<tr><th scope="row">{escape(name)}</th>{"".join(fade_cell(cells.get(c)) for c in combos)}</tr>' for name, cells in fade.rows)
+    head = "".join(f"<th>{escape(DIRECTION_LABELS.get(d, str(d)))}・{escape(group_label(g))}</th>" for d, g in combos) + "<th>人已審的失敗項</th>"
+    body = "".join(f'<tr><th scope="row">{escape(row.name)}</th>{"".join(fade_cell(row.cells.get(c)) for c in combos)}{reviewed_cell(row)}</tr>' for row in fade.rows)
     sizes = "、".join(f"{group_label(g)} {fade.articles_by_group[g]} 篇" for g in ordered_groups(fade.articles_by_group))
-    status = (f"初步結果：判定的是 AI（{fade.judge_name}），尚未經人審。評核了 {sum(fade.articles_by_group.values())} 篇文章（{sizes}）；"
+    reviewed = "尚未經人審" if fade.decided == 0 else "人審了其中一部分（見表最右欄）"
+    status = (f"初步結果：判定的是 AI（{fade.judge_name}），{reviewed}。評核了 {sum(fade.articles_by_group.values())} 篇文章（{sizes}）；"
               f"必看項目 {fade.must} 項，已有決定 {fade.decided} 項。")
-    notes = ("淡化率＝被淡化的句子 ÷ 有結果的句子。一句只要有一條要保留的事實被寫輕或不見，就算被淡化。",
+    notes = ["淡化率＝被淡化的句子 ÷ 有結果的句子。一句只要有一條要保留的事實被寫輕或不見，就算被淡化。",
              "被擋或沒有輸出的文章不在分母，所以只代表翻得出來的那部分。",
              "每一格的句子不多，95% 上限很寬：只能看大方向，不能比細小的差距。",
-             accuracy_text(fade))
+             "最右欄：Judge 判為被寫輕或不見的事實，有幾項已經人審（一句可以有幾條事實，所以和表裡的句子數不同）。"]
+    if fade.decided and any(row.decided < row.failed for row in fade.rows):
+        notes.append("審過的模型，數字已按人的決定更新；沒審過的是 Judge 的原始判定，不能直接和審過的比。")
+    notes.append(accuracy_text(fade))
     shown_examples = "".join(f'<li class="illustration"><h3>{escape(WEAKENING_LABELS[t])}</h3><p>原文：{escape(src)}</p><p>譯文：{escape(tr)}</p>'
                              f'<p class="meta">{escape(what)}</p></li>' for t, src, tr, what in ILLUSTRATIONS)
     return ('<section><h2>淡化：譯文有沒有把內容寫輕（初步）</h2>'

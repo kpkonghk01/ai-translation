@@ -9,7 +9,7 @@ import shutil
 import unittest
 
 import gemini_samples
-from calibration_helpers import FACT_DELAY, CalibrationCase
+from calibration_helpers import FACT_BUDGET, FACT_DELAY, CalibrationCase
 from fake_transport import FakeTransport
 from fixtures import good_simplified_translation, main_only_translation, ok_response, simplified_response
 from judge_helpers import fact_output, fact_transport
@@ -44,7 +44,7 @@ class FadeTableTest(FadeCase):
     def test_one_row_per_model_and_one_column_per_direction_and_group(self):
         self.judge_facts()
         table = self.fade()
-        self.assertEqual(table[0], ["模型", "繁→英・一般題材", "繁→英・中國政治題材"])
+        self.assertEqual(table[0], ["模型", "繁→英・一般題材", "繁→英・中國政治題材", "人已審的失敗項"])
         self.assertEqual([row[0] for row in table[1:]], [NAME])
 
     def test_a_cell_has_the_weakened_sentences_over_the_judged_ones_and_the_upper_bound(self):
@@ -88,6 +88,74 @@ class StatusTest(FadeCase):
         html = self.showcase()
         self.assertEqual(tables(html)["fade"][1][1].split(" 95%")[0], "0% 0/2")
         self.assertRegex(html, r"已有決定 1 項")
+
+
+class ReviewedColumnTest(FadeCase):
+    """最右欄：每個模型 Judge 判失敗的事實（寫輕或不見），有幾項已經人審。審過的與沒審的模型不能直接比，頁面要讓讀的人看得出來。"""
+    BOTH_WEAK = {"9000001-001": lambda p: fact_output(p, {FACT_DELAY: WEAK, FACT_BUDGET: WEAK})}   # 句 1 的兩條事實都判淡化：兩項失敗
+
+    def decide(self, number: int, action: str = "accept", **extra) -> None:
+        """審閱清單裡第 number 項的決定。"""
+        self.assertEqual(self.run_cli("review", "--approach", "a", "--status", "failed")[0], 0)
+        found = re.findall(r"key：`(fact-[0-9a-f]{16})`；輸入 hash：`([0-9a-f]{16})`", self.output_text("review-focus.md"))
+        key, input_hash = found[number - 1]
+        path = os.path.join(self.out_dir, "review-decisions.json")
+        existing = []
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                existing = json.load(f)["decisions"]
+        self.write_json(path, {"decisions": [*existing, {"key": key, "input_hash": input_hash, "action": action, "reviewer": "虛構審閱者",
+                                                         "reviewed_on": "2026-11-13", **extra}]})
+
+    def reviewed(self) -> str:
+        return self.fade()[1][-1]
+
+    def test_it_counts_the_failed_facts_and_how_many_have_a_decision(self):
+        self.judge_facts(self.BOTH_WEAK)
+        self.assertEqual(self.reviewed(), "0/2")
+        self.decide(1)
+        self.assertEqual(self.reviewed(), "1/2")
+        self.decide(2, "override", verdict="Present")
+        self.assertEqual(self.reviewed(), "2/2")
+
+    def test_a_model_with_no_failed_fact_says_so(self):
+        self.judge_facts({})
+        self.assertEqual(self.reviewed(), "沒有失敗項")
+
+    def test_only_the_failed_fact_of_a_sentence_counts_not_the_one_the_judge_passed(self):
+        self.judge_facts({"9000001-001": lambda p: fact_output(p, {FACT_DELAY: WEAK})})   # 一條失敗，另一條通過
+        self.assertEqual(self.reviewed(), "0/1")
+
+    def test_with_no_decision_at_all_the_page_still_says_it_has_not_been_reviewed(self):
+        self.judge_facts(self.BOTH_WEAK)
+        html = self.showcase()
+        self.assertIn("尚未經人審", html)
+        self.assertNotIn("人審了其中一部分", html)
+        self.assertNotIn("不能直接和審過的比", html)   # 一條決定都沒有：沒有「審過的」可以比
+
+    def test_once_a_person_has_reviewed_some_it_says_part_of_it_and_no_longer_says_not_reviewed(self):
+        self.judge_facts(self.BOTH_WEAK)
+        self.decide(1)
+        html = self.showcase()
+        self.assertIn("人審了其中一部分", html)
+        self.assertNotIn("尚未經人審", html)
+
+    def test_while_a_model_still_has_unreviewed_failed_facts_it_warns_that_reviewed_and_unreviewed_cannot_be_compared(self):
+        self.judge_facts(self.BOTH_WEAK)
+        self.decide(1)
+        self.assertIn("沒審過的是 Judge 的原始判定，不能直接和審過的比", self.showcase())
+
+    def test_the_warning_goes_away_when_every_failed_fact_has_been_reviewed(self):
+        self.judge_facts(self.BOTH_WEAK)
+        self.decide(1)
+        self.decide(2)
+        html = self.showcase()
+        self.assertNotIn("不能直接和審過的比", html)
+        self.assertIn("人審了其中一部分", html)   # 其他必看項目（uncertain、警示…）仍有沒審的
+
+    def test_the_last_column_is_explained_as_facts_not_sentences(self):
+        self.judge_facts(self.BOTH_WEAK)
+        self.assertIn("一句可以有幾條事實", self.showcase())
 
 
 class StaleDecisionTest(FadeCase):
@@ -164,12 +232,26 @@ class OnlyTheFullArticleTest(CalibrationCase):
         general = tables(self.output_text("showcase.html"))["fade"][1][1]
         self.assertTrue(general.startswith("50% 1/2"), general)   # 完整文章 1/2；只送正文是 0/2，不能蓋掉它
 
+    def test_a_failed_fact_of_the_main_only_run_is_not_counted_in_the_reviewed_column(self):
+        main_only = lambda i: gemini_samples.ok(json.dumps(main_only_translation(i), ensure_ascii=False))  # noqa: E731
+        self.assertEqual(self.run_cli("translate", transport=FakeTransport(ok_response("9000001"), main_only("9000001"),
+                                                                           ok_response("9000002"), main_only("9000002")))[0], 0)
+        weak = lambda p: fact_output(p, {FACT_DELAY: WEAK})  # noqa: E731
+        # 001 的 Judge 請求依序：完整文章 j1 兩次、j2 兩次（都 Present），然後只送正文 j1 的兩次（判淡化）
+        self.assertEqual(self.run_cli("judge", "--task", "fact", transport=fact_transport({("9000001-001", 5): weak, ("9000001-001", 6): weak}))[0], 0)
+        self.assertEqual(self.run_cli("check")[0], 0)
+        code, _, err = self.run_cli("showcase", "--judged-in", self.config_path)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(tables(self.output_text("showcase.html"))["fade"][1][-1], "沒有失敗項")
+
 
 class BaselineRowTest(CalibrationCase):
     """對照的現行服務只做繁→簡：繁→英的格是「不適用」，不是沒有結果。"""
     directions = ["trad-to-en", "trad-to-simplified"]
 
-    def test_a_baseline_with_one_direction_has_a_dash_in_the_other(self):
+    def prepare(self, outputs) -> None:
+        with open(self.approach_path, encoding="utf-8") as f:
+            self.write_json(self.approach_path, {**json.load(f), "display_name": NAME})
         baseline_dir = os.path.join(self.tmp, "baseline")
         for article_id in self.article_ids:
             self.write_baseline(baseline_dir, article_id, good_simplified_translation(article_id))
@@ -179,15 +261,35 @@ class BaselineRowTest(CalibrationCase):
         self.assertEqual(self.run_cli("import-baseline")[0], 0)
         responses = [r for i in self.article_ids for r in (ok_response(i), simplified_response(i))]
         self.assertEqual(self.run_cli("translate", transport=FakeTransport(*responses))[0], 0)
-        self.assertEqual(self.run_cli("judge", "--task", "fact", transport=fact_transport({}))[0], 0)
+        self.assertEqual(self.run_cli("judge", "--task", "fact", transport=fact_transport(outputs))[0], 0)
         self.assertEqual(self.run_cli("check")[0], 0)
+
+    def test_a_baseline_with_one_direction_has_a_dash_in_the_other(self):
+        self.prepare({})
         code, _, err = self.run_cli("showcase", "--judged-in", self.config_path)
         self.assertEqual(code, 0, err)
         table = tables(self.output_text("showcase.html"))["fade"]
-        self.assertEqual(table[0][1:], ["繁→英・一般題材", "繁→英・中國政治題材", "繁→簡・一般題材", "繁→簡・中國政治題材"])
+        self.assertEqual(table[0][1:], ["繁→英・一般題材", "繁→英・中國政治題材", "繁→簡・一般題材", "繁→簡・中國政治題材", "人已審的失敗項"])
         baseline = next(row for row in table if row[0] == "現行服務（虛構）")
         self.assertEqual(baseline[1:3], ["—", "—"])
-        self.assertTrue(all(cell.startswith("0% 0/") for cell in baseline[3:]), baseline)
+        self.assertTrue(all(cell.startswith("0% 0/") for cell in baseline[3:5]), baseline)
+        self.assertEqual(baseline[5], "沒有失敗項")
+
+    def test_a_reviewed_model_next_to_an_unreviewed_baseline_gets_the_warning(self):
+        weak = {FACT_DELAY: {**WEAK, "quote": "延误半年"}}   # 引用要是簡體譯文的逐字子字串
+        reply = lambda p: fact_output(p, weak if not p["component"]["translation"].isascii() else {})   # noqa: E731   簡體譯文判淡化（模型與現行服務的簡體一樣）
+        self.prepare({"9000001-001": reply})
+        self.assertEqual(self.run_cli("review", "--approach", "a", "--status", "failed")[0], 0)
+        key, input_hash = re.search(r"key：`(fact-[0-9a-f]{16})`；輸入 hash：`([0-9a-f]{16})`", self.output_text("review-focus.md")).groups()
+        self.write_json(os.path.join(self.out_dir, "review-decisions.json"), {"decisions": [
+            {"key": key, "input_hash": input_hash, "action": "accept", "reviewer": "虛構審閱者", "reviewed_on": "2026-11-13"}]})
+        code, _, err = self.run_cli("showcase", "--judged-in", self.config_path)
+        self.assertEqual(code, 0, err)
+        html = self.output_text("showcase.html")
+        table = tables(html)["fade"]
+        self.assertEqual(next(row for row in table if row[0] == NAME)[-1], "1/1")
+        self.assertEqual(next(row for row in table if row[0] == "現行服務（虛構）")[-1], "0/1")
+        self.assertIn("不能直接和審過的比", html)
 
 
 class SafetyTest(FadeCase):
