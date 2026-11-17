@@ -36,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     j.add_argument("--task", choices=[t.value for t in Task], help="只跑這個任務（預設：全部；沒有 ground_truth 時沒有 fact，judging.screening 是 false 時沒有 screen）")
     j.add_argument("--dry-run", action="store_true", help="不送出請求，只印出請求數和 endpoint")
     j.add_argument("--article", action="append", default=[], help="只評這篇文章（可重覆）")
+    j.add_argument("--approach", action="append", default=[], help="只評這個模型（或 baseline）的 Run（可重覆）")
     j.add_argument("--limit", type=_positive_int, help="最多執行幾個請求")
     j.add_argument("--redo-errors", action="store_true", help="重做結果為 error 或 empty 的請求")
     b = sub.add_parser("import-baseline", help="把方案 E 等 baseline 目錄匯入成 Run")

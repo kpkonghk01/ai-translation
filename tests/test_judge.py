@@ -8,7 +8,7 @@ from unittest import mock
 import gemini_samples
 import openrouter_samples
 from fake_transport import FakeTransport, FunctionTransport
-from fixtures import FAKE_KEY, JUDGE, Workspace, ok_response, source_article
+from fixtures import APPROACH, FAKE_KEY, JUDGE, Workspace, good_simplified_translation, ok_response, simplified_response, source_article
 from judge_helpers import NO_PROBLEMS, finding, judge_transport, system_text, user_payload
 
 COMPONENTS = ["title", "9000001-001", "9000001-002", "9000001-003", "tags"]   # 要翻譯的：title、highlight、paragraph、image、tags
@@ -303,6 +303,82 @@ class ResumeTest(JudgeCase):
         self.assertEqual(len(transport.requests), 3)
         code, _, err = self.judge(judge_transport(), "--article", "8000000")
         self.assertNotEqual(code, 0)
+
+
+class ApproachOptionTest(JudgeCase):
+    """--approach：只評這些模型（或 baseline）的 Run。評核費用跟請求數成正比，不是每個模型都值得評的時候用。"""
+
+    def experiment(self) -> dict:
+        exp = super().experiment()
+        exp["approaches"].append({"config": os.path.join(self.tmp, "approach-b.json"), "runs": 1})
+        return exp
+
+    def setUp(self):
+        Workspace.setUp(self)   # 不用 JudgeCase 的：這裡有兩個模型，各翻一次
+        self.write_json(os.path.join(self.tmp, "approach-b.json"), {**APPROACH, "id": "b"})
+        self.write_json(self.config_path, self.experiment())
+        self.assertEqual(self.run_cli("translate", transport=FakeTransport(ok_response(), ok_response()))[0], 0)
+        self.use_judging()
+
+    def approaches_judged(self) -> list[str]:
+        return sorted({c["approach"] for c in self.calls()})
+
+    def test_without_the_option_every_approach_is_judged(self):
+        self.assertEqual(self.judge(judge_transport())[0], 0)
+        self.assertEqual(self.approaches_judged(), ["a", "b"])
+        self.assertEqual(len(self.calls()), 20)
+
+    def test_only_the_named_approach_is_judged(self):
+        transport = judge_transport()
+        self.assertEqual(self.judge(transport, "--approach", "b")[0], 0)
+        self.assertEqual(self.approaches_judged(), ["b"])
+        self.assertEqual(len(transport.requests), 10)
+
+    def test_the_option_can_be_repeated(self):
+        self.assertEqual(self.judge(judge_transport(), "--approach", "a", "--approach", "b")[0], 0)
+        self.assertEqual(self.approaches_judged(), ["a", "b"])
+
+    def test_the_dry_run_counts_only_the_named_approach(self):
+        transport = FakeTransport()
+        code, out, _ = self.judge(transport, "--dry-run", "--approach", "a")
+        self.assertEqual(code, 0)
+        self.assertIn("請求數：10", out)
+        self.assertEqual(transport.requests, [])
+
+    def test_it_combines_with_the_limit_and_a_later_run_without_it_sends_only_what_is_missing(self):
+        self.judge(judge_transport(), "--approach", "a", "--limit", "4")
+        self.assertEqual(len(self.calls()), 4)
+        transport = judge_transport()
+        self.judge(transport)   # 不加 --approach：a 剩下的 6 個，加 b 的 10 個
+        self.assertEqual(len(transport.requests), 16)
+
+    def test_an_unknown_approach_stops_before_anything_is_sent_and_lists_the_known_ones(self):
+        transport = judge_transport()
+        code, _, err = self.judge(transport, "--approach", "zzz")
+        self.assertNotEqual(code, 0)
+        self.assertIn("不認識的 Approach：zzz", err)
+        self.assertIn("a", err.split("實驗設定裡有：")[1])
+        self.assertEqual(transport.requests, [])
+        self.assertFalse(os.path.exists(os.path.join(self.out_dir, "judge-calls.jsonl")))
+
+
+class ApproachOptionBaselineTest(JudgeCase):
+    """baseline（現行服務）的 id 也可以當 --approach。"""
+    directions = ["trad-to-simplified"]
+
+    def setUp(self):
+        Workspace.setUp(self)
+        baseline_dir = os.path.join(self.tmp, "baseline")
+        self.write_baseline(baseline_dir, "9000001", good_simplified_translation("9000001"))
+        self.use_baseline(baseline_dir)
+        self.assertEqual(self.run_cli("import-baseline")[0], 0)
+        self.assertEqual(self.run_cli("translate", transport=FakeTransport(simplified_response()))[0], 0)
+        self.use_judging()
+
+    def test_a_baseline_id_is_accepted_and_only_its_runs_are_judged(self):
+        self.assertEqual(self.judge(judge_transport(), "--approach", "e")[0], 0)
+        self.assertEqual({c["approach"] for c in self.calls()}, {"e"})
+        self.assertGreater(len(self.calls()), 0)
 
 
 class SameFamilyTest(JudgeCase):

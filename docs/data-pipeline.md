@@ -157,8 +157,10 @@ uv run --locked python -I -m translation_eval report --config configs/experiment
 
   ```bash
   # 會呼叫 API、需要 key：經 tools/run-real.sh。--dry-run 先看請求數
-  tools/run-real.sh judge --config <實驗設定> [--task mqm|fact|screen] [--dry-run] [--article <id>] [--limit <N>] [--redo-errors]
+  tools/run-real.sh judge --config <實驗設定> [--task mqm|fact|screen] [--dry-run] [--article <id>] [--approach <id>] [--limit <N>] [--redo-errors]
   ```
+
+  `--approach`（可重覆）只評這些模型或 baseline 的 Run：評核費用跟請求數成正比，不是每個模型都要評的時候用（例如 Hy-MT2 已經不採用，不再花錢評它的質素）。id 不在實驗設定內就停止。已有紀錄的請求照樣略過，所以之後不加 `--approach` 再跑，只會補上沒評過的。
 
   每個 ok 的 Run（包括 baseline）的每個要翻譯的 Component（含 title 和 tags），由每個 Judge 評兩次，每次一個獨立的請求，附前後各一個要翻譯的 Component 當前後文、Direction 的語域要求，和原文出現的 Term List 條目。Judge 只輸出 Finding 和 Source defect，不輸出分數。輸出裡的片段必須是原文或譯文的逐字子字串（連續空白忽略）；不合格的那一條丟掉，記為無效並保留原文，Dimension 或 Severity 不在清單內的也一樣；整個輸出的結構不符則該請求是 `malformed`。請求的結果寫在 `judge-calls.jsonl`（一個請求一行），原始回應在 `judge-raw/`；已有紀錄的請求略過，可以續跑，`--redo-errors` 只重做 `error` 與 `empty`（`block`、`refusal`、`malformed` 不重做）；重做的請求記下 `redone_from`（舊紀錄是 error 還是 empty）。Judge 與被評的 Approach 同家族時，指令拒絕執行，除非 `same_family_exceptions` 針對這個組合寫了理由。`check` 不必先跑。
   `report` 計算一致性和分數：兩次的 Finding 若同一 Dimension、譯文片段重疊（譯文片段都是空的就看原文片段），就是同一個 Finding，Severity 不同取較高者；配對不到的是 uncertain；只有一次成功時全部是 uncertain；兩次都失敗是 Unjudged，並記下原因。罰分 = Severity 的權重，Fidelity-of-force 不計分；Deterministic 的 Finding 一律計入（包括漏段和多出的 Component）；Main 與 Peripheral 分開，列出「只計一致的」與「連 uncertain 一起計」兩個數字，以及每千字原文的罰分（分母是這些 Run 的原文總字數）。改了權重只要重跑 `report`。報告另有 Source defect 清單，以「文章、Component、原文片段」去重。

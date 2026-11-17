@@ -5,8 +5,10 @@
 
 用法：
   uv run --locked python -I -m translation_eval judge --config <實驗設定> [--data-dir data]
-      [--task mqm|fact|screen] [--dry-run] [--article <id>]... [--limit <N>] [--redo-errors]
+      [--task mqm|fact|screen] [--dry-run] [--article <id>]... [--approach <id>]... [--limit <N>] [--redo-errors]
 不寫 --task 就是三個任務都跑（沒有 ground_truth 時沒有 fact）。
+--approach 只評這些模型（或 baseline）的 Run：費用跟請求數成正比，不是每個模型都值得評的時候用；不寫就是全部。已有紀錄的請求照樣略過，
+所以之後不加 --approach 再跑，只會補上沒評過的。
 
 Judge 只輸出 Finding、Source defect、verdict 和篩查的條目，不輸出分數。輸出裡的每個片段與引用都要通過逐字驗證（連續空白忽略後，必須是
 原文或譯文的子字串），不通過的那一條丟掉（verdict 是作廢），記為無效並保留原文；Dimension、Severity、verdict 或類型不在清單內、
@@ -368,6 +370,12 @@ def same_family(first: str, second: str) -> bool:
     return first.strip().casefold() == second.strip().casefold()
 
 
+def require_known_approaches(experiment, requested: list[str]) -> None:
+    known = [p.id for p in experiment.approaches] + [b.id for b in experiment.config.baselines]
+    if unknown := [a for a in requested if a not in known]:
+        raise InputError([f"不認識的 Approach：{a}（實驗設定裡有：{'、'.join(known)}）" for a in unknown])
+
+
 def handle(args, transport: Transport) -> int:
     experiment = load_experiment(args.config)
     cfg = experiment.config
@@ -380,7 +388,8 @@ def handle(args, transport: Transport) -> int:
     tasks = (Task(args.task),) if args.task else tuple(t for t in Task if (t is not Task.FACT or cfg.ground_truth) and (t is not Task.SCREEN or cfg.judging.screening))
     truth = load_ground_truth(cfg.ground_truth, articles) if cfg.ground_truth else None
     out = OutputDir(args.data_dir, cfg.id)
-    records = [r for r in out.require_runs() if r.article_id in articles]
+    require_known_approaches(experiment, args.approach)
+    records = [r for r in out.require_runs() if r.article_id in articles and (not args.approach or r.approach in args.approach)]
     existing = {judge_call_key(c): c for c in out.read_judge_calls(None)}
 
     plan = plan_calls(experiment, records, articles, out, truth, tasks)
