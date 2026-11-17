@@ -23,7 +23,7 @@ from .facts import FactStatus, judge_facts
 from .ground_truth import GroundTruth
 from .pairs import component_pairs
 from .screening import judge_screening
-from .schemas import (CheckWarning, ComponentResult, DUPLICATE_COMPONENT, Dimension, EXTRA_COMPONENT, FAILING_VERDICTS, Finding, InvalidKind,
+from .schemas import (CheckWarning, ComponentResult, DUPLICATE_COMPONENT, Dimension, EXTRA_COMPONENT, FAILING_VERDICTS, FactVerdict, Finding, InvalidKind,
                       JudgeFinding, JudgeRole, OMISSION, Outcome, RunKey, RunRecord, ScreenItem, TYPE_CHANGED, Task, WHOLE_RUN, WarningKind, WeakeningType)
 from .store import OutputDir
 from .textrules import one_line, squash
@@ -75,6 +75,7 @@ class ReviewItem:
     locked: bool = False                              # 程式證明的結果：只能 accept
     weakening: WeakeningType | None = None            # 失敗的事實：兩次一致的淡化類型（沒有一致的類型就是 None）
     fact_text: str | None = None                      # 事實項目：要保留的事實的文字（顯示用）
+    verdicts: tuple[FactVerdict, ...] = ()            # 事實項目：每次請求對這條事實的有效 verdict，依請求序號（顯示用）
 
     @property
     def must_see(self) -> bool:
@@ -147,9 +148,9 @@ def _call_summary(calls) -> list:
              *([[s.model_dump(mode="json") for s in c.screenings]] if c.task is Task.SCREEN else [])] for c in calls]   # MQM 與 fact 的格式不變：已寫的審閱決定不會因此過期
 
 
-def _item(key, kind, status, run, component_id, judge, source, target, hash_parts, lines, locked=False, weakening=None, fact_text=None) -> ReviewItem:
-    """input_hash 涵蓋顯示給審閱者的原文與譯文，加上 hash_parts（Judge 的原始輸出、事實等）。weakening、fact_text 只是顯示用，不進 hash。"""
-    return ReviewItem(key, kind, status, run, component_id, judge, digest(source, target, *hash_parts), source, target, lines, locked, weakening, fact_text)
+def _item(key, kind, status, run, component_id, judge, source, target, hash_parts, lines, locked=False, weakening=None, fact_text=None, verdicts=()) -> ReviewItem:
+    """input_hash 涵蓋顯示給審閱者的原文與譯文，加上 hash_parts（Judge 的原始輸出、事實等）。weakening、fact_text、verdicts 只是顯示用，不進 hash。"""
+    return ReviewItem(key, kind, status, run, component_id, judge, digest(source, target, *hash_parts), source, target, lines, locked, weakening, fact_text, verdicts)
 
 
 def build_items(experiment: Experiment, out: OutputDir, records: list[RunRecord], rows: list[ComponentResult], articles,
@@ -282,6 +283,14 @@ def _fact_lines(judgment, fact) -> list[str]:
     return lines
 
 
+def _fact_verdicts(judgment, fact) -> tuple[FactVerdict, ...]:
+    """每次請求對這條事實的有效 verdict，依請求序號；請求失敗或這條事實的 verdict 作廢的那一次沒有（它沒有 verdict 可以放）。"""
+    if judgment is None:
+        return ()
+    found = (next((v for v in call.verdicts if v.fact == fact.key), None) for call in judgment.calls)
+    return tuple(v for v in found if v is not None)
+
+
 def _fact_items(items, experiment: Experiment, truth: GroundTruth, record: RunRecord, by_id, fact_calls) -> None:
     run = RunKey.of(record)
     if record.article_id not in truth.domains:
@@ -314,7 +323,7 @@ def _fact_items(items, experiment: Experiment, truth: GroundTruth, record: RunRe
                         weakening = result.weakening_type
                 items.append(_item(fact_item_key(run, component_id, judge.id, fact.key), ItemKind.FACT, status, run, component_id, judge.id,
                                    pair.source_text, pair.translated_text, (fact.kind.value, fact.text, summary), lines, locked=locked,
-                                   weakening=weakening, fact_text=one_line(fact.text)))
+                                   weakening=weakening, fact_text=one_line(fact.text), verdicts=_fact_verdicts(judgment, fact)))
         for call in (judgment.calls if judgment is not None else ()):
             for invalid in (i for i in call.invalid if i.fact is None):   # 不認識的 fact_id、不是物件的條目：不屬於任何一條事實
                 items.append(_item(invalid_item_key(run, component_id, judge.id, Task.FACT, call.call_index, invalid.raw), ItemKind.INVALID, ItemStatus.INVALID,

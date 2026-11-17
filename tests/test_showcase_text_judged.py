@@ -59,8 +59,24 @@ class CardTest(JudgedCase):
     def test_a_card_has_the_fact_the_source_the_translation_the_judges_quote_and_reason_and_the_plain_type(self):
         self.judge_001(fails(**{FACT_DELAY: ("d", "late")}))
         [card] = self.cards(self.text_page())
-        for shown in (LABEL_D, "要保留的事實：" + FACT_DELAY, SOURCE_001, GOOD_EN, "late", REASON, NAME, "繁→英", "一般題材"):
+        for shown in (LABEL_D, "要保留的事實：" + FACT_DELAY, SOURCE_001, GOOD_EN, "Judge 的理由：" + REASON, NAME, "繁→英", "一般題材"):
             self.assertIn(shown, card)
+
+    def test_when_the_two_judge_requests_agree_the_judge_is_shown_once_in_plain_words(self):
+        self.judge_001(fails(**{FACT_DELAY: ("d", "late")}))   # 兩次的判定、引用、理由都一樣
+        [card] = self.cards(self.text_page())
+        self.assertEqual(card.count('class="judge"'), 1)
+        self.assertEqual(card.count(REASON), 1)
+        for jargon in ("第 1 次", "第 2 次", "引用", "Weakened", "（d）"):
+            self.assertNotIn(jargon, card)
+
+    def test_two_agreeing_requests_with_different_wording_show_only_the_first_ones_reason(self):
+        again = fails(**{FACT_DELAY: ("d", "late")})
+        again[FACT_DELAY]["reason"] = "虛構的第二次理由"
+        self.judge_001(fails(**{FACT_DELAY: ("d", "late")}), second=again)
+        [card] = self.cards(self.text_page())
+        self.assertIn(REASON, card)
+        self.assertNotIn("虛構的第二次理由", card)
 
     def test_the_card_names_only_the_fact_that_failed_not_the_other_fact_of_the_sentence(self):
         self.judge_001(fails(**{FACT_DELAY: ("d", "late")}))
@@ -110,9 +126,25 @@ class OneCardPerTypeTest(JudgedCase):
     def test_a_fact_where_the_two_judge_requests_disagree_on_the_type_gets_its_own_card(self):
         self.judge_001(fails(**{FACT_DELAY: ("d", "late")}), second=fails(**{FACT_DELAY: ("c", "late")}))
         [card] = self.cards(self.text_page())
-        self.assertIn("沒有單一類型", card)
-        self.assertNotIn(LABEL_D, card)
-        self.assertNotIn(LABEL_C, card)
+        self.assertTrue(card.startswith("<h4>沒有單一類型</h4>"), card[:60])   # 標題不是其中一個類型；兩個類型只出現在 Judge 說的話裡
+
+    def test_the_card_with_no_single_type_shows_both_judge_reasons_each_with_its_type_in_plain_words(self):
+        second = fails(**{FACT_DELAY: ("c", "late")})
+        second[FACT_DELAY]["reason"] = "虛構的第二次理由"
+        self.judge_001(fails(**{FACT_DELAY: ("d", "late")}), second=second)
+        [card] = self.cards(self.text_page())
+        self.assertEqual(card.count('class="judge"'), 2)
+        self.assertIn(f"Judge 一次判為「{LABEL_D}」，理由：{REASON}", card)
+        self.assertIn(f"Judge 一次判為「{LABEL_C}」，理由：虛構的第二次理由", card)
+        self.assertLess(card.index(REASON), card.index("虛構的第二次理由"))   # 依請求的先後
+
+    def test_a_judge_that_gave_no_type_in_one_of_two_failing_requests_says_so(self):
+        second = fails(**{FACT_DELAY: ("d", "late")})
+        second[FACT_DELAY]["type"] = None
+        second[FACT_DELAY]["reason"] = "虛構的第二次理由"
+        self.judge_001(fails(**{FACT_DELAY: ("d", "late")}), second=second)
+        [card] = self.cards(self.text_page())
+        self.assertIn("Judge 一次判為「沒有標類型」，理由：虛構的第二次理由", card)
 
     def test_a_card_with_no_single_type_comes_after_the_typed_cards(self):
         self.judge_001(fails(**{FACT_DELAY: ("d", "late"), FACT_BUDGET: ("a", "over budget")}),
@@ -243,6 +275,27 @@ class ReviewDecisionTest(JudgedCase):
         self.decide("override", status="uncertain", verdict="Weakened", weakening_type="c")
         [card] = self.cards(self.text_page())
         self.assertIn(LABEL_C, card)
+
+    def test_when_a_person_settles_an_uncertain_fact_only_the_request_that_called_it_weakened_is_shown(self):
+        present = {FACT_DELAY: {"reason": "虛構的認為沒問題的理由"}}
+        self.judge_facts({("9000001-001", 1): lambda p: fact_output(p, present),
+                          ("9000001-001", 2): lambda p: fact_output(p, fails(**{FACT_DELAY: ("c", "late")}))})   # 兩次不一致：uncertain
+        self.decide("override", status="uncertain", verdict="Weakened", weakening_type="c")
+        [card] = self.cards(self.text_page())
+        self.assertEqual(card.count('class="judge"'), 1)
+        self.assertIn("Judge 的理由：" + REASON, card)
+        self.assertNotIn("認為沒問題", card)
+
+    def test_when_no_valid_request_called_it_weakened_there_is_no_judge_line_only_the_persons_decision(self):
+        invalid = {FACT_DELAY: {"verdict": "Weakened", "type": "c", "quote": "譯文裡沒有這句", "reason": "虛構的無效判定"}}   # 引用不是譯文的子字串：作廢
+        present = {FACT_DELAY: {"reason": "虛構的認為沒問題的理由"}}
+        self.judge_facts({("9000001-001", 1): lambda p: fact_output(p, present), ("9000001-001", 2): lambda p: fact_output(p, invalid)})
+        self.decide("override", status="uncertain", verdict="Weakened", weakening_type="c")
+        [card] = self.cards(self.text_page())
+        self.assertEqual(card.count('class="judge"'), 0)
+        self.assertNotIn("認為沒問題", card)
+        self.assertNotIn("無效判定", card)
+        self.assertIn("人已看過，改判為 Weakened", card)
 
     def test_a_fact_a_person_accepted_is_still_an_example_and_says_it_was_looked_at(self):
         self.judge_001(fails(**{FACT_DELAY: ("d", "late")}))

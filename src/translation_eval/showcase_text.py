@@ -10,7 +10,7 @@
 - 被寫輕的例子（有 --judged-in 才有）：Judge 評核過的實驗（通常是抽樣實驗；要有 judging、ground truth 和事實核對的紀錄，而且已經 check）裡，
   每個（方向、題材組）一個小節（方向依實驗設定的順序，組是一般題材在前），小節裡每種淡化類型取一個被判淡化的事實（取這種類型在這一格的紀錄裡的第一個，
   不是挑過的；只取完整文章、譯文有這一段的；人改判成沒淡化的不取，人改判的類型以人為準）：要保留的事實、原文與譯文（同一個 Component）、
-  Judge 的引用與理由、白話的類型、有沒有人審過。沒有單一類型的（Judge 兩次判的類型不同，或人改判時沒有寫類型）另成一張，排在小節最後。
+  Judge 的理由（兩次判的類型一致就只寫一句；不一致才兩句都寫，各註明判成哪一類；不放 Judge 的引用，引用多半就是上面的整句譯文）、白話的類型、有沒有人審過。沒有單一類型的（Judge 兩次判的類型不同，或人改判時沒有寫類型）另成一張，排在小節最後。
   沒有被判淡化的事實的格子也有小節，寫明沒有。Judge 的判定不一定對，所以頁面寫明初步、尚未經人審的，要讀的人自己對照原文與譯文。
 - 沒有成功的例子：showcase 的每一張例子卡（被擋、空內容、輸出格式壞、出錯……），多附這一個 Run 的文章的原文片段，並說明回來的是什麼。
   provider 回應裡的字不放：說明由程式按結果類別寫。
@@ -44,6 +44,7 @@ WHAT_CAME_BACK = {
     Outcome.TRUNCATED: "譯文在中途被截斷，這裡不放。",
     Outcome.ERROR: "沒有拿到可用的回應。",
 }
+NO_TYPE_GIVEN = "沒有標類型"   # Judge 判為被寫輕或不見，但沒有寫類型
 NO_SINGLE_TYPE = "沒有單一類型"   # Judge 兩次都判被淡化但類型不同，或人改判時沒有寫類型：沒有單一的白話類型
 WARNING = ("這一頁含真實文章的原文與譯文，只在本機看，不要轉發，也不要上傳到任何地方。"
            "要給別人看，請用只有計數的 showcase.html。")
@@ -171,12 +172,21 @@ def review_text(decision: ReviewDecision | None) -> str:
     return "人已看過，同意 Judge 的判定"
 
 
+def judge_notes(item: ReviewItem) -> list[str]:
+    """卡上 Judge 說的話：只取判為被寫輕或不見的請求。這些請求判的類型一致，就只寫一句理由（兩次的內容幾乎一樣，寫兩遍只會亂）；
+    類型不同，每一次各寫一句並註明判成哪一類，否則看不出為什麼沒有單一類型。沒有請求判為被寫輕（人改判的）就沒有。"""
+    failing = [v for v in item.verdicts if v.verdict in FAILING_VERDICTS]
+    if len({v.weakening_type for v in failing}) <= 1:
+        return [f"Judge 的理由：{failing[0].reason}"] if failing else []
+    return [f"Judge 一次判為「{WEAKENING_LABELS.get(v.weakening_type, NO_TYPE_GIVEN)}」，理由：{v.reason}" for v in failing]
+
+
 def weakened_card(item: ReviewItem, kind: WeakeningType | None, judged: Judged) -> str:
     names = judged.experiment.display_names()
     group = group_label(judged.truth.group_of(item.run.article_id))
     where = f"{names[item.run.approach]}、{DIRECTION_LABELS.get(item.run.direction, str(item.run.direction))}、{group}"
     heading = NO_SINGLE_TYPE if kind is None else WEAKENING_LABELS[kind]
-    judge_lines = "".join(f'<p class="judge">{escape(line)}</p>' for line in item.lines[1:])
+    judge_lines = "".join(f'<p class="judge">{escape(line)}</p>' for line in judge_notes(item))
     return (f'<li class="weakened"><h4>{escape(heading)}</h4><p class="meta">{escape(where)}</p>'
             f'<p class="fact">要保留的事實：{escape(item.fact_text or "")}</p>'
             f'<div class="pair">{text_block("原文", None, item.source_text)}{text_block("譯文", None, item.translation_text or "")}</div>'
